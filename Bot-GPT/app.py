@@ -22,9 +22,14 @@ def create_app():
         from key import GOOGLE_API_KEY, GOOGLE_CSE_ID
         app.config['GOOGLE_API_KEY'] = GOOGLE_API_KEY
         app.config['GOOGLE_CSE_ID'] = GOOGLE_CSE_ID
-    except ImportError:
-        # Fallback to environment variables if key.py is not found
-        print("WARNING: 'key.py' not found. Falling back to environment variables for Google API keys.")
+        print("INFO: Successfully loaded Google API keys from key.py")
+    except ImportError as e:
+        if "No module named 'key'" in str(e):
+             print("INFO: 'key.py' not found. Falling back to environment variables for Google API keys.")
+        else:
+             print(f"WARNING: Could not import keys from 'key.py': {e}. Falling back to environment variables.")
+
+        # Fallback to environment variables
         app.config['GOOGLE_API_KEY'] = os.environ.get("GOOGLE_API_KEY", "")
         app.config['GOOGLE_CSE_ID'] = os.environ.get("GOOGLE_CSE_ID", "")
 

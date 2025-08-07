@@ -261,6 +261,8 @@ def chat_proxy():
                         params = tool_call.get('parameters', {})
                         params['conversation_id'] = conversation_id
                         
+                        print(f"DEBUG: AI is attempting to call tool '{tool_name}' with parameters: {params}")
+
                         yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'params': params})}\n\n"
 
                         tool_map = {

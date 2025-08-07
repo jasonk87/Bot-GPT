@@ -21,9 +21,11 @@ except ImportError:
 
 try:
     from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
 except ImportError:
     print("WARNING: 'google-api-python-client' is not installed. The web_search tool will not be available. Run 'pip install google-api-python-client'.")
     build = None
+    HttpError = None
 
 # --- Helper function for conversation-specific workspaces ---
 def get_workspace_path(conversation_id):
@@ -141,9 +143,14 @@ def web_search(query, conversation_id=None):
 
     try:
         # 1. Perform Google Search
-        service = build("customsearch", "v1", developerKey=api_key)
-        res = service.cse().list(q=query, cx=cse_id, num=3).execute()
-        search_results = res.get('items', [])
+        try:
+            service = build("customsearch", "v1", developerKey=api_key)
+            res = service.cse().list(q=query, cx=cse_id, num=3).execute()
+            search_results = res.get('items', [])
+        except HttpError as e:
+            return f"Error: An HTTP error occurred while calling the Google Search API: {e.content.decode('utf-8')}"
+        except Exception as e:
+            return f"An unexpected error occurred during the Google search: {str(e)}"
 
         if not search_results:
             return f"No results found for '{query}'."
