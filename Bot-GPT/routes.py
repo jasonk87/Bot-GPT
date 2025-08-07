@@ -215,6 +215,26 @@ def chat_proxy():
         return "No messages provided", 400
 
     conversation_id = conversation_id_arg or str(int(time.time() * 1000))
+
+    # Check if this is a new conversation and save it immediately
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        new_convo = Conversation(id=conversation_id, title="New Chat", owner_id=user_id)
+        db.session.add(new_convo)
+        owner_participant = ConversationParticipant(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            role='owner'
+        )
+        db.session.add(owner_participant)
+        db.session.commit()
+
+        # Also save the initial file
+        conversation_path = os.path.join(current_app.config['USER_DATA_DIR'], str(user_id), 'conversations', f"{conversation_id}.json")
+        os.makedirs(os.path.dirname(conversation_path), exist_ok=True)
+        with open(conversation_path, 'w', encoding='utf-8') as f:
+            json.dump({"messages": messages, "title": "New Chat"}, f, indent=2)
+
     app = current_app._get_current_object()
 
     def event_stream():
@@ -318,60 +338,34 @@ def chat_proxy():
                 yield f"data: {json.dumps({'type': 'agent_error', 'error': str(e)})}\n\n"
             finally:
                 # --- Save Final Conversation ---
-                conversation_path = os.path.join(current_app.config['USER_DATA_DIR'], str(user_id), 'conversations', f"{conversation_id}.json")
-                os.makedirs(os.path.dirname(conversation_path), exist_ok=True)
-                is_new_conversation = not Conversation.query.get(conversation_id)
+                conversation = Conversation.query.get(conversation_id)
+                if not conversation:
+                    return # Should not happen if the immediate save worked
 
-                if not is_new_conversation:
-                    with open(conversation_path, 'r', encoding='utf-8') as f:
-                        convo_data = json.load(f)
-                else:
-                    convo_data = {"messages": [], "title": "New Chat"}
-
-                title = convo_data.get("title", "New Chat")
-
-                if is_new_conversation:
-                    if len(messages) >= 2:
-                        try:
-                            # Auto-generate title based on the first user message and the final AI response
-                            final_ai_message = next((m['content'] for m in reversed(messages) if m['role'] == 'assistant'), "")
-                            cleaned_assistant_content = re.sub(r'<think>[\s\S]*?</think>', '', final_ai_message).strip()
-                            title_prompt = (f"Based on the following exchange, create a very short, concise title (5 words or less).\n\nUser: {messages[0]['content']}\nAssistant: {cleaned_assistant_content}\n\nTitle:")
-                            title_model = model
-                            title_response = requests.post(f"{current_app.config['OLLAMA_HOST']}/api/chat", json={"model": title_model, "messages": [{"role": "user", "content": title_prompt}], "stream": False}, timeout=20)
-                            title_response.raise_for_status()
-                            raw_title = title_response.json().get("message", {}).get("content", "").strip()
-                            cleaned_title = re.sub(r'<think>[\s\S]*?</think>', '', raw_title).strip().replace('"', '')
-                            if cleaned_title:
-                                title = cleaned_title
-                        except requests.exceptions.RequestException as e:
-                            print(f"Could not auto-generate title: {e}")
-
-                    # Create new conversation in the database
-                    new_convo = Conversation(id=conversation_id, title=title, owner_id=user_id)
-                    db.session.add(new_convo)
-
-                    # Add the owner as a participant
-                    owner_participant = ConversationParticipant(
-                        user_id=user_id,
-                        conversation_id=conversation_id,
-                        role='owner'
-                    )
-                    db.session.add(owner_participant)
-
-                convo_data['messages'] = messages
-                convo_data['title'] = title
-
-                # For existing conversations, we might need to update the title
-                if not is_new_conversation:
-                    convo = Conversation.query.get(conversation_id)
-                    if convo and convo.title != title:
-                        convo.title = title
+                title = conversation.title
+                if title == "New Chat" and len(messages) >= 2:
+                    try:
+                        # Auto-generate title
+                        final_ai_message = next((m['content'] for m in reversed(messages) if m['role'] == 'assistant'), "")
+                        cleaned_assistant_content = re.sub(r'<think>[\s\S]*?</think>', '', final_ai_message).strip()
+                        title_prompt = (f"Based on the following exchange, create a very short, concise title (5 words or less).\n\nUser: {messages[0]['content']}\nAssistant: {cleaned_assistant_content}\n\nTitle:")
+                        title_model = model
+                        title_response = requests.post(f"{current_app.config['OLLAMA_HOST']}/api/chat", json={"model": title_model, "messages": [{"role": "user", "content": title_prompt}], "stream": False}, timeout=20)
+                        title_response.raise_for_status()
+                        raw_title = title_response.json().get("message", {}).get("content", "").strip()
+                        cleaned_title = re.sub(r'<think>[\s\S]*?</think>', '', raw_title).strip().replace('"', '')
+                        if cleaned_title:
+                            title = cleaned_title
+                            conversation.title = title
+                    except requests.exceptions.RequestException as e:
+                        print(f"Could not auto-generate title: {e}")
 
                 db.session.commit()
 
+                # Save the full conversation history to the JSON file
+                conversation_path = os.path.join(current_app.config['USER_DATA_DIR'], str(user_id), 'conversations', f"{conversation_id}.json")
                 with open(conversation_path, 'w', encoding='utf-8') as f:
-                    json.dump(convo_data, f, indent=2)
+                    json.dump({"messages": messages, "title": title}, f, indent=2)
 
     return Response(event_stream(), mimetype='text/event-stream')
 
