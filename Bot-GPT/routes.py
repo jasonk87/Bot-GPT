@@ -388,9 +388,17 @@ def get_file_tree(dir_path):
 @login_required
 def get_workspace_files(conversation_id):
     """Returns the file tree for a specific conversation's workspace."""
-    workspace_path = get_workspace_path(conversation_id)
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return jsonify([])
+
+    is_participant = any(p.user_id == current_user.id for p in conversation.participants)
+    if not is_participant:
+        return jsonify([])
+
+    workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
     if not workspace_path:
-        return jsonify([]) # Return empty list if no workspace
+        return jsonify([])
     return jsonify(get_file_tree(workspace_path))
 
 @main.route('/api/workspace/file', methods=['GET'])
