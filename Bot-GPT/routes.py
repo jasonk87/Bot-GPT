@@ -378,6 +378,76 @@ def get_workspace_files(conversation_id):
         return jsonify([]) # Return empty list if no workspace
     return jsonify(get_file_tree(workspace_path))
 
+@main.route('/api/workspace/file', methods=['GET'])
+@login_required
+def get_workspace_file_content():
+    """Gets the content of a file in a conversation's workspace."""
+    path = request.args.get('path')
+    conversation_id = request.args.get('conversation_id')
+
+    if not path or not conversation_id:
+        return jsonify({"error": "Path and conversation_id are required"}), 400
+
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    is_participant = any(p.user_id == current_user.id for p in conversation.participants)
+    if not is_participant:
+        return jsonify({"error": "Access denied"}), 403
+
+    workspace_path = get_workspace_path(conversation_id)
+    if not workspace_path:
+        return jsonify({"error": "Invalid conversation"}), 400
+
+    file_path = os.path.abspath(os.path.join(workspace_path, path))
+    if not file_path.startswith(os.path.abspath(workspace_path)):
+        return jsonify({"error": "Access denied"}), 403
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return jsonify({"content": content})
+    except FileNotFoundError:
+        return jsonify({"error": "File not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@main.route('/api/workspace/file', methods=['POST'])
+@login_required
+def save_workspace_file():
+    """Saves content to a file in a conversation's workspace."""
+    data = request.get_json()
+    path = data.get('path')
+    content = data.get('content')
+    conversation_id = data.get('conversation_id')
+
+    if not path or content is None or not conversation_id:
+        return jsonify({"error": "Path, content, and conversation_id are required"}), 400
+
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    if conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied. Only the owner can save files."}), 403
+
+    workspace_path = get_workspace_path(conversation_id)
+    if not workspace_path:
+        return jsonify({"error": "Invalid conversation"}), 400
+
+    file_path = os.path.abspath(os.path.join(workspace_path, path))
+    if not file_path.startswith(os.path.abspath(workspace_path)):
+        return jsonify({"error": "Access denied"}), 403
+
+    try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return jsonify({"success": True, "message": f"File '{path}' saved successfully."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @main.route('/api/workspace/file', methods=['DELETE'])
 @login_required
 def delete_workspace_file():

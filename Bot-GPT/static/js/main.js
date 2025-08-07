@@ -13,7 +13,8 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     sidePanel, menuBtn, welcomeMessage, uploadBtn, fileInput, fileViewerContainer, closeViewerBtn, overlay,
     uploadModal, uploadForm, cancelUploadBtn, dropZone, fileList, uploadPrompt,
     settingsBtn, settingsModal, settingsForm, cancelSettingsBtn, personaSelect, currentModelDisplay,
-    shareModal, cancelShareBtn, shareUserList;
+    shareModal, cancelShareBtn, shareUserList,
+    copyFileBtn, saveFileBtn;
 
 const API_BASE = '/api';
 let conversationHistory = [];
@@ -21,6 +22,7 @@ let currentConversationId = null;
 let currentConversationRole = null;
 let deleteResolver = null;
 let userModel = null;
+let editor = null;
 
 // --- Agent State ---
 let isAgentRunning = false;
@@ -125,6 +127,8 @@ async function initializeApp(username) {
             shareModal = document.getElementById('share-modal');
             cancelShareBtn = document.getElementById('cancel-share-btn');
             shareUserList = document.getElementById('share-user-list');
+            copyFileBtn = document.getElementById('copy-file-btn');
+            saveFileBtn = document.getElementById('save-file-btn');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
 
@@ -174,6 +178,37 @@ async function initializeApp(username) {
 
             // --- Share Modal Logic ---
             cancelShareBtn.addEventListener('click', () => shareModal.classList.add('hidden'));
+
+            // --- File Canvas Logic ---
+            copyFileBtn.addEventListener('click', () => {
+                if (editor) {
+                    navigator.clipboard.writeText(editor.getValue());
+                    alert('File content copied to clipboard.');
+                }
+            });
+
+            saveFileBtn.addEventListener('click', async () => {
+                if (editor) {
+                    const path = document.getElementById('file-viewer-filename').textContent;
+                    const content = editor.getValue();
+                    try {
+                        const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                path: path,
+                                content: content,
+                                conversation_id: currentConversationId
+                            })
+                        });
+                        const data = await response.json();
+                        if (!response.ok) throw new Error(data.error);
+                        alert('File saved successfully.');
+                    } catch (error) {
+                        alert(`Error saving file: ${error.message}`);
+                    }
+                }
+            });
 
     sendButton.addEventListener('click', () => sendMessage());
     chatInput.addEventListener('keydown', (event) => {
@@ -312,7 +347,9 @@ function attachFileEventListeners() {
         const path = item.dataset.path;
         const type = item.dataset.type;
         item.querySelector('span').addEventListener('click', () => {
-            if (type === 'file') alert("Viewing file content is not yet implemented.");
+                    if (type === 'file') {
+                        openFileCanvas(path);
+                    }
         });
 
                 const deleteBtn = item.querySelector('.delete-btn');
@@ -324,6 +361,37 @@ function attachFileEventListeners() {
                 }
     });
 }
+
+        async function openFileCanvas(path) {
+            try {
+                const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file?path=${encodeURIComponent(path)}&conversation_id=${currentConversationId}`);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error);
+
+                document.getElementById('file-viewer-filename').textContent = path;
+                fileViewerContainer.classList.remove('hidden');
+
+                let mode = 'text/plain';
+                if (path.endsWith('.py')) mode = 'python';
+                if (path.endsWith('.js')) mode = 'javascript';
+
+                initializeEditor(data.content, mode);
+            } catch (error) {
+                alert(`Error opening file: ${error.message}`);
+            }
+        }
+
+        function initializeEditor(content, mode) {
+            const editorContainer = document.getElementById('file-viewer');
+            editorContainer.innerHTML = ''; // Clear previous editor
+            editor = CodeMirror(editorContainer, {
+                value: content,
+                mode: mode,
+                theme: 'dracula',
+                lineNumbers: true,
+                readOnly: currentConversationRole !== 'owner'
+            });
+        }
 
 async function confirmDeletion(id, type, itemType) {
     deleteModalText.textContent = `Are you sure you want to delete this ${itemType}: ${id}?`;
