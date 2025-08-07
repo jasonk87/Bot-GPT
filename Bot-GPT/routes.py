@@ -5,6 +5,7 @@ import shutil
 import time
 import sys
 import requests
+import inspect
 from flask import (
     Blueprint, Response, request, render_template, jsonify, current_app
 )
@@ -277,14 +278,7 @@ def chat_proxy():
                     try:
                         tool_call = json.loads(tool_match.group(1))
                         tool_name = tool_call.get('tool')
-                        params = tool_call.get('parameters', {})
-                        params['conversation_id'] = conversation_id
-                        params['selected_model'] = current_user.selected_model
-                        params['user_id'] = current_user.id
-
-                        print(f"DEBUG: AI is attempting to call tool '{tool_name}' with parameters: {params}"); sys.stdout.flush()
-
-                        yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'params': params})}\n\n"
+                        raw_params = tool_call.get('parameters', {})
 
                         tool_map = {
                             "web_search": web_search, "list_directory_tree": list_directory_tree,
@@ -297,8 +291,27 @@ def chat_proxy():
 
                         if tool_name in tool_map:
                             tool_func = tool_map[tool_name]
+
+                            # Inspect the tool function's signature and build the correct params
+                            tool_params = {}
+                            sig = inspect.signature(tool_func)
+                            for param in sig.parameters.values():
+                                if param.name in raw_params:
+                                    tool_params[param.name] = raw_params[param.name]
+
+                            # Add context parameters if the tool accepts them
+                            if 'conversation_id' in sig.parameters:
+                                tool_params['conversation_id'] = conversation_id
+                            if 'user_id' in sig.parameters:
+                                tool_params['user_id'] = current_user.id
+                            if 'selected_model' in sig.parameters:
+                                tool_params['selected_model'] = current_user.selected_model
+
+                            print(f"DEBUG: AI is attempting to call tool '{tool_name}' with parameters: {tool_params}"); sys.stdout.flush()
+                            yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'params': tool_params})}\n\n"
+
                             # 3. OBSERVE
-                            tool_result = tool_func(**params)
+                            tool_result = tool_func(**tool_params)
 
                             tool_result_str = str(tool_result)
                             if len(tool_result_str) > 500:
