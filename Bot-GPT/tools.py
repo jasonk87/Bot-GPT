@@ -120,6 +120,16 @@ def create_and_open_canvas(filename, content, conversation_id=None):
     else:
         return write_result
 
+def set_current_plan_step(step_number, step_description):
+    """
+    Informs the user about the current step of the plan being executed.
+    """
+    return {
+        "status": "plan_step_update",
+        "step_number": step_number,
+        "step_description": step_description
+    }
+
 def execute_python(path, conversation_id=None):
     """Executes a Python script within the conversation's workspace."""
     workspace_path = get_workspace_path(conversation_id)

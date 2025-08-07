@@ -13,7 +13,7 @@ from models import User, Conversation, ConversationParticipant
 from tools import (
     get_workspace_path, list_files, read_file, write_file,
     execute_python, pip, ask_debugger, ask_coder, web_search,
-    list_directory_tree, create_and_open_canvas
+    list_directory_tree, create_and_open_canvas, set_current_plan_step
 )
 from werkzeug.utils import secure_filename
 
@@ -73,23 +73,17 @@ You MUST adhere to these formatting rules in your conversational responses to th
 2.  **Use Markdown:** Use Markdown for all formatting (e.g., `## Heading`, `- List item`, `**bold**`).
 
 **Your Tools:**
-- `web_search(query)`: Searches the web, browses the top results, and returns the consolidated content. Use this to find current information or answer questions.
-  - Example:
-    ```json
-    {
-      "tool": "web_search",
-      "parameters": {
-        "query": "latest advancements in AI"
-      }
-    }
-    ```
-- `list_directory_tree(path='.')`: Recursively lists the contents of a directory in a tree-like format. Use this to understand the structure of a project.
-- `create_and_open_canvas(filename, content)`: Creates a new file in the workspace and opens it in the canvas for the user. Use this when the user asks to create something that would be best viewed in a file, like code, a document, or a detailed plan. You should decide on an appropriate filename.
-- `list_files(path='.')`: List files and directories in a single directory.
-- `read_file(path)`: Read a file's content.
-- `write_file(path, content)`: Write content to a file. **IMPORTANT**: When writing text, format it with Markdown for readability. For tabular data, format the content as a CSV string.
-- `execute_python(path)`: Execute a Python script.
-- `pip(command)`: Install Python packages.
+
+You have the following tools at your disposal. Pay close attention to the function signatures and only use the parameters that are explicitly listed.
+
+- `web_search(query: str)`: Searches the web, browses the top results, and returns the consolidated content. Use this to find current information or answer questions.
+- `list_directory_tree(path: str = '.')`: Recursively lists the contents of a directory in a tree-like format. Use this to understand the structure of a project.
+- `create_and_open_canvas(filename: str, content: str)`: Creates a new file in the workspace and opens it in the canvas for the user. Use this when the user asks to create something that would be best viewed in a file, like code, a document, or a detailed plan. You should decide on an appropriate filename.
+- `list_files(path: str = '.')`: List files and directories in a single directory.
+- `read_file(path: str)`: Read a file's content.
+- `write_file(path: str, content: str)`: Write content to a file. **IMPORTANT**: When writing text, format it with Markdown for readability. For tabular data, format the content as a CSV string.
+- `execute_python(path: str)`: Executes a Python script located at the given path in the workspace.
+- `pip(command: str)`: Install Python packages.
 - `ask_coder(task_description)`: Delegate a coding task.
 - `ask_debugger(failed_command, error_message)`: Ask for help with a failed command.
 """;
@@ -274,6 +268,7 @@ def chat_proxy():
                             "execute_python": execute_python, "pip": pip,
                             "ask_debugger": ask_debugger, "ask_coder": ask_coder,
                             "create_and_open_canvas": create_and_open_canvas,
+                            "set_current_plan_step": set_current_plan_step,
                         }
 
                         if tool_name in tool_map:
@@ -281,9 +276,16 @@ def chat_proxy():
                             # 3. OBSERVE
                             tool_result = tool_func(**params)
 
-                            if isinstance(tool_result, dict) and tool_result.get('status') == 'canvas_created':
-                                yield f"data: {json.dumps({'type': 'open_canvas', 'filename': tool_result.get('filename')})}\n\n"
-                                tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
+                            if isinstance(tool_result, dict):
+                                if tool_result.get('status') == 'canvas_created':
+                                    yield f"data: {json.dumps({'type': 'open_canvas', 'filename': tool_result.get('filename')})}\n\n"
+                                    tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
+                                elif tool_result.get('status') == 'plan_step_update':
+                                    yield f"data: {json.dumps({'type': 'plan_step_update', 'step_number': tool_result.get('step_number'), 'step_description': tool_result.get('step_description')})}\n\n"
+                                    # Continue to the next iteration of the loop immediately
+                                    continue
+                                else:
+                                    tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
                             else:
                                 tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
 

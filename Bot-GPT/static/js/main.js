@@ -519,6 +519,7 @@ function sendMessage() {
     fullAgentResponse = "";
 
     const isNewConversation = !currentConversationId;
+            let finalAnswerStarted = false;
 
             const params = {
         messages: JSON.stringify(conversationHistory),
@@ -545,31 +546,38 @@ function sendMessage() {
                         case 'open_canvas':
                             openFileCanvas(data.filename);
                     break;
+                        case 'plan_step_update':
+                            const planStepContainer = currentAgentBubble.querySelector('.plan-step-container');
+                            const planStepContent = planStepContainer.querySelector('.plan-step-content');
+                            planStepContainer.style.display = 'block';
+                            planStepContent.textContent = `${data.step_number}. ${data.step_description}`;
+                            break;
                 case 'assistant_chunk':
                     fullAgentResponse += data.content;
 
                             const thinkMatch = fullAgentResponse.match(/<think>([\s\S]*)/);
-                            const thinkEndMatch = fullAgentResponse.includes('</think>');
-
                             if (thinkMatch) {
                                 const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
                                 const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
                                 thinkingContainer.style.display = 'block';
 
                                 let thinkContent = thinkMatch[1];
-                                if (thinkEndMatch) {
+                                if (fullAgentResponse.includes('</think>')) {
                                     thinkContent = thinkContent.substring(0, thinkContent.indexOf('</think>'));
                                 }
                                 thinkingContentEl.innerHTML = marked.parse(thinkContent);
                             }
 
-                            if (thinkEndMatch) {
+                            if (fullAgentResponse.includes('</think>')) {
+                                finalAnswerStarted = true;
                                 const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
                                 const thinkingContent = thinkingContainer.querySelector('.thinking-content');
                                 thinkingContent.style.display = 'none';
                             }
 
-                    updateBotBubble(currentAgentBubble, fullAgentResponse);
+                            if (finalAnswerStarted) {
+                                updateBotBubble(currentAgentBubble, fullAgentResponse);
+                            }
                     break;
                 case 'assistant_end':
                     // This just marks the end of a reasoning step, do nothing here
@@ -628,6 +636,13 @@ function createBotMessageContainer(animate = true) {
                         </div>
                         <div class="thinking-content prose prose-invert max-w-none"></div>
                     </div>
+            <div class="plan-step-container" style="display: none;">
+                <div class="plan-step-header">
+                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+                    <span>Current Step</span>
+                </div>
+                <div class="plan-step-content"></div>
+            </div>
             <div class="agent-status">
                 <div class="thinking-indicator">
                     <span></span><span></span><span></span>
