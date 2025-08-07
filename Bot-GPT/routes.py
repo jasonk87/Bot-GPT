@@ -3,6 +3,7 @@ import json
 import re
 import shutil
 import time
+import sys
 import requests
 from flask import (
     Blueprint, Response, request, render_template, jsonify, current_app
@@ -74,18 +75,18 @@ You MUST adhere to these formatting rules in your conversational responses to th
 
 **Your Tools:**
 
-You have the following tools at your disposal. Pay close attention to the function signatures and only use the parameters that are explicitly listed.
+You have the following tools at your disposal. **Pay close attention to the function signatures.** Only use the parameters that are explicitly listed. Do not make up parameters.
 
-- `web_search(query: str)`: Searches the web, browses the top results, and returns the consolidated content. Use this to find current information or answer questions.
-- `list_directory_tree(path: str = '.')`: Recursively lists the contents of a directory in a tree-like format. Use this to understand the structure of a project.
-- `create_and_open_canvas(filename: str, content: str)`: Creates a new file in the workspace and opens it in the canvas for the user. Use this when the user asks to create something that would be best viewed in a file, like code, a document, or a detailed plan. You should decide on an appropriate filename.
-- `list_files(path: str = '.')`: List files and directories in a single directory.
-- `read_file(path: str)`: Read a file's content.
-- `write_file(path: str, content: str)`: Write content to a file. **IMPORTANT**: When writing text, format it with Markdown for readability. For tabular data, format the content as a CSV string.
-- `execute_python(path: str)`: Executes a Python script located at the given path in the workspace.
-- `pip(command: str)`: Install Python packages.
-- `ask_coder(task_description: str)`: Delegate a coding task.
-- `ask_debugger(failed_command: str, error_message: str)`: Ask for help with a failed command.
+- `create_and_open_canvas(filename: str, content: str)`: Creates a new file with the given content and **opens it in the user's view as a canvas**. Use this for generating code, documents, or other content the user has requested.
+- `web_search(query: str)`: Searches the web and returns a summary of the top results. Use this to find current information.
+- `list_directory_tree(path: str = '.')`: Lists all files and directories, starting from the given path.
+- `list_files(path: str = '.')`: Lists files and directories in a single directory.
+- `read_file(path: str)`: Reads the content of a file.
+- `write_file(path: str, content: str)`: Writes content to a file. This will overwrite the file if it already exists. Use this for saving changes to existing files.
+- `execute_python(path: str)`: Executes a Python script using its file path. **This tool does not accept raw Python code.** You must first write the code to a file and then execute that file.
+- `pip(command: str)`: Installs Python packages using pip. The command should be what you would type after `pip`, e.g., `install pygame`.
+- `ask_coder(task_description: str)`: Delegates a complex coding task to a specialist agent. Use this if you are asked to write a large or complex piece of code.
+- `ask_debugger(failed_command: str, error_message: str)`: Asks a specialist agent for help with a failed tool call.
 """;
 
 
@@ -258,8 +259,9 @@ def chat_proxy():
                         params = tool_call.get('parameters', {})
                         params['conversation_id'] = conversation_id
                         params['selected_model'] = current_user.selected_model
+                        params['user_id'] = current_user.id
 
-                        print(f"DEBUG: AI is attempting to call tool '{tool_name}' with parameters: {params}")
+                        print(f"DEBUG: AI is attempting to call tool '{tool_name}' with parameters: {params}"); sys.stdout.flush()
 
                         yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'params': params})}\n\n"
 
@@ -276,6 +278,11 @@ def chat_proxy():
                             tool_func = tool_map[tool_name]
                             # 3. OBSERVE
                             tool_result = tool_func(**params)
+
+                            tool_result_str = str(tool_result)
+                            if len(tool_result_str) > 500:
+                                tool_result_str = tool_result_str[:500] + "..."
+                            print(f"DEBUG: Tool '{tool_name}' returned: {tool_result_str}"); sys.stdout.flush()
 
                             if isinstance(tool_result, dict):
                                 if tool_result.get('status') == 'canvas_created':

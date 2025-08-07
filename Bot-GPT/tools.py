@@ -2,7 +2,6 @@ import os
 import subprocess
 import re
 from flask import current_app
-from flask_login import current_user
 from models import Conversation
 
 # --- Dependencies for Web Browsing ---
@@ -11,32 +10,29 @@ from models import Conversation
 try:
     import requests
 except ImportError:
-    print("WARNING: 'requests' is not installed. The web_search tool will not be available. Run 'pip install requests'.")
     requests = None
 
 try:
     from bs4 import BeautifulSoup
 except ImportError:
-    print("WARNING: 'beautifulsoup4' is not installed. The web_search tool will not be available. Run 'pip install beautifulsoup4'.")
     BeautifulSoup = None
 
 try:
     from googleapiclient.discovery import build
     from googleapiclient.errors import HttpError
 except ImportError:
-    print("WARNING: 'google-api-python-client' is not installed. The web_search tool will not be available. Run 'pip install google-api-python-client'.")
     build = None
     HttpError = None
 
 # --- Helper function for conversation-specific workspaces ---
-def get_workspace_path(conversation_id):
+def get_workspace_path(conversation_id, user_id):
     """Constructs a path to a conversation-specific workspace."""
-    if not current_user.is_authenticated or not conversation_id:
+    if not user_id or not conversation_id:
         return None
 
     conversation = Conversation.query.get(conversation_id)
     if not conversation:
-        owner_id = current_user.id
+        owner_id = user_id
     else:
         owner_id = conversation.owner_id
 
@@ -46,9 +42,9 @@ def get_workspace_path(conversation_id):
     return path
 
 # --- Sandbox Tool Functions ---
-def list_files(path='.', conversation_id=None):
+def list_files(path='.', conversation_id=None, user_id=None):
     """Lists files and directories in a given path within the conversation's workspace."""
-    workspace_path = get_workspace_path(conversation_id)
+    workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path: return "Error: Could not determine workspace."
     base_path = os.path.abspath(workspace_path)
     target_path = os.path.abspath(os.path.join(base_path, path))
@@ -58,9 +54,9 @@ def list_files(path='.', conversation_id=None):
         return "\n".join(files) if files else "Directory is empty."
     except Exception as e: return f"Error: {str(e)}"
 
-def list_directory_tree(path='.', conversation_id=None):
+def list_directory_tree(path='.', conversation_id=None, user_id=None):
     """Recursively lists the contents of a directory in a tree-like format."""
-    workspace_path = get_workspace_path(conversation_id)
+    workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path: return "Error: Could not determine workspace."
     
     base_path = os.path.abspath(workspace_path)
@@ -82,9 +78,9 @@ def list_directory_tree(path='.', conversation_id=None):
     return tree_string.strip()
 
 
-def read_file(path, conversation_id=None):
+def read_file(path, conversation_id=None, user_id=None):
     """Reads the content of a file from the conversation's workspace."""
-    workspace_path = get_workspace_path(conversation_id)
+    workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path: return "Error: Could not determine workspace."
     file_path = os.path.abspath(os.path.join(workspace_path, path))
     if not file_path.startswith(os.path.abspath(workspace_path)): return "Error: Access denied."
@@ -92,9 +88,9 @@ def read_file(path, conversation_id=None):
         with open(file_path, 'r', encoding='utf-8') as f: return f.read()
     except Exception as e: return f"Error: {str(e)}"
 
-def write_file(path, content, conversation_id=None):
+def write_file(path, content, conversation_id=None, user_id=None):
     """Writes or overwrites a file in the conversation's workspace."""
-    workspace_path = get_workspace_path(conversation_id)
+    workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path: return "Error: Could not determine workspace."
     file_path = os.path.abspath(os.path.join(workspace_path, path))
     if not file_path.startswith(os.path.abspath(workspace_path)): return "Error: Access denied."
@@ -104,12 +100,12 @@ def write_file(path, content, conversation_id=None):
         return f"File '{path}' written successfully."
     except Exception as e: return f"Error: {str(e)}"
 
-def create_and_open_canvas(filename, content, conversation_id=None):
+def create_and_open_canvas(filename, content, conversation_id=None, user_id=None):
     """
     Creates a new file in the workspace and signals the frontend to open it in the canvas.
     This tool should be used when the user asks to create something in a canvas.
     """
-    write_result = write_file(filename, content, conversation_id)
+    write_result = write_file(filename, content, conversation_id, user_id)
 
     if "successfully" in write_result:
         return {
@@ -130,9 +126,9 @@ def set_current_plan_step(step_number, step_description):
         "step_description": step_description
     }
 
-def execute_python(path, conversation_id=None):
+def execute_python(path, conversation_id=None, user_id=None):
     """Executes a Python script within the conversation's workspace."""
-    workspace_path = get_workspace_path(conversation_id)
+    workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path: return "Error: Could not determine workspace."
     file_path = os.path.abspath(os.path.join(workspace_path, path))
     if not file_path.startswith(os.path.abspath(workspace_path)) or not file_path.endswith(".py"):
@@ -144,7 +140,7 @@ def execute_python(path, conversation_id=None):
         return output
     except Exception as e: return f"Error: {str(e)}"
 
-def pip(command):
+def pip(command, conversation_id=None, user_id=None):
     """Installs a Python package using pip."""
     try:
         command_list = ['pip'] + command.split() + ['--disable-pip-version-check']
@@ -157,7 +153,7 @@ def pip(command):
         return output
     except Exception as e: return f"Error: {str(e)}"
 
-def web_search(query, conversation_id=None, selected_model=None):
+def web_search(query, conversation_id=None, user_id=None, selected_model=None):
     """
     Performs a web search using the Google Search API, scrapes the top results, sends the content to an AI model for summarization,
     and returns the summarized answer. This tool is intended to be called by an AI agent.
@@ -218,12 +214,10 @@ def web_search(query, conversation_id=None, selected_model=None):
         if len(consolidated_content) > max_length:
             consolidated_content = consolidated_content[:max_length] + "... (content truncated)"
 
-        # Get the current model from the user's settings
         current_model = selected_model or 'default_model_name'
 
         ollama_host = current_app.config['OLLAMA_HOST']
         
-        # Prepare the prompt for the summarization model
         summarization_prompt = (
             f"Based on the following web content, please provide a comprehensive answer to the user's query: '{query}'. "
             "Synthesize the information from the sources into a single, coherent response. Do not just list the content from each source. "
@@ -247,14 +241,13 @@ def web_search(query, conversation_id=None, selected_model=None):
             summary = response.json().get("message", {}).get("content", "")
             return f"Based on my web search, here is the answer to your query about '{query}':\n\n{summary}"
         except requests.exceptions.RequestException as e:
-            # If summarization fails, return the raw content instead of an error.
             return f"Warning: Could not connect to the AI model to summarize the content. Returning raw search results.\n\n--- RAW WEB CONTENT ---\n{consolidated_content}"
 
     except Exception as e:
         return f"An unexpected error occurred during the web search and summarization process: {str(e)}"
 
 
-def ask_debugger(failed_command, error_message, selected_model=None):
+def ask_debugger(failed_command, error_message, selected_model=None, user_id=None):
     """Delegates a debugging task to a specialist agent."""
     debugger_prompt = f"Fix this failed command:\n{failed_command}\nError:\n{error_message}\nReturn ONLY the corrected JSON."
     try:
@@ -274,7 +267,7 @@ def ask_debugger(failed_command, error_message, selected_model=None):
     except Exception as e:
         return f"Error calling debugger agent: {str(e)}"
 
-def ask_coder(task_description, selected_model=None):
+def ask_coder(task_description, selected_model=None, user_id=None):
     """Delegates a coding task to a specialist agent."""
     coder_prompt = f"Write Python code for the following task. Your code should be clean, well-formatted, and include comments where necessary. Return ONLY the raw code.\nTask: {task_description}\nCode:"
     try:
