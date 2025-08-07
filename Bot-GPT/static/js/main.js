@@ -505,10 +505,9 @@ function createBotMessageContainer(animate = true) {
             <div class="tool-activity" style="display: none;">
                 <div class="tool-activity-header">
                     <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l-4 4-4-4 4-4"></path></svg>
-                    <span class="font-semibold">Tool Call</span>
+                            <span class="font-semibold tool-header-text">Tool Call</span>
                 </div>
                 <div class="tool-activity-body">
-                    <strong class="tool-name block mb-1"></strong>
                     <pre class="tool-params bg-gray-900 p-2 rounded text-xs"></pre>
                 </div>
             </div>
@@ -570,14 +569,14 @@ function showToolCall(bubbleElement, toolName, toolParams) {
     const agentStatus = bubbleElement.querySelector('.agent-status');
     const toolActivity = bubbleElement.querySelector('.tool-activity');
     const answerContent = bubbleElement.querySelector('.answer-content');
-    const toolNameEl = toolActivity.querySelector('.tool-name');
+            const toolHeaderEl = toolActivity.querySelector('.tool-header-text');
     const toolParamsEl = toolActivity.querySelector('.tool-params');
 
     agentStatus.style.display = 'none';
     answerContent.style.display = 'none';
     toolActivity.style.display = 'block';
 
-    toolNameEl.textContent = toolName;
+            toolHeaderEl.textContent = `Action: ${toolName}`;
     toolParamsEl.textContent = JSON.stringify(toolParams, null, 2);
 }
 

@@ -264,6 +264,11 @@ def chat_proxy():
 
                         if tool_name in tool_map:
                             tool_func = tool_map[tool_name]
+
+                            # Add request data to params if the tool needs it
+                            if 'request_data' in inspect.signature(tool_func).parameters:
+                                params['request_data'] = request.args
+
                             # 3. OBSERVE
                             tool_result = tool_func(**params)
                             tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
