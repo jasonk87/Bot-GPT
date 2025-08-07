@@ -516,10 +516,11 @@ function sendMessage() {
     chatInput.style.height = 'auto';
 
     currentAgentBubble = createBotMessageContainer();
-    fullAgentResponse = "";
+    let thinkContent = "";
+    let finalAnswerContent = "";
+    let inThinkBlock = true;
 
     const isNewConversation = !currentConversationId;
-            let finalAnswerStarted = false;
 
             const params = {
         messages: JSON.stringify(conversationHistory),
@@ -553,34 +554,31 @@ function sendMessage() {
                             planStepContent.textContent = `${data.step_number}. ${data.step_description}`;
                             break;
                 case 'assistant_chunk':
-                    fullAgentResponse += data.content;
+                            if (inThinkBlock) {
+                                thinkContent += data.content;
+                                const thinkEndMatch = thinkContent.indexOf('</think>');
+                                if (thinkEndMatch !== -1) {
+                                    inThinkBlock = false;
+                                    finalAnswerContent = thinkContent.substring(thinkEndMatch + 8);
+                                    thinkContent = thinkContent.substring(0, thinkEndMatch);
 
-                            const thinkMatch = fullAgentResponse.match(/<think>([\s\S]*)/);
-                            if (thinkMatch) {
-                                const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
-                                const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
-                                thinkingContainer.style.display = 'block';
-
-                                let thinkContent = thinkMatch[1];
-                                if (fullAgentResponse.includes('</think>')) {
-                                    thinkContent = thinkContent.substring(0, thinkContent.indexOf('</think>'));
+                                    const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
+                                    thinkingContainer.querySelector('.thinking-content').style.display = 'none';
                                 }
-                                thinkingContentEl.innerHTML = marked.parse(thinkContent);
-                            }
 
-                            if (fullAgentResponse.includes('</think>')) {
-                                finalAnswerStarted = true;
                                 const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
-                                const thinkingContent = thinkingContainer.querySelector('.thinking-content');
-                                thinkingContent.style.display = 'none';
+                                thinkingContainer.style.display = 'block';
+                                const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
+                                thinkingContentEl.innerHTML = marked.parse(thinkContent.replace('<think>', ''));
+                            } else {
+                                finalAnswerContent += data.content;
                             }
-
-                            if (finalAnswerStarted) {
-                                updateBotBubble(currentAgentBubble, fullAgentResponse);
-                            }
+                            updateBotBubble(currentAgentBubble, finalAnswerContent);
                     break;
                 case 'assistant_end':
-                    // This just marks the end of a reasoning step, do nothing here
+                    thinkContent = "";
+                    finalAnswerContent = "";
+                    inThinkBlock = true;
                     break;
                 case 'tool_call':
                     showToolCall(currentAgentBubble, data.name, data.params);
