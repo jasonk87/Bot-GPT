@@ -445,6 +445,16 @@ function sendMessage() {
                     break;
                 case 'assistant_chunk':
                     fullAgentResponse += data.content;
+
+                            const thinkMatch = fullAgentResponse.match(/<think>([\s\S]*?)<\/think>/);
+                            if (thinkMatch) {
+                                const thinkContent = thinkMatch[1];
+                                const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
+                                const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
+                                thinkingContainer.style.display = 'block';
+                                thinkingContentEl.innerHTML = marked.parse(thinkContent);
+                            }
+
                     updateBotBubble(currentAgentBubble, fullAgentResponse);
                     break;
                 case 'assistant_end':
@@ -497,6 +507,13 @@ function createBotMessageContainer(animate = true) {
     botMessageWrapper.innerHTML = `
         <div class="w-8 h-8 rounded-full bg-gray-600 flex-shrink-0 mr-2"></div>
         <div class="flex-1 bot-bubble">
+                    <div class="thinking-process-container" style="display: none;">
+                        <div class="thinking-header">
+                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path></svg>
+                            <span>Thinking...</span>
+                        </div>
+                        <div class="thinking-content prose prose-invert max-w-none"></div>
+                    </div>
             <div class="agent-status">
                 <div class="thinking-indicator">
                     <span></span><span></span><span></span>
@@ -514,6 +531,13 @@ function createBotMessageContainer(animate = true) {
             <div class="answer-content prose prose-invert max-w-none" style="display: none;"></div>
         </div>`;
     chatContainer.appendChild(botMessageWrapper);
+
+            const thinkingHeader = botMessageWrapper.querySelector('.thinking-header');
+            const thinkingContent = botMessageWrapper.querySelector('.thinking-content');
+            thinkingHeader.addEventListener('click', () => {
+                thinkingContent.style.display = thinkingContent.style.display === 'none' ? 'block' : 'none';
+            });
+
     chatContainer.scrollTop = chatContainer.scrollHeight;
     return botMessageWrapper;
 }

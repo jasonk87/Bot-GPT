@@ -16,6 +16,24 @@ def create_app():
     app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
     app.config['OLLAMA_HOST'] = os.environ.get("OLLAMA_HOST", "http://192.168.86.30:11434")
     app.config['USER_DATA_DIR'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_data")
+    # --- Google Search API Configuration ---
+    try:
+        # Try to import keys from a local key.py file (not tracked by git)
+        from key import GOOGLE_API_KEY, GOOGLE_CSE_ID
+        app.config['GOOGLE_API_KEY'] = GOOGLE_API_KEY
+        app.config['GOOGLE_CSE_ID'] = GOOGLE_CSE_ID
+    except ImportError:
+        # Fallback to environment variables if key.py is not found
+        print("WARNING: 'key.py' not found. Falling back to environment variables for Google API keys.")
+        app.config['GOOGLE_API_KEY'] = os.environ.get("GOOGLE_API_KEY", "")
+        app.config['GOOGLE_CSE_ID'] = os.environ.get("GOOGLE_CSE_ID", "")
+
+    # To enable Google Search, you can either:
+    # 1. Create a 'key.py' file in the project's root directory with the following content:
+    #    GOOGLE_API_KEY = "your_api_key"
+    #    GOOGLE_CSE_ID = "your_cse_id"
+    # 2. Set the GOOGLE_API_KEY and GOOGLE_CSE_ID environment variables.
+    # For more info, see: https://developers.google.com/custom-search/v1/overview
 
     # Ensure the instance folder exists
     try:

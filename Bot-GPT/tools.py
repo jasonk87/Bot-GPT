@@ -20,10 +20,10 @@ except ImportError:
     BeautifulSoup = None
 
 try:
-    from duckduckgo_search import DDGS
+    from googleapiclient.discovery import build
 except ImportError:
-    print("WARNING: 'duckduckgo-search' is not installed. The web_search tool will not be available. Run 'pip install duckduckgo-search'.")
-    DDGS = None
+    print("WARNING: 'google-api-python-client' is not installed. The web_search tool will not be available. Run 'pip install google-api-python-client'.")
+    build = None
 
 # --- Helper function for conversation-specific workspaces ---
 def get_workspace_path(conversation_id):
@@ -123,20 +123,27 @@ def pip(command):
 
 def web_search(query, conversation_id=None):
     """
-    Performs a web search using the DuckDuckGo API, scrapes the top results, sends the content to an AI model for summarization,
+    Performs a web search using the Google Search API, scrapes the top results, sends the content to an AI model for summarization,
     and returns the summarized answer. This tool is intended to be called by an AI agent.
     """
-    if not all([requests, BeautifulSoup, DDGS]):
+    api_key = current_app.config.get('GOOGLE_API_KEY')
+    cse_id = current_app.config.get('GOOGLE_CSE_ID')
+
+    if not api_key or not cse_id:
+        return "Error: Google Search API key or CSE ID is not configured. Please set them in the application configuration."
+
+    if not all([requests, BeautifulSoup, build]):
         missing = []
         if not requests: missing.append("'requests'")
         if not BeautifulSoup: missing.append("'beautifulsoup4'")
-        if not DDGS: missing.append("'duckduckgo-search'")
+        if not build: missing.append("'google-api-python-client'")
         return f"Error: The following required libraries are not installed: {', '.join(missing)}. The admin can install them via pip."
 
     try:
-        # 1. Perform DuckDuckGo Search
-        with DDGS() as ddgs:
-            search_results = list(ddgs.text(query, max_results=3))
+        # 1. Perform Google Search
+        service = build("customsearch", "v1", developerKey=api_key)
+        res = service.cse().list(q=query, cx=cse_id, num=3).execute()
+        search_results = res.get('items', [])
 
         if not search_results:
             return f"No results found for '{query}'."
@@ -145,7 +152,7 @@ def web_search(query, conversation_id=None):
         consolidated_content = ""
         for result in search_results:
             try:
-                url = result['href']
+                url = result['link']
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                 }

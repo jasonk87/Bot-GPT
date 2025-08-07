@@ -4,4 +4,4 @@ Flask-SQLAlchemy
 requests
 beautifulsoup4
 Werkzeug
-duckduckgo-search
+google-api-python-client
