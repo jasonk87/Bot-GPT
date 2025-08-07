@@ -231,13 +231,11 @@ def chat_proxy():
         db.session.add(owner_participant)
         db.session.commit()
 
-        # Also save the initial file
         conversation_path = os.path.join(current_app.config['USER_DATA_DIR'], str(user_id), 'conversations', f"{conversation_id}.json")
         os.makedirs(os.path.dirname(conversation_path), exist_ok=True)
         with open(conversation_path, 'w', encoding='utf-8') as f:
             json.dump({"messages": messages, "title": "New Chat"}, f, indent=2)
 
-    # We need the conversation object for the owner_id later
     conversation = Conversation.query.get(conversation_id)
 
     app = current_app._get_current_object()
@@ -250,7 +248,6 @@ def chat_proxy():
 
                 max_iterations = 15
                 for i in range(max_iterations):
-                    # 1. REASON
                     full_response_content = ""
                     assistant_message = {"role": "assistant", "content": ""}
                     
@@ -272,7 +269,6 @@ def chat_proxy():
                         final_answer_provided = True
                         break
 
-                    # 2. ACT
                     try:
                         tool_call = json.loads(tool_match.group(1))
                         tool_name = tool_call.get('tool')
@@ -290,7 +286,6 @@ def chat_proxy():
                         if tool_name in tool_map:
                             tool_func = tool_map[tool_name]
 
-                            # Build the context and tool parameters dynamically
                             context_params = {
                                 "conversation_id": conversation_id,
                                 "owner_id": conversation.owner_id,
@@ -303,15 +298,14 @@ def chat_proxy():
 
                             tool_params = {}
                             sig = inspect.signature(tool_func)
-                            for param in sig.parameters:
-                                if param in raw_params:
-                                    tool_params[param] = raw_params[param]
-                                elif param in context_params:
-                                    tool_params[param] = context_params[param]
+                            for param_name in sig.parameters:
+                                if param_name in raw_params:
+                                    tool_params[param_name] = raw_params[param_name]
+                                elif param_name in context_params:
+                                    tool_params[param_name] = context_params[param_name]
 
                             print(f"DEBUG: AI is attempting to call tool '{tool_name}' with parameters: {raw_params}"); sys.stdout.flush()
 
-                            # 3. OBSERVE
                             tool_result = tool_func(**tool_params)
 
                             tool_result_str = str(tool_result)
@@ -348,7 +342,6 @@ def chat_proxy():
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'agent_error', 'error': str(e)})}\n\n"
             finally:
-                # --- Save Final Conversation ---
                 conversation = Conversation.query.get(conversation_id)
                 if not conversation: return
 
@@ -377,4 +370,288 @@ def chat_proxy():
 
     return Response(event_stream(), mimetype='text/event-stream')
 
-# ... (rest of the file is the same)
+@main.route('/api/workspace/files/<conversation_id>', methods=['GET'])
+@login_required
+def get_workspace_files(conversation_id):
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return jsonify([])
+
+    is_participant = any(p.user_id == current_user.id for p in conversation.participants)
+    if not is_participant:
+        return jsonify([])
+
+    workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
+    if not workspace_path:
+        return jsonify([])
+    return jsonify(get_file_tree(workspace_path))
+
+@main.route('/api/workspace/file', methods=['GET'])
+@login_required
+def get_workspace_file_content():
+    path = request.args.get('path')
+    conversation_id = request.args.get('conversation_id')
+
+    if not path or not conversation_id:
+        return jsonify({"error": "Path and conversation_id are required"}), 400
+
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    is_participant = any(p.user_id == current_user.id for p in conversation.participants)
+    if not is_participant:
+        return jsonify({"error": "Access denied"}), 403
+
+    workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
+    if not workspace_path:
+        return jsonify({"error": "Invalid conversation"}), 400
+
+    file_path = os.path.abspath(os.path.join(workspace_path, path))
+    if not file_path.startswith(os.path.abspath(workspace_path)):
+        return jsonify({"error": "Access denied"}), 403
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return jsonify({"content": content})
+    except FileNotFoundError:
+        return jsonify({"error": "File not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@main.route('/api/workspace/file', methods=['POST'])
+@login_required
+def save_workspace_file():
+    data = request.get_json()
+    path = data.get('path')
+    content = data.get('content')
+    conversation_id = data.get('conversation_id')
+
+    if not path or content is None or not conversation_id:
+        return jsonify({"error": "Path, content, and conversation_id are required"}), 400
+
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    if conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied. Only the owner can save files."}), 403
+
+    workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
+    if not workspace_path:
+        return jsonify({"error": "Invalid conversation"}), 400
+
+    file_path = os.path.abspath(os.path.join(workspace_path, path))
+    if not file_path.startswith(os.path.abspath(workspace_path)):
+        return jsonify({"error": "Access denied"}), 403
+
+    try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return jsonify({"success": True, "message": f"File '{path}' saved successfully."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@main.route('/api/workspace/file', methods=['DELETE'])
+@login_required
+def delete_workspace_file():
+    data = request.get_json()
+    path = data.get('path')
+    conversation_id = data.get('conversation_id')
+
+    if not path or not conversation_id:
+        return jsonify({"error": "Path and conversation_id are required"}), 400
+
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    if conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied. Only the owner can delete files."}), 403
+
+    workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
+    if not workspace_path:
+        return jsonify({"error": "Invalid conversation"}), 400
+
+    full_path = os.path.abspath(os.path.join(workspace_path, path))
+    if not full_path.startswith(os.path.abspath(workspace_path)):
+        return jsonify({"error": "Access denied"}), 403
+    try:
+        if os.path.isdir(full_path): shutil.rmtree(full_path)
+        elif os.path.isfile(full_path): os.remove(full_path)
+        else: return jsonify({"error": "File not found"}), 404
+        return jsonify({"success": True, "message": f"Deleted {path}"})
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
+# --- User Settings ---
+@main.route('/api/settings', methods=['GET'])
+@login_required
+def get_settings():
+    persona_names = {key: value["name"] for key, value in PERSONAS.items()}
+    return jsonify({
+        "model": current_user.selected_model,
+        "persona": current_user.selected_persona,
+        "available_personas": persona_names
+    })
+
+@main.route('/api/settings', methods=['POST'])
+@login_required
+def update_settings():
+    data = request.get_json()
+    current_user.selected_model = data.get('model')
+    current_user.selected_persona = data.get('persona')
+    db.session.commit()
+    return jsonify({"message": "Settings updated successfully"}), 200
+
+
+# --- Conversation History Routes ---
+@main.route('/api/conversations', methods=['GET'])
+@login_required
+def get_conversations():
+    user_conversation_links = current_user.conversations
+
+    convos = []
+    for link in user_conversation_links:
+        conversation = link.conversation
+        convos.append({
+            "id": conversation.id,
+            "title": conversation.title,
+            "role": link.role
+        })
+
+    convos.sort(key=lambda x: x['id'], reverse=True)
+
+    return jsonify(convos)
+
+@main.route('/api/conversation/<session_id>', methods=['GET'])
+@login_required
+def get_conversation(session_id):
+    conversation = Conversation.query.get(session_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    is_participant = any(p.user_id == current_user.id for p in conversation.participants)
+    if not is_participant:
+        return jsonify({"error": "Access denied"}), 403
+
+    owner_id = conversation.owner_id
+    convo_path = os.path.join(current_app.config['USER_DATA_DIR'], str(owner_id), 'conversations', f"{session_id}.json")
+
+    if os.path.exists(convo_path):
+        with open(convo_path, 'r', encoding='utf-8') as f:
+            convo_data = json.load(f)
+            participant_link = next((p for p in conversation.participants if p.user_id == current_user.id), None)
+            convo_data['role'] = participant_link.role if participant_link else None
+            return jsonify(convo_data)
+
+    return jsonify({"error": "Conversation data file not found"}), 404
+
+@main.route('/api/users', methods=['GET'])
+@login_required
+def get_users():
+    """Returns a list of all users, excluding the current user."""
+    users = User.query.all()
+    users_list = [{"id": user.id, "username": user.username} for user in users if user.id != current_user.id]
+    return jsonify(users_list)
+
+@main.route('/api/conversation/<session_id>/share', methods=['POST'])
+@login_required
+def share_conversation(session_id):
+    """Shares a conversation with another user."""
+    conversation = Conversation.query.get(session_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    if conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied. Only the owner can share."}), 403
+
+    data = request.get_json()
+    user_id_to_share_with = data.get('user_id')
+    if not user_id_to_share_with:
+        return jsonify({"error": "user_id is required"}), 400
+
+    user_to_share_with = User.query.get(user_id_to_share_with)
+    if not user_to_share_with:
+        return jsonify({"error": "User to share with not found"}), 404
+
+    is_already_participant = any(p.user_id == user_id_to_share_with for p in conversation.participants)
+    if is_already_participant:
+        return jsonify({"message": "User is already a participant"}), 200
+
+    new_participant = ConversationParticipant(
+        user_id=user_id_to_share_with,
+        conversation_id=session_id,
+        role='participant'
+    )
+    db.session.add(new_participant)
+    db.session.commit()
+
+    return jsonify({"message": "Conversation shared successfully"}), 201
+
+@main.route('/api/conversation/<session_id>', methods=['DELETE'])
+@login_required
+def delete_conversation(session_id):
+    """Deletes a conversation and its associated workspace."""
+    conversation = Conversation.query.get(session_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    if conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied. Only the owner can delete."}), 403
+
+    user_data_dir = os.path.join(current_app.config['USER_DATA_DIR'], str(conversation.owner_id))
+    convo_path = os.path.join(user_data_dir, 'conversations', f"{session_id}.json")
+    workspace_path = os.path.join(user_data_dir, 'workspaces', session_id)
+
+    try:
+        if os.path.exists(convo_path):
+            os.remove(convo_path)
+        if os.path.exists(workspace_path):
+            shutil.rmtree(workspace_path)
+
+        db.session.delete(conversation)
+        db.session.commit()
+
+        return jsonify({"success": True})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@main.route('/api/upload', methods=['POST'])
+@login_required
+def upload_file():
+    """Handles file uploads to a conversation's workspace."""
+    if 'files[]' not in request.files:
+        return jsonify(error='No file part'), 400
+
+    files = request.files.getlist('files[]')
+    prompt = request.form.get('prompt', '')
+    conversation_id = request.form.get('conversation_id')
+
+    if not conversation_id:
+        conversation_id = str(int(time.time() * 1000))
+
+    if not files or files[0].filename == '':
+        return jsonify(error='No selected file'), 400
+
+    filenames = []
+    workspace_path = get_workspace_path(conversation_id)
+    if not workspace_path:
+        return jsonify(error='Could not create workspace'), 500
+
+    for file in files:
+        if file:
+            filename = secure_filename(file.filename)
+            file.save(os.path.join(workspace_path, filename))
+            filenames.append(filename)
+
+    file_list_str = "\n- ".join(filenames)
+    message_to_ai = (
+        f"User uploaded the following files to the workspace:\n- {file_list_str}\n\n"
+        f"User's prompt: {prompt}"
+    )
+
+    return jsonify(message=message_to_ai, conversation_id=conversation_id), 200
