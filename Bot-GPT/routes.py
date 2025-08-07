@@ -84,8 +84,8 @@ You have the following tools at your disposal. Pay close attention to the functi
 - `write_file(path: str, content: str)`: Write content to a file. **IMPORTANT**: When writing text, format it with Markdown for readability. For tabular data, format the content as a CSV string.
 - `execute_python(path: str)`: Executes a Python script located at the given path in the workspace.
 - `pip(command: str)`: Install Python packages.
-- `ask_coder(task_description)`: Delegate a coding task.
-- `ask_debugger(failed_command, error_message)`: Ask for help with a failed command.
+- `ask_coder(task_description: str)`: Delegate a coding task.
+- `ask_debugger(failed_command: str, error_message: str)`: Ask for help with a failed command.
 """;
 
 
@@ -257,7 +257,8 @@ def chat_proxy():
                         tool_name = tool_call.get('tool')
                         params = tool_call.get('parameters', {})
                         params['conversation_id'] = conversation_id
-                        
+                        params['selected_model'] = current_user.selected_model
+
                         print(f"DEBUG: AI is attempting to call tool '{tool_name}' with parameters: {params}")
 
                         yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'params': params})}\n\n"

@@ -157,7 +157,7 @@ def pip(command):
         return output
     except Exception as e: return f"Error: {str(e)}"
 
-def web_search(query, conversation_id=None):
+def web_search(query, conversation_id=None, selected_model=None):
     """
     Performs a web search using the Google Search API, scrapes the top results, sends the content to an AI model for summarization,
     and returns the summarized answer. This tool is intended to be called by an AI agent.
@@ -219,11 +219,7 @@ def web_search(query, conversation_id=None):
             consolidated_content = consolidated_content[:max_length] + "... (content truncated)"
 
         # Get the current model from the user's settings
-        try:
-            current_model = current_user.selected_model or 'default_model_name' 
-        except Exception:
-            # This might run in a context without a current_user (e.g., testing)
-            current_model = 'default_model_name' 
+        current_model = selected_model or 'default_model_name'
 
         ollama_host = current_app.config['OLLAMA_HOST']
         
@@ -258,11 +254,11 @@ def web_search(query, conversation_id=None):
         return f"An unexpected error occurred during the web search and summarization process: {str(e)}"
 
 
-def ask_debugger(failed_command, error_message):
+def ask_debugger(failed_command, error_message, selected_model=None):
     """Delegates a debugging task to a specialist agent."""
     debugger_prompt = f"Fix this failed command:\n{failed_command}\nError:\n{error_message}\nReturn ONLY the corrected JSON."
     try:
-        current_model = current_user.selected_model or 'default_model_name'
+        current_model = selected_model or 'default_model_name'
         response = requests.post(
             f"{current_app.config['OLLAMA_HOST']}/api/chat",
             json={ "model": current_model, "messages": [{"role": "user", "content": debugger_prompt}], "stream": False },
@@ -278,11 +274,11 @@ def ask_debugger(failed_command, error_message):
     except Exception as e:
         return f"Error calling debugger agent: {str(e)}"
 
-def ask_coder(task_description):
+def ask_coder(task_description, selected_model=None):
     """Delegates a coding task to a specialist agent."""
     coder_prompt = f"Write Python code for the following task. Your code should be clean, well-formatted, and include comments where necessary. Return ONLY the raw code.\nTask: {task_description}\nCode:"
     try:
-        current_model = current_user.selected_model or 'default_model_name'
+        current_model = selected_model or 'default_model_name'
         response = requests.post(
             f"{current_app.config['OLLAMA_HOST']}/api/chat",
             json={ "model": current_model, "messages": [{"role": "user", "content": coder_prompt}], "stream": False },
