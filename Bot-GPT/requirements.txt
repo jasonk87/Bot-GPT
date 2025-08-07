@@ -1,0 +1,7 @@
+Flask
+Flask-Login
+Flask-SQLAlchemy
+requests
+beautifulsoup4
+Werkzeug
+duckduckgo-search

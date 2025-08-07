@@ -10,14 +10,20 @@ from flask_login import current_user
 try:
     import requests
 except ImportError:
-    print("WARNING: 'requests' is not installed. The google_search tool will not be available. Run 'pip install requests'.")
+    print("WARNING: 'requests' is not installed. The web_search tool will not be available. Run 'pip install requests'.")
     requests = None
 
 try:
     from bs4 import BeautifulSoup
 except ImportError:
-    print("WARNING: 'beautifulsoup4' is not installed. The google_search tool will not be available. Run 'pip install beautifulsoup4'.")
+    print("WARNING: 'beautifulsoup4' is not installed. The web_search tool will not be available. Run 'pip install beautifulsoup4'.")
     BeautifulSoup = None
+
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    print("WARNING: 'duckduckgo-search' is not installed. The web_search tool will not be available. Run 'pip install duckduckgo-search'.")
+    DDGS = None
 
 # --- Helper function for conversation-specific workspaces ---
 def get_workspace_path(conversation_id):
@@ -115,43 +121,31 @@ def pip(command):
         return output
     except Exception as e: return f"Error: {str(e)}"
 
-def google_search(query, conversation_id=None):
+def web_search(query, conversation_id=None):
     """
-    Performs a Google search using a public API, scrapes the top 3 results, sends the content to an AI model for summarization,
+    Performs a web search using the DuckDuckGo API, scrapes the top results, sends the content to an AI model for summarization,
     and returns the summarized answer. This tool is intended to be called by an AI agent.
     """
-    if not all([requests, BeautifulSoup]):
+    if not all([requests, BeautifulSoup, DDGS]):
         missing = []
         if not requests: missing.append("'requests'")
         if not BeautifulSoup: missing.append("'beautifulsoup4'")
+        if not DDGS: missing.append("'duckduckgo-search'")
         return f"Error: The following required libraries are not installed: {', '.join(missing)}. The admin can install them via pip."
 
     try:
-        # 1. Perform Google Search
-        try:
-            search_url = "https://www.google.com/search"
-            params = {"q": query, "num": 3}
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
-            response = requests.get(search_url, params=params, headers=headers)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-            search_results_urls = []
-            for a in soup.find_all('a'):
-                href = a.get('href')
-                if href and href.startswith('/url?q='):
-                    url = href.split('/url?q=')[1].split('&')[0]
-                    search_results_urls.append(url)
-            if not search_results_urls:
-                return f"No results found for '{query}'."
-        except Exception as e:
-            return f"An error occurred during the Google search: {e}"
+        # 1. Perform DuckDuckGo Search
+        with DDGS() as ddgs:
+            search_results = list(ddgs.text(query, max_results=3))
+
+        if not search_results:
+            return f"No results found for '{query}'."
 
         # 2. Scrape Content from URLs
         consolidated_content = ""
-        for url in search_results_urls:
+        for result in search_results:
             try:
+                url = result['href']
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                 }

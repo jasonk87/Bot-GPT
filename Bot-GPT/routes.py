@@ -13,7 +13,7 @@ from extensions import db
 from models import User
 from tools import (
     get_workspace_path, list_files, read_file, write_file,
-    execute_python, pip, ask_debugger, ask_coder, google_search,
+    execute_python, pip, ask_debugger, ask_coder, web_search,
     list_directory_tree
 )
 from werkzeug.utils import secure_filename
@@ -50,6 +50,11 @@ You MUST follow this framework for every user request. The process is a loop of 
     - You MUST observe this output and then go back to the **Reason** step to re-evaluate your plan.
     - Think about whether the result was expected, and decide on the next step. Continue this loop until your plan is complete and you can provide a final answer to the user.
 
+**Error Handling & Self-Correction:**
+
+- If a tool call fails, OBSERVE the error message, REASON about the cause, and try to fix it. For example, if a file is not found, you might need to list the files to check the path. If a command fails, you can use `ask_debugger` to get help.
+- If you get stuck in a loop or are not making progress, take a step back and re-evaluate your plan. You can ask the user for clarification if needed.
+
 **Formatting Rules (VERY IMPORTANT):**
 
 You MUST adhere to these formatting rules in your conversational responses to the user.
@@ -58,11 +63,11 @@ You MUST adhere to these formatting rules in your conversational responses to th
 2.  **Use Markdown:** Use Markdown for all formatting (e.g., `## Heading`, `- List item`, `**bold**`).
 
 **Your Tools:**
-- `google_search(query)`: Searches the web, browses the top results, and returns the consolidated content. Use this to find current information or answer questions.
+- `web_search(query)`: Searches the web, browses the top results, and returns the consolidated content. Use this to find current information or answer questions.
   - Example:
     ```json
     {
-      "tool": "google_search",
+      "tool": "web_search",
       "parameters": {
         "query": "latest advancements in AI"
       }
@@ -212,7 +217,7 @@ def chat_proxy():
             try:
                 yield f"data: {json.dumps({'type': 'conversation_id', 'id': conversation_id})}\n\n"
 
-                max_iterations = 7
+                max_iterations = 15
                 for i in range(max_iterations):
                     # 1. REASON
                     full_response_content = ""
@@ -251,7 +256,7 @@ def chat_proxy():
                         yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'params': params})}\n\n"
 
                         tool_map = {
-                            "google_search": google_search, "list_directory_tree": list_directory_tree,
+                            "web_search": web_search, "list_directory_tree": list_directory_tree,
                             "list_files": list_files, "read_file": read_file, "write_file": write_file,
                             "execute_python": execute_python, "pip": pip,
                             "ask_debugger": ask_debugger, "ask_coder": ask_coder,
