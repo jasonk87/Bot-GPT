@@ -217,17 +217,18 @@ def web_search(query, conversation_id=None):
             summary = response.json().get("message", {}).get("content", "")
             return f"Based on my web search, here is the answer to your query about '{query}':\n\n{summary}"
         except requests.exceptions.RequestException as e:
-            return f"Error: Could not connect to the AI model to summarize the content. {e}"
+            # If summarization fails, return the raw content instead of an error.
+            return f"Warning: Could not connect to the AI model to summarize the content. Returning raw search results.\n\n--- RAW WEB CONTENT ---\n{consolidated_content}"
 
     except Exception as e:
         return f"An unexpected error occurred during the web search and summarization process: {str(e)}"
 
 
-def ask_debugger(failed_command, error_message, request_data):
+def ask_debugger(failed_command, error_message):
     """Delegates a debugging task to a specialist agent."""
     debugger_prompt = f"Fix this failed command:\n{failed_command}\nError:\n{error_message}\nReturn ONLY the corrected JSON."
     try:
-        current_model = request_data.get('model', 'gpt-oss:latest')
+        current_model = current_user.selected_model or 'default_model_name'
         response = requests.post(
             f"{current_app.config['OLLAMA_HOST']}/api/chat",
             json={ "model": current_model, "messages": [{"role": "user", "content": debugger_prompt}], "stream": False },
@@ -243,11 +244,11 @@ def ask_debugger(failed_command, error_message, request_data):
     except Exception as e:
         return f"Error calling debugger agent: {str(e)}"
 
-def ask_coder(task_description, request_data):
+def ask_coder(task_description):
     """Delegates a coding task to a specialist agent."""
     coder_prompt = f"Write Python code for the following task. Return ONLY the raw code.\nTask: {task_description}\nCode:"
     try:
-        current_model = request_data.get('model', 'gpt-oss:latest')
+        current_model = current_user.selected_model or 'default_model_name'
         response = requests.post(
             f"{current_app.config['OLLAMA_HOST']}/api/chat",
             json={ "model": current_model, "messages": [{"role": "user", "content": coder_prompt}], "stream": False },

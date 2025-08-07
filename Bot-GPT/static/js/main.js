@@ -446,13 +446,25 @@ function sendMessage() {
                 case 'assistant_chunk':
                     fullAgentResponse += data.content;
 
-                            const thinkMatch = fullAgentResponse.match(/<think>([\s\S]*?)<\/think>/);
+                            const thinkMatch = fullAgentResponse.match(/<think>([\s\S]*)/);
+                            const thinkEndMatch = fullAgentResponse.includes('</think>');
+
                             if (thinkMatch) {
-                                const thinkContent = thinkMatch[1];
                                 const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
                                 const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
                                 thinkingContainer.style.display = 'block';
+
+                                let thinkContent = thinkMatch[1];
+                                if (thinkEndMatch) {
+                                    thinkContent = thinkContent.substring(0, thinkContent.indexOf('</think>'));
+                                }
                                 thinkingContentEl.innerHTML = marked.parse(thinkContent);
+                            }
+
+                            if (thinkEndMatch) {
+                                const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
+                                const thinkingContent = thinkingContainer.querySelector('.thinking-content');
+                                thinkingContent.style.display = 'none';
                             }
 
                     updateBotBubble(currentAgentBubble, fullAgentResponse);
