@@ -78,6 +78,29 @@ def list_directory_tree(path='.', conversation_id=None, user_id=None):
     return tree_string.strip()
 
 
+def get_file_tree(path):
+    """
+    Generates a file tree structure for a given path.
+    Returns a list of objects, where each object has 'name', 'type', and optionally 'children'.
+    """
+    tree = []
+    if not os.path.exists(path) or not os.path.isdir(path):
+        return []
+    for item in sorted(os.listdir(path)):
+        item_path = os.path.join(path, item)
+        node = {
+            "name": item,
+            "path": os.path.relpath(item_path, start=path).replace(os.sep, '/')
+        }
+        if os.path.isdir(item_path):
+            node["type"] = "directory"
+            node["children"] = get_file_tree(item_path)
+        else:
+            node["type"] = "file"
+        tree.append(node)
+    return tree
+
+
 def read_file(path, conversation_id=None, user_id=None):
     """Reads the content of a file from the conversation's workspace."""
     workspace_path = get_workspace_path(conversation_id, user_id)

@@ -15,7 +15,7 @@ from models import User, Conversation, ConversationParticipant
 from tools import (
     get_workspace_path, list_files, read_file, write_file,
     execute_python, pip, ask_debugger, ask_coder, web_search,
-    list_directory_tree, create_and_open_canvas, set_current_plan_step
+    get_file_tree, create_and_open_canvas, set_current_plan_step
 )
 from werkzeug.utils import secure_filename
 
