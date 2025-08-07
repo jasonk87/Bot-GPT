@@ -169,7 +169,7 @@ def web_search(query, conversation_id=None, user_id=None, selected_model=None):
         if not requests: missing.append("'requests'")
         if not BeautifulSoup: missing.append("'beautifulsoup4'")
         if not build: missing.append("'google-api-python-client'")
-        return f"Error: The following required libraries are not installed: {', '.join(missing)}. The admin can install them via pip."
+        return f"Error: The following required libraries are not installed: {', '.join(missing)}."
 
     try:
         # 1. Perform Google Search
