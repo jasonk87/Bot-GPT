@@ -104,6 +104,22 @@ def write_file(path, content, conversation_id=None):
         return f"File '{path}' written successfully."
     except Exception as e: return f"Error: {str(e)}"
 
+def create_and_open_canvas(filename, content, conversation_id=None):
+    """
+    Creates a new file in the workspace and signals the frontend to open it in the canvas.
+    This tool should be used when the user asks to create something in a canvas.
+    """
+    write_result = write_file(filename, content, conversation_id)
+
+    if "successfully" in write_result:
+        return {
+            "status": "canvas_created",
+            "filename": filename,
+            "message": f"Successfully created canvas '{filename}'."
+        }
+    else:
+        return write_result
+
 def execute_python(path, conversation_id=None):
     """Executes a Python script within the conversation's workspace."""
     workspace_path = get_workspace_path(conversation_id)
@@ -254,7 +270,7 @@ def ask_debugger(failed_command, error_message):
 
 def ask_coder(task_description):
     """Delegates a coding task to a specialist agent."""
-    coder_prompt = f"Write Python code for the following task. Return ONLY the raw code.\nTask: {task_description}\nCode:"
+    coder_prompt = f"Write Python code for the following task. Your code should be clean, well-formatted, and include comments where necessary. Return ONLY the raw code.\nTask: {task_description}\nCode:"
     try:
         current_model = current_user.selected_model or 'default_model_name'
         response = requests.post(

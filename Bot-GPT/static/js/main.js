@@ -14,7 +14,7 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     uploadModal, uploadForm, cancelUploadBtn, dropZone, fileList, uploadPrompt,
     settingsBtn, settingsModal, settingsForm, cancelSettingsBtn, personaSelect, currentModelDisplay,
     shareModal, cancelShareBtn, shareUserList,
-    copyFileBtn, saveFileBtn;
+    copyFileBtn, saveFileBtn, canvasToggleBtn;
 
 const API_BASE = '/api';
 let conversationHistory = [];
@@ -26,6 +26,7 @@ let editor = null;
 
 // --- Agent State ---
 let isAgentRunning = false;
+let isCanvasMode = false;
 let currentAgentBubble = null;
 let fullAgentResponse = "";
 
@@ -129,6 +130,7 @@ async function initializeApp(username) {
             shareUserList = document.getElementById('share-user-list');
             copyFileBtn = document.getElementById('copy-file-btn');
             saveFileBtn = document.getElementById('save-file-btn');
+            canvasToggleBtn = document.getElementById('canvas-toggle-btn');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
 
@@ -180,6 +182,12 @@ async function initializeApp(username) {
             cancelShareBtn.addEventListener('click', () => shareModal.classList.add('hidden'));
 
             // --- File Canvas Logic ---
+            canvasToggleBtn.addEventListener('click', () => {
+                isCanvasMode = !isCanvasMode;
+                canvasToggleBtn.classList.toggle('bg-blue-600', isCanvasMode);
+                canvasToggleBtn.classList.toggle('text-white', isCanvasMode);
+            });
+
             copyFileBtn.addEventListener('click', () => {
                 if (editor) {
                     navigator.clipboard.writeText(editor.getValue());
@@ -512,11 +520,16 @@ function sendMessage() {
 
     const isNewConversation = !currentConversationId;
 
-    const eventSource = new EventSource(`/api/chat?${new URLSearchParams({
+            const params = {
         messages: JSON.stringify(conversationHistory),
         model: userModel,
         conversation_id: currentConversationId || ''
-    }).toString()}`);
+            };
+            if (isCanvasMode) {
+                params.canvas_mode = 'true';
+            }
+
+            const eventSource = new EventSource(`/api/chat?${new URLSearchParams(params).toString()}`);
 
     eventSource.onmessage = function(event) {
         try {
@@ -528,6 +541,9 @@ function sendMessage() {
                         currentConversationId = data.id;
                         addConversationToList(data.id, "New Chat");
                     }
+                            break;
+                        case 'open_canvas':
+                            openFileCanvas(data.filename);
                     break;
                 case 'assistant_chunk':
                     fullAgentResponse += data.content;

@@ -13,7 +13,7 @@ from models import User, Conversation, ConversationParticipant
 from tools import (
     get_workspace_path, list_files, read_file, write_file,
     execute_python, pip, ask_debugger, ask_coder, web_search,
-    list_directory_tree
+    list_directory_tree, create_and_open_canvas
 )
 from werkzeug.utils import secure_filename
 
@@ -58,14 +58,17 @@ You MUST follow this framework for every user request. The process is a loop of 
 
 You MUST adhere to these formatting rules in your conversational responses to the user.
 
-1.  **Use Double Line Breaks for Readability:** To ensure your responses are easy to read, ALWAYS use double line breaks (`\n\n`) to create a blank line between paragraphs, headings, lists, and other distinct blocks of text. This is critical for readability. For example:
+1.  **Use Double Line Breaks for Readability:** To ensure your responses are easy to read, ALWAYS use double line breaks (`\n\n`) to create a blank line between paragraphs, headings, lists, and other distinct blocks of text. This is critical for readability. For example, when creating a numbered list, there should be a blank line before the first item and after the last item.
 
-    This is the first paragraph.
+    **Example of Good Formatting:**
 
-    This is the second paragraph, separated by a blank line.
+    Here is a summary of the key points:
 
-    - This is a list item.
-    - This is another list item.
+    1.  **First Point:** This is a description of the first point. It can be multiple sentences long.
+
+    2.  **Second Point:** This is a description of the second point.
+
+    This formatting makes the list much easier to read.
 
 2.  **Use Markdown:** Use Markdown for all formatting (e.g., `## Heading`, `- List item`, `**bold**`).
 
@@ -81,6 +84,7 @@ You MUST adhere to these formatting rules in your conversational responses to th
     }
     ```
 - `list_directory_tree(path='.')`: Recursively lists the contents of a directory in a tree-like format. Use this to understand the structure of a project.
+- `create_and_open_canvas(filename, content)`: Creates a new file in the workspace and opens it in the canvas for the user. Use this when the user asks to create something that would be best viewed in a file, like code, a document, or a detailed plan. You should decide on an appropriate filename.
 - `list_files(path='.')`: List files and directories in a single directory.
 - `read_file(path)`: Read a file's content.
 - `write_file(path, content)`: Write content to a file. **IMPORTANT**: When writing text, format it with Markdown for readability. For tabular data, format the content as a CSV string.
@@ -269,13 +273,20 @@ def chat_proxy():
                             "list_files": list_files, "read_file": read_file, "write_file": write_file,
                             "execute_python": execute_python, "pip": pip,
                             "ask_debugger": ask_debugger, "ask_coder": ask_coder,
+                            "create_and_open_canvas": create_and_open_canvas,
                         }
 
                         if tool_name in tool_map:
                             tool_func = tool_map[tool_name]
                             # 3. OBSERVE
                             tool_result = tool_func(**params)
-                            tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
+
+                            if isinstance(tool_result, dict) and tool_result.get('status') == 'canvas_created':
+                                yield f"data: {json.dumps({'type': 'open_canvas', 'filename': tool_result.get('filename')})}\n\n"
+                                tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
+                            else:
+                                tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
+
                             messages.append({"role": "user", "content": tool_response_message})
                             yield f"data: {json.dumps({'type': 'tool_result', 'result': tool_result})}\n\n"
                         else:
