@@ -9,7 +9,7 @@ from flask import (
 )
 from flask_login import login_user, logout_user, current_user, login_required
 from extensions import db
-from models import User
+from models import User, Conversation, ConversationParticipant
 from tools import (
     get_workspace_path, list_files, read_file, write_file,
     execute_python, pip, ask_debugger, ask_coder, web_search,
@@ -298,9 +298,10 @@ def chat_proxy():
             finally:
                 # --- Save Final Conversation ---
                 conversation_path = os.path.join(current_app.config['USER_DATA_DIR'], str(user_id), 'conversations', f"{conversation_id}.json")
-                is_new_conversation = not os.path.exists(conversation_path)
+                os.makedirs(os.path.dirname(conversation_path), exist_ok=True)
+                is_new_conversation = not Conversation.query.get(conversation_id)
 
-                if os.path.exists(conversation_path):
+                if not is_new_conversation:
                     with open(conversation_path, 'r', encoding='utf-8') as f:
                         convo_data = json.load(f)
                 else:
@@ -308,24 +309,45 @@ def chat_proxy():
 
                 title = convo_data.get("title", "New Chat")
 
-                if is_new_conversation and len(messages) >= 2:
-                    try:
-                        # Auto-generate title based on the first user message and the final AI response
-                        final_ai_message = next((m['content'] for m in reversed(messages) if m['role'] == 'assistant'), "")
-                        cleaned_assistant_content = re.sub(r'<think>[\s\S]*?</think>', '', final_ai_message).strip()
-                        title_prompt = (f"Based on the following exchange, create a very short, concise title (5 words or less).\n\nUser: {messages[0]['content']}\nAssistant: {cleaned_assistant_content}\n\nTitle:")
-                        title_model = model
-                        title_response = requests.post(f"{current_app.config['OLLAMA_HOST']}/api/chat", json={"model": title_model, "messages": [{"role": "user", "content": title_prompt}], "stream": False}, timeout=20)
-                        title_response.raise_for_status()
-                        raw_title = title_response.json().get("message", {}).get("content", "").strip()
-                        cleaned_title = re.sub(r'<think>[\s\S]*?</think>', '', raw_title).strip().replace('"', '')
-                        if cleaned_title:
-                            title = cleaned_title
-                    except requests.exceptions.RequestException as e:
-                        print(f"Could not auto-generate title: {e}")
+                if is_new_conversation:
+                    if len(messages) >= 2:
+                        try:
+                            # Auto-generate title based on the first user message and the final AI response
+                            final_ai_message = next((m['content'] for m in reversed(messages) if m['role'] == 'assistant'), "")
+                            cleaned_assistant_content = re.sub(r'<think>[\s\S]*?</think>', '', final_ai_message).strip()
+                            title_prompt = (f"Based on the following exchange, create a very short, concise title (5 words or less).\n\nUser: {messages[0]['content']}\nAssistant: {cleaned_assistant_content}\n\nTitle:")
+                            title_model = model
+                            title_response = requests.post(f"{current_app.config['OLLAMA_HOST']}/api/chat", json={"model": title_model, "messages": [{"role": "user", "content": title_prompt}], "stream": False}, timeout=20)
+                            title_response.raise_for_status()
+                            raw_title = title_response.json().get("message", {}).get("content", "").strip()
+                            cleaned_title = re.sub(r'<think>[\s\S]*?</think>', '', raw_title).strip().replace('"', '')
+                            if cleaned_title:
+                                title = cleaned_title
+                        except requests.exceptions.RequestException as e:
+                            print(f"Could not auto-generate title: {e}")
+
+                    # Create new conversation in the database
+                    new_convo = Conversation(id=conversation_id, title=title, owner_id=user_id)
+                    db.session.add(new_convo)
+
+                    # Add the owner as a participant
+                    owner_participant = ConversationParticipant(
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        role='owner'
+                    )
+                    db.session.add(owner_participant)
 
                 convo_data['messages'] = messages
                 convo_data['title'] = title
+
+                # For existing conversations, we might need to update the title
+                if not is_new_conversation:
+                    convo = Conversation.query.get(conversation_id)
+                    if convo and convo.title != title:
+                        convo.title = title
+
+                db.session.commit()
 
                 with open(conversation_path, 'w', encoding='utf-8') as f:
                     json.dump(convo_data, f, indent=2)
@@ -366,6 +388,13 @@ def delete_workspace_file():
     
     if not path or not conversation_id:
         return jsonify({"error": "Path and conversation_id are required"}), 400
+
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    if conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied. Only the owner can delete files."}), 403
 
     workspace_path = get_workspace_path(conversation_id)
     if not workspace_path:
@@ -408,39 +437,100 @@ def update_settings():
 @main.route('/api/conversations', methods=['GET'])
 @login_required
 def get_conversations():
-    """Returns a list of the user's conversations."""
-    convo_dir = os.path.join(current_app.config['USER_DATA_DIR'], str(current_user.id), 'conversations')
+    """Returns a list of all conversations the user is a participant in."""
+    user_conversation_links = current_user.conversations
+
     convos = []
-    if os.path.exists(convo_dir):
-        for filename in sorted(os.listdir(convo_dir), reverse=True):
-            if filename.endswith('.json'):
-                try:
-                    with open(os.path.join(convo_dir, filename), 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        title = data.get('title', 'New Chat')
-                        convos.append({
-                            "id": filename.replace('.json', ''),
-                            "title": title
-                        })
-                except (json.JSONDecodeError, IndexError):
-                    continue
+    for link in user_conversation_links:
+        conversation = link.conversation
+        convos.append({
+            "id": conversation.id,
+            "title": conversation.title,
+            "role": link.role
+        })
+
+    convos.sort(key=lambda x: x['id'], reverse=True)
+
     return jsonify(convos)
 
 @main.route('/api/conversation/<session_id>', methods=['GET'])
 @login_required
 def get_conversation(session_id):
     """Returns the content of a specific conversation."""
-    convo_path = os.path.join(current_app.config['USER_DATA_DIR'], str(current_user.id), 'conversations', f"{session_id}.json")
+    conversation = Conversation.query.get(session_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    is_participant = any(p.user_id == current_user.id for p in conversation.participants)
+    if not is_participant:
+        return jsonify({"error": "Access denied"}), 403
+
+    owner_id = conversation.owner_id
+    convo_path = os.path.join(current_app.config['USER_DATA_DIR'], str(owner_id), 'conversations', f"{session_id}.json")
+
     if os.path.exists(convo_path):
         with open(convo_path, 'r', encoding='utf-8') as f:
-            return jsonify(json.load(f))
-    return jsonify({"error": "Conversation not found"}), 404
+            convo_data = json.load(f)
+            participant_link = next((p for p in conversation.participants if p.user_id == current_user.id), None)
+            convo_data['role'] = participant_link.role if participant_link else None
+            return jsonify(convo_data)
+
+    return jsonify({"error": "Conversation data file not found"}), 404
+
+@main.route('/api/users', methods=['GET'])
+@login_required
+def get_users():
+    """Returns a list of all users, excluding the current user."""
+    users = User.query.all()
+    users_list = [{"id": user.id, "username": user.username} for user in users if user.id != current_user.id]
+    return jsonify(users_list)
+
+@main.route('/api/conversation/<session_id>/share', methods=['POST'])
+@login_required
+def share_conversation(session_id):
+    """Shares a conversation with another user."""
+    conversation = Conversation.query.get(session_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    if conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied. Only the owner can share."}), 403
+
+    data = request.get_json()
+    user_id_to_share_with = data.get('user_id')
+    if not user_id_to_share_with:
+        return jsonify({"error": "user_id is required"}), 400
+
+    user_to_share_with = User.query.get(user_id_to_share_with)
+    if not user_to_share_with:
+        return jsonify({"error": "User to share with not found"}), 404
+
+    is_already_participant = any(p.user_id == user_id_to_share_with for p in conversation.participants)
+    if is_already_participant:
+        return jsonify({"message": "User is already a participant"}), 200
+
+    new_participant = ConversationParticipant(
+        user_id=user_id_to_share_with,
+        conversation_id=session_id,
+        role='participant'
+    )
+    db.session.add(new_participant)
+    db.session.commit()
+
+    return jsonify({"message": "Conversation shared successfully"}), 201
 
 @main.route('/api/conversation/<session_id>', methods=['DELETE'])
 @login_required
 def delete_conversation(session_id):
     """Deletes a conversation and its associated workspace."""
-    user_data_dir = os.path.join(current_app.config['USER_DATA_DIR'], str(current_user.id))
+    conversation = Conversation.query.get(session_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    if conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied. Only the owner can delete."}), 403
+
+    user_data_dir = os.path.join(current_app.config['USER_DATA_DIR'], str(conversation.owner_id))
     convo_path = os.path.join(user_data_dir, 'conversations', f"{session_id}.json")
     workspace_path = os.path.join(user_data_dir, 'workspaces', session_id)
 
@@ -449,8 +539,13 @@ def delete_conversation(session_id):
             os.remove(convo_path)
         if os.path.exists(workspace_path):
             shutil.rmtree(workspace_path)
+
+        db.session.delete(conversation)
+        db.session.commit()
+
         return jsonify({"success": True})
     except Exception as e:
+        db.session.rollback()
         return jsonify({"error": str(e)}), 500
 
 

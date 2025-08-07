@@ -12,11 +12,13 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     conversationList, newChatBtn, chatsTabBtn, filesTabBtn, conversationsPanel, filesPanel,
     sidePanel, menuBtn, welcomeMessage, uploadBtn, fileInput, fileViewerContainer, closeViewerBtn, overlay,
     uploadModal, uploadForm, cancelUploadBtn, dropZone, fileList, uploadPrompt,
-    settingsBtn, settingsModal, settingsForm, cancelSettingsBtn, personaSelect, currentModelDisplay;
+    settingsBtn, settingsModal, settingsForm, cancelSettingsBtn, personaSelect, currentModelDisplay,
+    shareModal, cancelShareBtn, shareUserList;
 
 const API_BASE = '/api';
 let conversationHistory = [];
 let currentConversationId = null;
+let currentConversationRole = null;
 let deleteResolver = null;
 let userModel = null;
 
@@ -120,6 +122,9 @@ async function initializeApp(username) {
     cancelSettingsBtn = document.getElementById('cancel-settings-btn');
     personaSelect = document.getElementById('persona-select');
     currentModelDisplay = document.getElementById('current-model-display');
+            shareModal = document.getElementById('share-modal');
+            cancelShareBtn = document.getElementById('cancel-share-btn');
+            shareUserList = document.getElementById('share-user-list');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
 
@@ -166,6 +171,9 @@ async function initializeApp(username) {
     settingsBtn.addEventListener('click', () => settingsModal.classList.remove('hidden'));
     cancelSettingsBtn.addEventListener('click', () => settingsModal.classList.add('hidden'));
     settingsForm.addEventListener('submit', handleSaveSettings);
+
+            // --- Share Modal Logic ---
+            cancelShareBtn.addEventListener('click', () => shareModal.classList.add('hidden'));
 
     sendButton.addEventListener('click', () => sendMessage());
     chatInput.addEventListener('keydown', (event) => {
@@ -281,9 +289,15 @@ function buildFileTree(nodes, pathPrefix = '') {
         const fullPath = pathPrefix ? `${pathPrefix}/${node.name}` : node.name;
         const isDir = node.type === 'directory';
         const icon = isDir ? '&#128193;' : '&#128196;';
+
+                let deleteBtn = '';
+                if (currentConversationRole === 'owner') {
+                    deleteBtn = `<button class="delete-btn text-red-500 hover:text-red-400 font-bold ml-2 flex-shrink-0" title="Delete">&times;</button>`;
+                }
+
         html += `<li class="file-item item-hover flex items-center justify-between group" data-path="${fullPath}" data-type="${node.type}">
                             <span class="flex-1 cursor-pointer hover:text-blue-400 truncate">${icon} ${node.name}</span>
-                            <button class="delete-btn text-red-500 hover:text-red-400 font-bold ml-2 flex-shrink-0" title="Delete">&times;</button>
+                            ${deleteBtn}
                          </li>`;
         if (isDir && node.children) {
             html += `<li class="pl-4">${buildFileTree(node.children, fullPath)}</li>`;
@@ -300,10 +314,14 @@ function attachFileEventListeners() {
         item.querySelector('span').addEventListener('click', () => {
             if (type === 'file') alert("Viewing file content is not yet implemented.");
         });
-        item.querySelector('.delete-btn').addEventListener('click', (e) => {
-            e.stopPropagation();
-            confirmDeletion(path, type, 'file');
-        });
+
+                const deleteBtn = item.querySelector('.delete-btn');
+                if (deleteBtn) {
+                    deleteBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        confirmDeletion(path, type, 'file');
+                    });
+                }
     });
 }
 
@@ -626,15 +644,32 @@ async function populateConversations() {
             const isActive = convo.id === currentConversationId;
             item.className = `conversation-item item-hover group flex justify-between items-center p-2 rounded-md cursor-pointer hover:bg-gray-700 ${isActive ? 'active' : ''}`;
             item.dataset.id = convo.id;
-            item.innerHTML = `<span class="truncate flex-1">${convo.title}</span>
-                                      <button class="delete-btn text-red-500 hover:text-red-400 font-bold ml-2">&times;</button>`;
+
+                    let buttons = '';
+                    if (convo.role === 'owner') {
+                        buttons = `<button class="share-btn p-1 text-gray-400 hover:text-white" title="Share">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12s-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6.002l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.368a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z"></path></svg>
+                                   </button>
+                                   <button class="delete-btn p-1 text-gray-400 hover:text-white" title="Delete">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                   </button>`;
+                    }
+                    item.innerHTML = `<span class="truncate flex-1">${convo.title}</span><div class="flex items-center">${buttons}</div>`;
+
             item.addEventListener('click', () => {
                 if (!isActive && !isAgentRunning) loadConversation(convo.id);
             });
-            item.querySelector('.delete-btn').addEventListener('click', (e) => {
-                e.stopPropagation();
-                confirmDeletion(convo.id, 'conversation', 'conversation');
-            });
+
+                    if (convo.role === 'owner') {
+                        item.querySelector('.share-btn').addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            openShareModal(convo.id);
+                        });
+                        item.querySelector('.delete-btn').addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            confirmDeletion(convo.id, 'conversation', 'conversation');
+                        });
+                    }
             conversationList.appendChild(item);
         });
     } catch (error) {
@@ -642,11 +677,52 @@ async function populateConversations() {
     }
 }
 
+        async function openShareModal(conversationId) {
+            shareModal.classList.remove('hidden');
+            shareUserList.innerHTML = '<p>Loading users...</p>';
+            try {
+                const response = await fetch(`${window.location.origin}${API_BASE}/users`);
+                const users = await response.json();
+                if (users.length === 0) {
+                    shareUserList.innerHTML = '<p>No other users to share with.</p>';
+                    return;
+                }
+                shareUserList.innerHTML = '';
+                users.forEach(user => {
+                    const userItem = document.createElement('div');
+                    userItem.className = 'p-2 hover:bg-gray-700 cursor-pointer rounded';
+                    userItem.textContent = user.username;
+                    userItem.addEventListener('click', async () => {
+                        try {
+                            const shareResponse = await fetch(`${window.location.origin}${API_BASE}/conversation/${conversationId}/share`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ user_id: user.id }),
+                            });
+                            const data = await shareResponse.json();
+                            if (shareResponse.ok) {
+                                alert(`Conversation shared with ${user.username}`);
+                                shareModal.classList.add('hidden');
+                            } else {
+                                throw new Error(data.message || 'Failed to share conversation');
+                            }
+                        } catch (error) {
+                            alert(`Error: ${error.message}`);
+                        }
+                    });
+                    shareUserList.appendChild(userItem);
+                });
+            } catch (error) {
+                shareUserList.innerHTML = `<p class="text-red-400">Could not load users: ${error.message}</p>`;
+            }
+        }
+
 async function loadConversation(id) {
     try {
         const response = await fetch(`${window.location.origin}${API_BASE}/conversation/${id}`);
         const data = await response.json();
         currentConversationId = id;
+                currentConversationRole = data.role;
         chatContainer.innerHTML = '';
         welcomeMessage.style.display = 'none';
 
@@ -672,6 +748,7 @@ async function loadConversation(id) {
 function startNewChat() {
     if (isAgentRunning) return;
     currentConversationId = null;
+            currentConversationRole = 'owner';
     conversationHistory = [];
     chatContainer.innerHTML = '';
     welcomeMessage.style.display = 'flex';

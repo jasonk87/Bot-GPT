@@ -3,6 +3,7 @@ import subprocess
 import re
 from flask import current_app
 from flask_login import current_user
+from models import Conversation
 
 # --- Dependencies for Web Browsing ---
 
@@ -32,7 +33,14 @@ def get_workspace_path(conversation_id):
     """Constructs a path to a conversation-specific workspace."""
     if not current_user.is_authenticated or not conversation_id:
         return None
-    path = os.path.join(current_app.config['USER_DATA_DIR'], str(current_user.id), 'workspaces', str(conversation_id))
+
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        owner_id = current_user.id
+    else:
+        owner_id = conversation.owner_id
+
+    path = os.path.join(current_app.config['USER_DATA_DIR'], str(owner_id), 'workspaces', str(conversation_id))
     if not os.path.exists(path):
         os.makedirs(path)
     return path
