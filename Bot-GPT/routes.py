@@ -37,6 +37,8 @@ when the step is complete.
 4. **COMPLETE & ANTICIPATE:** If a request implies related needs (e.g., travel plan → weather + safety), plan to cover them.
 5. **VISUAL WHEN POSSIBLE:** For complex objects, layouts, or processes, use ASCII diagrams.
 6. **STRICT FORMAT:** Your entire response must be a `<think>` block followed by one or more ```json ... ``` tool calls.
+7. **HANDLE CODER OUTPUT:** The `ask_coder` tool returns a JSON object with a `summary` and a `modified_files` list. After calling it, you **MUST** first check if `modified_files` is empty. If not, check the `CONTEXT` to see if Canvas Mode is ON. If Canvas Mode is ON, use `open_in_canvas` on the first file in the list. If Canvas Mode is OFF, use `read_file` on the first file and present the code to the user conversationally. Always include a brief, friendly summary of the work done from the `summary` field.
+8. **BE CONVERSATIONAL:** When a tool or agent finishes, do not just state the raw result. Summarize what was done in a friendly, conversational tone. For example, instead of just dumping file content, say "I've created the file for you. Here are the contents:"
 
 **Your Specialist Agents & Tools:**
 
@@ -44,10 +46,11 @@ when the step is complete.
 - `ask_inventory_agent(task: str)` — For pantry, grocery lists, inventory, and recipe-related tasks.
 - `ask_api_manager(task: str)` — For real-time external services or API data (weather, prices, GIFs, etc.).
 - `ask_agent_manager(task: str)` — For adding, removing, or managing other AI agents.
-- `ask_coder(task_description: str, filename: str)` — For writing, modifying, analyzing, or debugging code.
+- `ask_coder(task_description: str)` — For writing, modifying, analyzing, or debugging code. **This tool returns a JSON object.**
 - `ask_debugger(failed_command: str, error_message: str)` — For diagnosing failed tool calls.
 - `web_search(query: str)` — For factual web searches.
 - `open_in_canvas(path: str)` — To display coder output in Canvas Mode.
+- `read_file(path: str)` — To read a file's content before presenting it to the user.
 
 **EXAMPLE 1: Save a memory**
 User: "Please remember my name is Jason."
@@ -218,13 +221,28 @@ def call_ollama_chat_stream(model, messages, system_prompt):
 def format_final_answer(content):
     """
     Correctly formats the AI's response by ensuring that blocks of text
-    are separated by double newlines, which allows the frontend to render
-    them as distinct paragraphs, lists, and other elements.
+    are separated by double newlines, while preserving the single newlines
+    inside code blocks (```).
     """
-    # Split the content by any sequence of one or more newlines
-    paragraphs = re.split(r'\n+', content.strip())
-    # Join them back with double newlines. This is the standard markdown for paragraphs.
-    return '\n\n'.join(paragraphs)
+    # Split the content by code blocks, keeping the code blocks as part of the list
+    parts = re.split(r'(```[\s\S]*?```)', content)
+
+    formatted_parts = []
+    for part in parts:
+        # If the part is a code block, add it as is.
+        if part.startswith('```') and part.endswith('```'):
+            # Strip only leading/trailing whitespace from the block itself,
+            # but preserve internal newlines.
+            formatted_parts.append(part.strip())
+        # Otherwise, it's normal text. Format it.
+        else:
+            # Split by newlines and join with double newlines to create paragraphs
+            paragraphs = re.split(r'\n+', part.strip())
+            # Filter out any empty strings that may result from the split
+            formatted_parts.append('\n\n'.join(p for p in paragraphs if p))
+
+    # Join all parts back together, filtering out any empty strings
+    return '\n\n'.join(p for p in formatted_parts if p)
 
 @main.route('/api/chat')
 @login_required
@@ -262,9 +280,6 @@ def chat_proxy():
         # --- V2.0 MODIFICATION START ---
         # Get the base persona prompt
         persona_key = current_user.selected_persona or 'default'
-
-        
-
         base_system_prompt = PERSONAS.get(
             persona_key, {}
         ).get('prompt', DEFAULT_SYSTEM_PROMPT)
@@ -275,8 +290,11 @@ def chat_proxy():
         # Call the new Memory Manager to get relevant context
         relevant_context = get_relevant_context(user_id, new_message.get("content", ""))
 
+        # Add UI state to the context
+        ui_context = f"CONTEXT: Canvas Mode is currently {'ON' if canvas_mode_enabled else 'OFF'}."
+
         # Inject the context into the system prompt
-        system_prompt = f"{relevant_context}\n{base_system_prompt}"
+        system_prompt = f"{ui_context}\n\n{relevant_context}\n{base_system_prompt}"
         # --- V2.0 MODIFICATION END ---
 
 
@@ -371,6 +389,7 @@ def chat_proxy():
                                 "web_search": web_search,
                                 "list_directory_tree": list_directory_tree,
                                 "open_in_canvas": open_in_canvas,
+                                "read_file": read_file,
                             }
 
                             if tool_name in tool_map:
@@ -400,7 +419,25 @@ def chat_proxy():
                                 )
                                 sys.stdout.flush()
 
+                                # --- V2.1: Agent Status Update ---
+                                if tool_name.startswith('ask_'):
+                                    yield f"data: {json.dumps({'type': 'agent_start', 'agent': tool_name})}\n\n"
+
                                 tool_result = tool_func(**tool_params)
+
+                                # --- V2.1: Agent Status Update ---
+                                if tool_name == 'ask_coder' and isinstance(tool_result, dict):
+                                    summary = tool_result.get('summary', '')
+                                    thoughts = re.findall(r'<think>\s*([\s\S]*?)\s*</think>', summary)
+                                    for i, thought in enumerate(thoughts):
+                                        # Only show the first 3 thoughts to avoid being too spammy
+                                        if i < 3:
+                                            yield f"data: {json.dumps({'type': 'agent_thought', 'thought': thought.strip()})}\n\n"
+                                            time.sleep(1) # Small delay for readability
+
+                                if tool_name.startswith('ask_'):
+                                    yield f"data: {json.dumps({'type': 'agent_end'})}\n\n"
+
 
                                 tool_result_str = str(tool_result)
                                 if len(tool_result_str) > 500:

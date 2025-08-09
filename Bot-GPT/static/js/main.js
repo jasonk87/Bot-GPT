@@ -628,33 +628,29 @@ function setAgentRunning(isRunning) {
     chatInput.disabled = isRunning;
     sendButton.disabled = isRunning;
 
-    const statusBar = document.getElementById('agent-status-bar');
     const inputContainer = document.getElementById('chat-input-container');
 
     if (isRunning) {
         sendButton.classList.add('bg-gray-500', 'cursor-not-allowed');
         sendButton.classList.remove('bg-blue-600', 'hover:bg-blue-700');
         sendButton.innerHTML = `<svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
-        
-        // Activate new UI elements
-        statusBar.innerHTML = `Agent is running<span class="dots"><span>.</span><span>.</span><span>.</span></span>`;
-        statusBar.classList.add('active');
         inputContainer.classList.add('agent-active-glow');
         if (currentAgentBubble) {
             currentAgentBubble.querySelector('.w-8.h-8').classList.add('avatar-thinking');
         }
-
     } else {
         sendButton.classList.remove('bg-gray-500', 'cursor-not-allowed');
         sendButton.classList.add('bg-blue-600', 'hover:bg-blue-700');
         sendButton.innerHTML = `<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"></path></svg>`;
-        
-        // Deactivate new UI elements
-        statusBar.classList.remove('active');
         inputContainer.classList.remove('agent-active-glow');
         document.querySelectorAll('.avatar-thinking').forEach(el => {
             el.classList.remove('avatar-thinking');
         });
+
+        // Also ensure the agent status bar is cleared
+        const statusBar = document.getElementById('agent-status-bar');
+        statusBar.classList.remove('active');
+        statusBar.innerHTML = '';
 
         if (eventSource) {
             eventSource.close();
@@ -710,6 +706,21 @@ function sendMessage() {
                         currentConversationId = data.id;
                         addConversationToList(data.id, "New Chat");
                     }
+                    break;
+                case 'agent_start':
+                    const statusBar = document.getElementById('agent-status-bar');
+                    const agentName = data.agent.replace('ask_', '').replace('_agent', '');
+                    statusBar.innerHTML = `<strong>Delegating to ${agentName} agent...</strong>`;
+                    statusBar.classList.add('active');
+                    break;
+                case 'agent_thought':
+                    const thoughtBar = document.getElementById('agent-status-bar');
+                    thoughtBar.innerHTML = `<strong>Coder Agent:</strong> <em>"${data.thought}"</em>`;
+                    break;
+                case 'agent_end':
+                    const endBar = document.getElementById('agent-status-bar');
+                    endBar.classList.remove('active');
+                    endBar.innerHTML = '';
                     break;
                 case 'open_canvas':
                     if (isCanvasMode) {
@@ -1062,13 +1073,19 @@ async function loadConversation(id) {
         welcomeMessage.style.display = 'none';
         
         conversationHistory = data.messages || [];
-        // Re-render history
+        // Re-render history, filtering out tool responses for a cleaner view
         conversationHistory.forEach(msg => {
             if (msg.role === 'user') {
-                appendMessage(msg.content, 'user', false);
+                // Do not show the user messages that are just tool responses
+                if (!msg.content.startsWith('TOOL RESPONSE:')) {
+                    appendMessage(msg.content, 'user', false);
+                }
             } else if (msg.role === 'assistant') {
-                const botBubble = createBotMessageContainer(false);
-                updateBotBubble(botBubble, msg.content, true);
+                // Do not show the intermediate assistant messages that are just tool calls
+                if (!msg.content.includes('```json')) {
+                    const botBubble = createBotMessageContainer(false);
+                    updateBotBubble(botBubble, msg.content, true);
+                }
             }
         });
 

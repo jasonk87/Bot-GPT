@@ -455,7 +455,6 @@ def ask_coder(task_description: str, selected_model=None, user_id=None, conversa
     """
     print(f"DEBUG: Coder Agent started for user {user_id} with task: '{task_description}'")
 
-    # The Coder Agent has its own, private toolset
     coder_tool_map = {
         "list_files": list_files,
         "read_file": read_file,
@@ -466,18 +465,16 @@ def ask_coder(task_description: str, selected_model=None, user_id=None, conversa
         "delete_lines_in_file": delete_lines_in_file,
     }
 
-    # Start the conversation with the initial task
     messages = [{"role": "user", "content": f"The user's request is: {task_description}"}]
     full_transcript = [f"User's Task: {task_description}"]
+    modified_files = set()
     max_iterations = 10
 
     for i in range(max_iterations):
         print(f"DEBUG: Coder Agent - Iteration {i+1}")
-
         try:
             ollama_host = current_app.config['OLLAMA_HOST']
             model = selected_model or 'default_model_name'
-
             response = requests.post(
                 f"{ollama_host}/api/chat",
                 json={
@@ -488,19 +485,16 @@ def ask_coder(task_description: str, selected_model=None, user_id=None, conversa
                 timeout=120
             )
             response.raise_for_status()
-
             agent_response_content = response.json().get("message", {}).get("content", "").strip()
             print(f"DEBUG: Coder Agent Raw Response: {agent_response_content}")
             messages.append({"role": "assistant", "content": agent_response_content})
             full_transcript.append(f"Coder Agent Thought Process:\n{agent_response_content}")
 
-            # Check for completion signal
             if agent_response_content == "TASK_COMPLETE":
                 print("DEBUG: Coder Agent signaled task completion.")
                 break
 
             tool_matches = re.findall(r'```json\s*(\{[\s\S]*?\})\s*```', agent_response_content)
-
             if not tool_matches:
                 print("DEBUG: Coder Agent did not call a tool. Breaking loop.")
                 full_transcript.append("Agent did not call a tool, ending interaction.")
@@ -513,11 +507,12 @@ def ask_coder(task_description: str, selected_model=None, user_id=None, conversa
                     tool_name = tool_call.get("tool")
                     params = tool_call.get("parameters", {})
 
+                    if 'path' in params:
+                        modified_files.add(params['path'])
+
                     if tool_name in coder_tool_map:
-                        # Inject context into the tool parameters
                         params['user_id'] = user_id
                         params['conversation_id'] = conversation_id
-
                         tool_func = coder_tool_map[tool_name]
                         result = tool_func(**params)
                         output = f"--- TOOL RESPONSE ---\n{result}\n---"
@@ -527,13 +522,11 @@ def ask_coder(task_description: str, selected_model=None, user_id=None, conversa
                         error_msg = f"Error: Coder agent tried to call unknown tool '{tool_name}'."
                         tool_outputs.append(error_msg)
                         print(f"ERROR: {error_msg}")
-
                 except Exception as e:
                     error_msg = f"Error processing tool call: {str(e)}"
                     tool_outputs.append(error_msg)
                     print(f"ERROR: {error_msg}")
 
-            # Add tool outputs back to the message history for the next turn
             consolidated_output = "\n".join(tool_outputs)
             messages.append({"role": "user", "content": consolidated_output})
             full_transcript.append(f"Tool Execution Results:\n{consolidated_output}")
@@ -542,13 +535,14 @@ def ask_coder(task_description: str, selected_model=None, user_id=None, conversa
             error_message = f"Error during Coder Agent execution: {e}"
             print(f"ERROR: {error_message}")
             full_transcript.append(f"CRITICAL ERROR: {error_message}")
-            break # Exit loop on critical error
+            break
 
-    final_report = (
-        "The Coder Agent has completed its task. Here is the summary of its actions:\n\n"
-        + "\n\n".join(full_transcript)
-    )
-    return final_report
+    summary = "The Coder Agent has completed its task. Here is the summary of its actions:\n\n" + "\n\n".join(full_transcript)
+
+    return {
+        "summary": summary,
+        "modified_files": list(modified_files)
+    }
 
 
 # --- V2.0: Specialist Agent Delegation Tools ---
