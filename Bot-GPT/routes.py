@@ -42,7 +42,6 @@ when the step is complete.
 
 **Your Specialist Agents & Tools:**
 
-- `ask_memory_agent(task: str)` — For saving, updating, or recalling personal info and conversation summaries.
 - `ask_inventory_agent(task: str)` — For pantry, grocery lists, inventory, and recipe-related tasks.
 - `ask_api_manager(task: str)` — For real-time external services or API data (weather, prices, GIFs, etc.).
 - `ask_agent_manager(task: str)` — For adding, removing, or managing other AI agents.
@@ -378,7 +377,6 @@ def chat_proxy():
 
                             tool_map = {
                                 # Specialist Agents
-                                "ask_memory_agent": ask_memory_agent,
                                 # "ask_inventory_agent": ask_inventory_agent, # Will be added later
                                 # "ask_api_manager": ask_api_manager,       # Will be added later
                                 # "ask_agent_manager": ask_agent_manager,     # Will be added later
@@ -428,17 +426,29 @@ def chat_proxy():
                                 # --- V2.1: Agent Status Update ---
                                 if tool_name == 'ask_coder' and isinstance(tool_result, dict):
                                     summary = tool_result.get('summary', '')
-                                    thoughts = re.findall(r'<think>\s*([\s\S]*?)\s*</think>', summary)
-                                    for i, thought in enumerate(thoughts):
-                                        # Only show the first 3 thoughts to avoid being too spammy
-                                        if i < 3:
-                                            yield f"data: {json.dumps({'type': 'agent_thought', 'thought': thought.strip()})}\n\n"
-                                            time.sleep(1) # Small delay for readability
 
-                                    # V2.2: After a successful code write, tell the frontend to refresh the file list
+                                    # V2.3: Extract thoughts and tool calls to stream to the frontend
+                                    # This regex will find both <think> blocks and ```json blocks
+                                    actions = re.findall(r'(<think>[\s\S]*?</think>|```json[\s\S]*?```)', summary)
+
+                                    for i, action in enumerate(actions):
+                                        if i > 5: # Limit the number of streamed events
+                                            break
+                                        if action.startswith('<think>'):
+                                            thought = action.replace('<think>', '').replace('</think>', '').strip()
+                                            yield f"data: {json.dumps({'type': 'agent_thought', 'thought': thought})}\n\n"
+                                        else:
+                                            try:
+                                                tool_call = json.loads(action.replace('```json', '').replace('```', ''))
+                                                tool_name_inner = tool_call.get('tool')
+                                                yield f"data: {json.dumps({'type': 'agent_tool_start', 'tool': tool_name_inner})}\n\n"
+                                            except json.JSONDecodeError:
+                                                continue # Ignore malformed JSON
+                                        time.sleep(1.5)
+
+                                    # After streaming thoughts/tools, tell the frontend to refresh the file list
                                     if tool_result.get('modified_files'):
                                         yield f"data: {json.dumps({'type': 'refresh_files'})}\n\n"
-
 
                                 if tool_name.startswith('ask_'):
                                     yield f"data: {json.dumps({'type': 'agent_end'})}\n\n"

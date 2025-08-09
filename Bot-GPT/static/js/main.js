@@ -709,16 +709,26 @@ function sendMessage() {
                         addConversationToList(data.id, "New Chat");
                     }
                     break;
-                case 'agent_start':
+                case 'agent_start': {
                     const statusBar = document.getElementById('agent-status-bar');
-                    const agentName = data.agent.replace('ask_', '').replace('_agent', '');
-                    statusBar.innerHTML = `<strong>Delegating to ${agentName} agent...</strong>`;
+                    const agentName = data.agent.replace('ask_', '').replace(/_/g, ' ');
+                    const icon = getAgentIcon(agentName);
+                    statusBar.innerHTML = `${icon} <strong>Delegating to ${agentName}...</strong>`;
                     statusBar.classList.add('active');
                     break;
-                case 'agent_thought':
-                    const thoughtBar = document.getElementById('agent-status-bar');
-                    thoughtBar.innerHTML = `<strong>Coder Agent:</strong> <em>"${data.thought}"</em>`;
+                }
+                case 'agent_thought': {
+                    const statusBar = document.getElementById('agent-status-bar');
+                    const icon = getAgentIcon('coder agent'); // Assume thoughts come from coder for now
+                    statusBar.innerHTML = `${icon} <em>"${data.thought}"</em>`;
                     break;
+                }
+                case 'agent_tool_start': {
+                    const statusBar = document.getElementById('agent-status-bar');
+                     const icon = getAgentIcon('coder agent'); // Assume tools come from coder for now
+                    statusBar.innerHTML = `${icon} <strong>Using tool:</strong> \`${data.tool}\``;
+                    break;
+                }
                 case 'agent_end':
                     const endBar = document.getElementById('agent-status-bar');
                     endBar.classList.remove('active');
@@ -816,6 +826,20 @@ function sendMessage() {
         setAgentRunning(false);
         eventSource.close();
     };
+}
+
+function getAgentIcon(agentName) {
+    const icons = {
+        'coder agent': `<svg class="w-5 h-5 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l-4 4-4-4 4-4"></path></svg>`,
+        'debugger': `<svg class="w-5 h-5 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 8v8m-3-5v3m-3-1v1m-4-3h12a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h1m6 0h1a2 2 0 012 2v2"></path></svg>`,
+        'default': `<svg class="w-5 h-5 inline-block mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 16v-2m8-6h-2M4 12H2m15.364 6.364l-1.414-1.414M6.05 6.05L4.636 4.636m12.728 0l-1.414 1.414M6.05 17.95l-1.414 1.414"></path></svg>`
+    };
+    for (const key in icons) {
+        if (agentName.includes(key)) {
+            return icons[key];
+        }
+    }
+    return icons['default'];
 }
 
 function createBotMessageContainer(animate = true) {
