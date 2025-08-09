@@ -1,18 +1,16 @@
-import os
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash
-import getpass
 
-# --- Configuration ---
-# This script needs to be in the same directory as your main app.py
-# so it can find the users.db file.
+# This script should be run from the root of the Bot-GPT project.
 
 # Create a minimal Flask app context to interact with the database
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
+# Point to the correct database path inside the instance folder
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///instance/users.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
+
 
 # --- Database Model (Must match the one in your main app) ---
 class User(db.Model):
@@ -22,6 +20,7 @@ class User(db.Model):
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
+
 
 # --- Tool Functions ---
 
@@ -35,6 +34,7 @@ def list_users():
         print(f"ID: {user.id}, Username: {user.username}")
     print("-----------------\n")
 
+
 def add_user():
     """Adds a new user to the database."""
     print("\n--- Add New User ---")
@@ -45,7 +45,7 @@ def add_user():
     if User.query.filter_by(username=username).first():
         print("Error: Username already exists.")
         return
-    
+
     print("\n[WARNING] Password will be visible as you type.")
     password = input("Enter password: ")
     password_confirm = input("Confirm password: ")
@@ -60,6 +60,7 @@ def add_user():
     db.session.commit()
     print(f"Successfully added user '{username}'.")
     print("--------------------\n")
+
 
 def update_password():
     """Updates an existing user's password."""
@@ -83,6 +84,7 @@ def update_password():
     print(f"Successfully updated password for '{username}'.")
     print("-----------------------\n")
 
+
 def delete_user():
     """Deletes a user from the database."""
     print("\n--- Delete User ---")
@@ -91,8 +93,11 @@ def delete_user():
     if not user:
         print("Error: User not found.")
         return
-        
-    confirm = input(f"Are you sure you want to delete '{username}'? This cannot be undone. (y/n): ").lower()
+
+    confirm = input(
+        f"Are you sure you want to delete '{username}'? "
+        "This cannot be undone. (y/n): "
+    ).lower()
     if confirm == 'y':
         db.session.delete(user)
         db.session.commit()
@@ -105,7 +110,7 @@ def delete_user():
 def main_menu():
     """Displays the main menu and handles user input."""
     while True:
-        print("User Management Tool")
+        print("\n--- User Management Tool ---")
         print("1. List Users")
         print("2. Add User")
         print("3. Update User Password")
@@ -124,7 +129,8 @@ def main_menu():
         elif choice == '5':
             break
         else:
-            print("Invalid choice. Please try again.\n")
+            print("Invalid choice. Please try again.")
+
 
 if __name__ == '__main__':
     with app.app_context():

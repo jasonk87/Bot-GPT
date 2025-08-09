@@ -1,0 +1,15 @@
+     #####     
+    ### ###    
+   ###   ###   
+  ###     ###  
+ #####   ##### 
+  ###     ###  
+   ###   ###   
+    ### ###    
+     #####     
+
+[Legend]
+# = Block (wood/stone)
+_ = Empty space
+D = Door
+W = Window
