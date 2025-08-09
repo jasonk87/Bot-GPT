@@ -512,10 +512,11 @@ async function openFileCanvas(path) {
 }
 
 function closeFileCanvas() {
-    if (editor) {
+    // V2.2 Bug Fix: Add a more robust check to prevent errors when closing an already-closed canvas.
+    if (editor && typeof editor.toTextArea === 'function') {
         editor.toTextArea();
-        editor = null;
     }
+    editor = null; // Always nullify the editor
     canvasColumn.classList.add('hidden');
     canvasColumn.classList.remove('flex');
     chatColumn.classList.remove('md:w-1/2', 'hidden');
@@ -523,10 +524,11 @@ function closeFileCanvas() {
 }
 
 function initializeEditor(content, mode) {
-    if (editor) {
+    // V2.2 Bug Fix: Add a more robust check
+    if (editor && typeof editor.toTextArea === 'function') {
         editor.toTextArea();
-        editor = null;
     }
+    editor = null;
     fileViewerEl.innerHTML = ''; // Clear previous editor
     editor = CodeMirror(fileViewerEl, {
         value: content,
@@ -721,6 +723,9 @@ function sendMessage() {
                     const endBar = document.getElementById('agent-status-bar');
                     endBar.classList.remove('active');
                     endBar.innerHTML = '';
+                    break;
+                case 'refresh_files':
+                    populateFileExplorer();
                     break;
                 case 'open_canvas':
                     if (isCanvasMode) {
@@ -1065,6 +1070,9 @@ async function openShareModal(conversationId) {
 
 async function loadConversation(id) {
     try {
+        // V2.2 Bug Fix: Ensure canvas is closed when switching conversations
+        closeFileCanvas();
+
         const response = await fetch(`${window.location.origin}${API_BASE}/conversation/${id}`);
         const data = await response.json();
         currentConversationId = id;

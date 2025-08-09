@@ -37,7 +37,7 @@ when the step is complete.
 4. **COMPLETE & ANTICIPATE:** If a request implies related needs (e.g., travel plan → weather + safety), plan to cover them.
 5. **VISUAL WHEN POSSIBLE:** For complex objects, layouts, or processes, use ASCII diagrams.
 6. **STRICT FORMAT:** Your entire response must be a `<think>` block followed by one or more ```json ... ``` tool calls.
-7. **HANDLE CODER OUTPUT:** The `ask_coder` tool returns a JSON object with a `summary` and a `modified_files` list. After calling it, you **MUST** first check if `modified_files` is empty. If not, check the `CONTEXT` to see if Canvas Mode is ON. If Canvas Mode is ON, use `open_in_canvas` on the first file in the list. If Canvas Mode is OFF, use `read_file` on the first file and present the code to the user conversationally. Always include a brief, friendly summary of the work done from the `summary` field.
+7. **HANDLE CODER OUTPUT:** The `ask_coder` tool returns a JSON object with a `summary` and a `modified_files` list. After calling it, you **MUST** check if `modified_files` is empty. If not, check the `CONTEXT` to see if Canvas Mode is ON. If Canvas Mode is ON, you **MUST** use the `open_in_canvas` tool. If Canvas Mode is OFF, you **MUST** use the `read_file` tool and present the code to the user. **Your task is not complete until you have shown the user the file.** Always include a brief, friendly summary of the work done from the `summary` field.
 8. **BE CONVERSATIONAL:** When a tool or agent finishes, do not just state the raw result. Summarize what was done in a friendly, conversational tone. For example, instead of just dumping file content, say "I've created the file for you. Here are the contents:"
 
 **Your Specialist Agents & Tools:**
@@ -434,6 +434,11 @@ def chat_proxy():
                                         if i < 3:
                                             yield f"data: {json.dumps({'type': 'agent_thought', 'thought': thought.strip()})}\n\n"
                                             time.sleep(1) # Small delay for readability
+
+                                    # V2.2: After a successful code write, tell the frontend to refresh the file list
+                                    if tool_result.get('modified_files'):
+                                        yield f"data: {json.dumps({'type': 'refresh_files'})}\n\n"
+
 
                                 if tool_name.startswith('ask_'):
                                     yield f"data: {json.dumps({'type': 'agent_end'})}\n\n"
