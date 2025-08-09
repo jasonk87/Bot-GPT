@@ -1,6 +1,7 @@
 import os
 import subprocess
 import re
+import json
 import shutil  # Added this import
 from flask import current_app
 from models import Conversation
@@ -382,37 +383,173 @@ def ask_debugger(failed_command, error_message, selected_model=None, user_id=Non
         return f"Error calling debugger agent: {e}"
 
 
-def ask_coder(task_description, filename, selected_model=None, user_id=None, conversation_id=None):
-    """Delegates a coding task to a specialist agent and saves the code to a file."""
-    coder_prompt = (
-        "Write Python code for the following task. Your code should be "
-        "clean, well-formatted, and include comments where necessary. "
-        "Return ONLY the raw code.\n"
-        f"Task: {task_description}\nCode:"
-    )
-    try:
-        current_model = selected_model or 'default_model_name'
-        response = requests.post(
-            f"{current_app.config['OLLAMA_HOST']}/api/chat",
-            json={
-                "model": current_model,
-                "messages": [{"role": "user", "content": coder_prompt}],
-                "stream": False
-            },
-            timeout=300
-        )
-        response.raise_for_status()
-        content = response.json().get("message", {}).get("content", "")
-        code_match = re.search(r'```(?:\w*\n)?([\s\S]+)```', content)
-        if code_match:
-            code = code_match.group(1).strip()
-        else:
-            code = content.strip()
+# --- V2.0: The Specialist System Prompt for the Coder Agent ---
+CODER_AGENT_PROMPT = """
+You are a master programmer, a specialist Coder Agent. Your **ONLY** function
+is to complete the user's coding-related request by calling tools to modify the
+file system. You are a key part of a larger team, and your project manager will
+handle all communication with the user.
 
-        write_file(filename, code, conversation_id, user_id)
-        return f"Code saved to {filename}"
-    except Exception as e:
-        return f"Error calling Coder agent: {e}"
+**CRITICAL RULES:**
+1.  **ANALYZE FIRST:** Start by using `list_files` or `read_file` to understand the existing code. Never write code without context.
+2.  **SURGICAL CHANGES:** Use the specialized tools (`search_and_replace_in_file`, `insert_content_at_line`, `delete_lines_in_file`) for small edits. Only use `write_file` for new files or major rewrites.
+3.  **THINK & EXECUTE:** You **MUST** use a `<think>` block to explain your plan before every tool call. Your thought process is as important as the code itself.
+4.  **STRICT OUTPUT FORMAT:** Your entire response **MUST** be a `<think>` block followed by one or more ```json ... ``` blocks for each tool you need to call.
+5.  **FINISH THE JOB:** Continue calling tools until the user's request is fully complete. If you have finished the task, your **ONLY** response must be the exact text: `TASK_COMPLETE`
+6.  **NO CONVERSATION:** Do not add conversational text or summaries. The Project Manager will do that. Your only outputs are `<think>` blocks, ```json``` tool calls, or `TASK_COMPLETE`.
+
+**Your Private Tools:**
+- `list_files(path: str)`
+- `read_file(path: str)`
+- `write_file(path: str, content: str)`
+- `execute_python(path: str)`
+- `search_and_replace_in_file(path: str, search_pattern: str, replace_string: str)`
+- `insert_content_at_line(path: str, line_number: int, content: str)`
+- `delete_lines_in_file(path: str, start_line: int, end_line: int)`
+
+**EXAMPLE: Add a function to an existing file**
+User Request: "Add a function to `utils.py` that calculates the square of a number."
+<think>
+First, I need to see what's already in `utils.py`. I'll use `read_file` to inspect its contents.
+</think>
+```json
+{
+  "tool": "read_file",
+  "parameters": {
+    "path": "utils.py"
+  }
+}
+```
+--- TOOL RESPONSE ---
+def add(a, b):
+    return a + b
+---
+<think>
+Okay, the file exists and has an `add` function. I will append a new `square` function to the end of the file. Since I'm adding to the end, I can just read the whole file and then use `write_file` to overwrite it with the new content. A more surgical approach would be to use `insert_content_at_line`, but this is also fine.
+</think>
+```json
+{
+  "tool": "write_file",
+  "parameters": {
+    "path": "utils.py",
+    "content": "def add(a, b):\n    return a + b\n\ndef square(n):\n    \"\"\"Calculates the square of a number.\"\"\"\n    return n * n\n"
+  }
+}
+```
+--- TOOL RESPONSE ---
+File 'utils.py' written successfully.
+---
+<think>
+The user's request was to add a function. I have added the function to the file. The task is now complete.
+</think>
+TASK_COMPLETE
+"""
+
+
+def ask_coder(task_description: str, selected_model=None, user_id=None, conversation_id=None):
+    """
+    Delegates a coding task to a specialist agent with its own ReAct loop.
+    This function will manage the entire lifecycle of the coding task, from
+    initial analysis to final implementation, by repeatedly calling the LLM
+    and executing the tools it requests.
+    """
+    print(f"DEBUG: Coder Agent started for user {user_id} with task: '{task_description}'")
+
+    # The Coder Agent has its own, private toolset
+    coder_tool_map = {
+        "list_files": list_files,
+        "read_file": read_file,
+        "write_file": write_file,
+        "execute_python": execute_python,
+        "search_and_replace_in_file": search_and_replace_in_file,
+        "insert_content_at_line": insert_content_at_line,
+        "delete_lines_in_file": delete_lines_in_file,
+    }
+
+    # Start the conversation with the initial task
+    messages = [{"role": "user", "content": f"The user's request is: {task_description}"}]
+    full_transcript = [f"User's Task: {task_description}"]
+    max_iterations = 10
+
+    for i in range(max_iterations):
+        print(f"DEBUG: Coder Agent - Iteration {i+1}")
+
+        try:
+            ollama_host = current_app.config['OLLAMA_HOST']
+            model = selected_model or 'default_model_name'
+
+            response = requests.post(
+                f"{ollama_host}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [{"role": "system", "content": CODER_AGENT_PROMPT}] + messages,
+                    "stream": False
+                },
+                timeout=120
+            )
+            response.raise_for_status()
+
+            agent_response_content = response.json().get("message", {}).get("content", "").strip()
+            print(f"DEBUG: Coder Agent Raw Response: {agent_response_content}")
+            messages.append({"role": "assistant", "content": agent_response_content})
+            full_transcript.append(f"Coder Agent Thought Process:\n{agent_response_content}")
+
+            # Check for completion signal
+            if agent_response_content == "TASK_COMPLETE":
+                print("DEBUG: Coder Agent signaled task completion.")
+                break
+
+            tool_matches = re.findall(r'```json\s*(\{[\s\S]*?\})\s*```', agent_response_content)
+
+            if not tool_matches:
+                print("DEBUG: Coder Agent did not call a tool. Breaking loop.")
+                full_transcript.append("Agent did not call a tool, ending interaction.")
+                break
+
+            tool_outputs = []
+            for tool_call_str in tool_matches:
+                try:
+                    tool_call = json.loads(tool_call_str)
+                    tool_name = tool_call.get("tool")
+                    params = tool_call.get("parameters", {})
+
+                    if tool_name in coder_tool_map:
+                        # Inject context into the tool parameters
+                        params['user_id'] = user_id
+                        params['conversation_id'] = conversation_id
+
+                        tool_func = coder_tool_map[tool_name]
+                        result = tool_func(**params)
+                        output = f"--- TOOL RESPONSE ---\n{result}\n---"
+                        tool_outputs.append(output)
+                        print(f"DEBUG: Coder Agent executed '{tool_name}' with result: {result}")
+                    else:
+                        error_msg = f"Error: Coder agent tried to call unknown tool '{tool_name}'."
+                        tool_outputs.append(error_msg)
+                        print(f"ERROR: {error_msg}")
+
+                except Exception as e:
+                    error_msg = f"Error processing tool call: {str(e)}"
+                    tool_outputs.append(error_msg)
+                    print(f"ERROR: {error_msg}")
+
+            # Add tool outputs back to the message history for the next turn
+            consolidated_output = "\n".join(tool_outputs)
+            messages.append({"role": "user", "content": consolidated_output})
+            full_transcript.append(f"Tool Execution Results:\n{consolidated_output}")
+
+        except Exception as e:
+            error_message = f"Error during Coder Agent execution: {e}"
+            print(f"ERROR: {error_message}")
+            full_transcript.append(f"CRITICAL ERROR: {error_message}")
+            break # Exit loop on critical error
+
+    final_report = (
+        "The Coder Agent has completed its task. Here is the summary of its actions:\n\n"
+        + "\n\n".join(full_transcript)
+    )
+    return final_report
+
 
 # --- V2.0: Specialist Agent Delegation Tools ---
 
