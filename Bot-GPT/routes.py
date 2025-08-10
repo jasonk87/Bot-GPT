@@ -85,7 +85,7 @@ This is a complex coding task. I must delegate this to the `ask_coder` agent.
   }
 }
 ```
-""
+"""
 
 PERSONAS = {
     "default": {
@@ -418,7 +418,23 @@ def chat_proxy():
 
 "
                                 
-                                tool_result = tool_func(**raw_params)
+                                if tool_name == "ask_coder":
+                                    workspace_path = get_workspace_path(conversation.id, conversation.owner_id)
+                                    coder_event_generator = coder_agent.execute(
+                                        task_description=raw_params.get("task_description", ""),
+                                        workspace_path=workspace_path
+                                    )
+                                    tool_result = None
+                                    for event in coder_event_generator:
+                                        # Add a prefix to the event type to namespace it for the frontend
+                                        event['type'] = f"coder_{event['type']}"
+                                        yield f"data: {json.dumps(event)}
+
+"
+                                        if event['type'] == 'coder_final_result':
+                                            tool_result = event # Capture the final result
+                                else:
+                                    tool_result = tool_func(**raw_params)
 
                                 print(f"\n[DEBUG] TOOL EXECUTION RESULT")
                                 print(f"  - Tool: {tool_name}")
@@ -434,23 +450,21 @@ def chat_proxy():
 "
                                         tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
 
-                                    elif tool_result.get('type') == 'final_result': # This handles the Coder's dictionary
+                                    # This now handles the final_result from the Coder Agent
+                                    elif tool_result.get('type') == 'coder_final_result':
+                                        # Reformat the Coder's result to fit the expected PM format
                                         coder_response_for_pm = {
                                             "summary": tool_result.get('summary'),
                                             "modified_files": tool_result.get('modified_files', [])
                                         }
-                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(coder_response_for_pm)}
----"
+                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(coder_response_for_pm)}\n---"
                                         
                                     elif 'modified_files' in tool_result:
-                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(tool_result)}
----"
+                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(tool_result)}\n---"
                                     else:
-                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(tool_result)}
----"
+                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(tool_result)}\n---"
                                 else:
-                                    tool_response_message = f"TOOL RESPONSE:\n---\n{str(tool_result)}
----"
+                                    tool_response_message = f"TOOL RESPONSE:\n---\n{str(tool_result)}\n---"
 
                                 messages.append({"role": "user", "content": tool_response_message})
                                 yield f"data: {json.dumps({'type': 'tool_result', 'result': tool_result})}

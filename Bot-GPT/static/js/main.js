@@ -525,9 +525,55 @@ function sendMessage() {
 
                 case 'tool_call':
                     showToolCall(currentAgentBubble, data.name, data.params);
+                    if (data.name === 'ask_coder') {
+                        const iconContainer = currentAgentBubble.querySelector('.bubble-icon-container');
+                        if (iconContainer) {
+                            iconContainer.innerHTML = document.getElementById('coder-icon').outerHTML;
+                        }
+                        const coderActivity = currentAgentBubble.querySelector('.coder-activity');
+                        if (coderActivity) {
+                            coderActivity.style.display = 'block';
+                        }
+                    }
+                    break;
+                case 'coder_thought':
+                case 'coder_status':
+                case 'coder_tool_call':
+                case 'coder_tool_result':
+                    if (currentAgentBubble) {
+                        const streamContainer = currentAgentBubble.querySelector('.coder-activity-stream');
+                        if (streamContainer) {
+                            const eventElement = document.createElement('div');
+                            eventElement.className = 'coder-thought p-2 border-b border-gray-700'; // Using same style for all for now
+
+                            let content = '';
+                            if(data.type === 'coder_thought') {
+                                content = `<strong>Thought:</strong> ${data.content}`;
+                            } else if (data.type === 'coder_status') {
+                                content = `<em>Status: ${data.status}</em>`;
+                            } else if (data.type === 'coder_tool_call') {
+                                content = `<strong>Tool Call:</strong> ${data.name}<pre class="bg-gray-900 p-1 rounded mt-1 text-xs">${JSON.stringify(data.params, null, 2)}</pre>`;
+                            } else if (data.type === 'coder_tool_result') {
+                                let result_str = data.result;
+                                if (typeof result_str !== 'string') {
+                                    result_str = JSON.stringify(result_str, null, 2);
+                                }
+                                content = `<strong>Tool Result:</strong><pre class="bg-gray-900 p-1 rounded mt-1 text-xs">${result_str}</pre>`;
+                            }
+                            eventElement.innerHTML = content;
+                            streamContainer.appendChild(eventElement);
+                            streamContainer.scrollTop = streamContainer.scrollHeight;
+                        }
+                    }
                     break;
                 case 'tool_result':
                     console.log("Tool result received, agent is processing...");
+                     if (currentAgentBubble) {
+                        const iconContainer = currentAgentBubble.querySelector('.bubble-icon-container');
+                        if (iconContainer) {
+                            iconContainer.innerHTML = document.getElementById('assistant-icon').outerHTML;
+                        }
+                    }
                     break;
                 case 'final_answer':
                     finalAnswerSent = true; // Signal that the final answer was received
@@ -658,10 +704,8 @@ function createBotMessageContainer(animate = true) {
     }
     
     botMessageWrapper.innerHTML = `
-        <div class="w-8 h-8 flex-shrink-0 mr-2 text-gray-400">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-full h-full">
-                <path d="M12 2a2 2 0 0 0-2 2v2h4V4a2 2 0 0 0-2-2zM6 8v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V8H6zM4 8c-1.1 0-2 .9-2 2v8a2 2 0 0 0 2 2h2v-2H4V10h2V8H4zm16 0h-2v2h2v8h-2v2h2a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2zM9 12a1 1 0 1 1-2 0 1 1 0 0 1 2 0zm6 0a1 1 0 1 1-2 0 1 1 0 0 1 2 0z" />
-            </svg>
+        <div class="w-8 h-8 flex-shrink-0 mr-2 text-gray-400 bubble-icon-container">
+            ${document.getElementById('assistant-icon').outerHTML}
         </div>
         <div class="flex-1 bot-bubble">
             <div class="thinking-process-container" style="display: none;">
@@ -670,6 +714,16 @@ function createBotMessageContainer(animate = true) {
                     <span>Thinking...</span>
                 </div>
                 <div class="thinking-content prose prose-invert max-w-none"></div>
+            </div>
+            <div class="coder-activity" style="display: none;">
+                <div class="coder-activity-header">
+                    <svg class="w-5 h-5 mr-2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                        <path fill-rule="evenodd" d="M10.5 4.5a.75.75 0 0 0 0 1.5h3a.75.75 0 0 0 0-1.5h-3ZM10.5 18a.75.75 0 0 0 0 1.5h3a.75.75 0 0 0 0-1.5h-3Z" clip-rule="evenodd" />
+                        <path fill-rule="evenodd" d="M8.663 3.603a.75.75 0 0 0-1.06 1.06l-4.5 4.5a.75.75 0 0 0 0 1.06l4.5 4.5a.75.75 0 0 0 1.06-1.06L4.72 10l3.943-3.943a.75.75 0 0 0-1.06-1.06Zm6.674 0a.75.75 0 0 1 1.06 1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 1 1-1.06-1.06L19.28 10l-3.943-3.943a.75.75 0 0 1 1.06-1.06Z" clip-rule="evenodd" />
+                    </svg>
+                    <span>Coder Agent Activity</span>
+                </div>
+                <div class="coder-activity-stream scrollable-content"></div>
             </div>
             <div class="plan-step-container" style="display: none;">
                 <div class="plan-step-header">
