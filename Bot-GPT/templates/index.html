@@ -177,6 +177,51 @@
             0%, 80%, 100% { transform: scale(0); }
             40% { transform: scale(1.0); }
         }
+
+        /* Toast Notifications */
+        #toast-container {
+            position: fixed;
+            bottom: 1.25rem;
+            right: 1.25rem;
+            z-index: 50;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .toast {
+            background-color: #2d3748;
+            color: white;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            transition: all 0.3s ease-in-out;
+            opacity: 0;
+            transform: translateX(100%);
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        .toast.error {
+            background-color: #c53030;
+        }
+
+        /* Modal Transitions */
+        .modal {
+            transition: opacity 0.3s ease-in-out;
+        }
+
+        @keyframes pulse-bg {
+            0% { background-color: #2563eb; } /* blue-600 */
+            50% { background-color: #3b82f6; } /* blue-500 */
+            100% { background-color: #2563eb; } /* blue-600 */
+        }
+        .pulse-once {
+            animation: pulse-bg 1s ease-in-out;
+        }
     </style>
 </head>
 <body class="bg-gray-800 text-gray-200">
@@ -315,7 +360,7 @@
         </div>
     </div>
     
-    <div id="delete-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+    <div id="delete-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50 modal">
         <div class="bg-gray-800 rounded-lg p-6 shadow-xl">
             <h3 class="text-lg font-bold mb-4">Confirm Deletion</h3>
             <p id="delete-modal-text" class="mb-6"></p>
@@ -327,7 +372,7 @@
     </div>
 
     <!-- Share Modal -->
-    <div id="share-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+    <div id="share-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50 modal">
         <div class="bg-gray-800 rounded-lg p-6 shadow-xl w-full max-w-md">
             <h3 class="text-lg font-bold mb-4">Share Conversation</h3>
             <div id="share-user-list" class="scrollable-content max-h-60 overflow-y-auto"></div>
@@ -338,7 +383,7 @@
     </div>
 
     <!-- Upload Modal -->
-    <div id="upload-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+    <div id="upload-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50 modal">
         <div class="bg-gray-800 rounded-lg p-6 shadow-xl w-full max-w-lg">
             <h3 class="text-lg font-bold mb-4">Upload Files and Folders</h3>
             <form id="upload-form">
@@ -362,7 +407,7 @@
     </div>
 
     <!-- Settings Modal -->
-    <div id="settings-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+    <div id="settings-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50 modal">
         <div class="bg-gray-800 rounded-lg p-6 shadow-xl w-full max-w-lg">
             <h3 class="text-lg font-bold mb-4">Agent Settings</h3>
             <form id="settings-form">
@@ -381,6 +426,9 @@
             </form>
         </div>
     </div>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed bottom-5 right-5 z-50 space-y-2"></div>
 
     <script type="module" src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>

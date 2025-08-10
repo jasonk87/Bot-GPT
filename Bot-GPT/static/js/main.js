@@ -344,8 +344,8 @@ function attachEventListeners() {
          elements.sidePanel.classList.add('-translate-x-full');
          elements.overlay.classList.add('hidden');
     });
-    elements.uploadBtn.addEventListener('click', () => elements.uploadModal.classList.remove('hidden'));
-    elements.cancelUploadBtn.addEventListener('click', () => elements.uploadModal.classList.add('hidden'));
+    elements.uploadBtn.addEventListener('click', () => openModal(elements.uploadModal));
+    elements.cancelUploadBtn.addEventListener('click', () => closeModal(elements.uploadModal));
     elements.dropZone.addEventListener('click', () => elements.fileInput.click());
     elements.dropZone.addEventListener('dragover', (e) => { e.preventDefault(); elements.dropZone.classList.add('drag-over'); });
     elements.dropZone.addEventListener('dragleave', () => elements.dropZone.classList.remove('drag-over'));
@@ -358,9 +358,9 @@ function attachEventListeners() {
     elements.fileInput.addEventListener('change', updateFileList);
     elements.uploadForm.addEventListener('submit', handleFileUpload);
     elements.settingsBtn.addEventListener('click', openSettingsModal);
-    elements.cancelSettingsBtn.addEventListener('click', () => elements.settingsModal.classList.add('hidden'));
+    elements.cancelSettingsBtn.addEventListener('click', () => closeModal(elements.settingsModal));
     elements.settingsForm.addEventListener('submit', handleSaveSettings);
-    elements.cancelShareBtn.addEventListener('click', () => elements.shareModal.classList.add('hidden'));
+    elements.cancelShareBtn.addEventListener('click', () => closeModal(elements.shareModal));
     
     // --- THIS IS THE FIX for the canvas toggle button ---
     elements.canvasToggleBtn.addEventListener('click', () => {
@@ -577,6 +577,11 @@ function startNewChat() {
 
 async function loadConversation(id) {
     if (id === currentConversationId || isAgentRunning) return;
+    elements.chatContainer.innerHTML = `
+        <div id="loading-spinner" class="flex justify-center items-center h-full">
+            <div class="animate-spin rounded-full h-32 w-32 border-t-2 border-b-2 border-blue-500"></div>
+        </div>
+    `;
     try {
         const response = await getConversation(id);
         const data = await response.json();
@@ -613,6 +618,7 @@ async function loadConversation(id) {
         await populateConversations();
     } catch (error) {
         console.error("Error loading conversation:", error);
+        elements.chatContainer.innerHTML = '<p class="text-red-400 p-4">Error loading conversation.</p>';
     }
 }
 
@@ -644,11 +650,12 @@ function appendMessage(text, sender, animate = true) {
 
 function createBotMessageContainer(animate = true) {
     const botMessageWrapper = document.createElement('div');
-    let classes = 'flex max-w-3xl w-full items-start self-start mx-auto';
+    botMessageWrapper.className = 'flex max-w-3xl w-full items-start self-start mx-auto';
     if (animate) {
-        classes += ' newly-added';
+        setTimeout(() => {
+            botMessageWrapper.classList.add('newly-added');
+        }, 100);
     }
-    botMessageWrapper.className = classes;
     
     botMessageWrapper.innerHTML = `
         <div class="w-8 h-8 flex-shrink-0 mr-2 text-gray-400">
@@ -935,6 +942,40 @@ async function loadUserSettings() {
     }
 }
 
+// --- UI Helper Functions ---
+
+function showToast(message, type = 'success') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+
+    // Animate in
+    setTimeout(() => {
+        toast.classList.add('show');
+    }, 100);
+
+    // Animate out and remove
+    setTimeout(() => {
+        toast.classList.remove('show');
+        toast.addEventListener('transitionend', () => {
+            toast.remove();
+        });
+    }, 3000);
+}
+
+function openModal(modalElement) {
+    modalElement.classList.remove('hidden');
+    setTimeout(() => modalElement.style.opacity = 1, 10);
+}
+
+function closeModal(modalElement) {
+    modalElement.style.opacity = 0;
+    setTimeout(() => modalElement.classList.add('hidden'), 300);
+}
+
+
 // ... the rest of the helper and modal functions ...
 
 async function openFileCanvas(path) {
@@ -960,7 +1001,7 @@ async function openFileCanvas(path) {
 
         initializeEditor(data.content, mode);
     } catch (error) {
-        alert(`Error opening file: ${error.message}`);
+        showToast(`Error opening file: ${error.message}`, 'error');
     }
 }
 
@@ -984,7 +1025,7 @@ function closeFileCanvas() {
 
 async function confirmDeletion(idOrPath, itemType) {
     elements.deleteModalText.textContent = `Are you sure you want to delete this ${itemType}: ${idOrPath}?`;
-    elements.deleteModal.classList.remove('hidden');
+    openModal(elements.deleteModal);
     const confirmed = await new Promise(resolve => { deleteResolver = resolve; });
 
     if (confirmed) {
@@ -1002,15 +1043,15 @@ async function confirmDeletion(idOrPath, itemType) {
             }
         } catch (error) {
             console.error(`Failed to delete ${idOrPath}:`, error);
-            alert(`Error deleting ${itemType}: ${error.message}`);
+            showToast(`Error deleting ${itemType}: ${error.message}`, 'error');
         }
     }
-    elements.deleteModal.classList.add('hidden');
+    closeModal(elements.deleteModal);
 }
 
 async function handleFileUpload(event) {
     event.preventDefault();
-    if (elements.fileInput.files.length === 0) return alert('Please select files.');
+    if (elements.fileInput.files.length === 0) return showToast('Please select files.', 'error');
 
     const formData = new FormData();
     formData.append('prompt', elements.uploadPrompt.value);
@@ -1029,13 +1070,13 @@ async function handleFileUpload(event) {
             conversationHistory = [];
         }
         await populateFileExplorer();
-        elements.uploadModal.classList.add('hidden');
+        closeModal(elements.uploadModal);
         elements.uploadForm.reset();
         updateFileList();
         elements.chatInput.value = data.message;
         sendMessage();
     } catch (error) {
-        alert(`Error uploading file: ${error.message}`);
+        showToast(`Error uploading file: ${error.message}`, 'error');
     }
 }
 
@@ -1046,7 +1087,7 @@ function updateFileList() {
 }
 
 async function openSettingsModal() {
-    elements.settingsModal.classList.remove('hidden');
+    openModal(elements.settingsModal);
     try {
         const response = await getUserSettings();
         const settings = await response.json();
@@ -1076,9 +1117,9 @@ async function handleSaveSettings(e) {
         if (!response.ok) throw new Error('Failed to save settings');
         userModel = newModel;
         elements.currentModelDisplay.textContent = userModel;
-        elements.settingsModal.classList.add('hidden');
+        closeModal(elements.settingsModal);
     } catch (error) {
-        alert(`Error saving settings: ${error.message}`);
+        showToast(`Error saving settings: ${error.message}`, 'error');
     }
 }
 
@@ -1090,15 +1131,18 @@ async function handleSaveFile() {
         const response = await saveWorkspaceFile(path, content, currentConversationId);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error);
-        elements.saveFileBtn.textContent = 'Saved!';
-        setTimeout(() => { elements.saveFileBtn.textContent = 'Save'; }, 2000);
+        elements.saveFileBtn.classList.add('pulse-once');
+        showToast('File saved successfully!');
+        setTimeout(() => {
+            elements.saveFileBtn.classList.remove('pulse-once');
+        }, 1000);
     } catch (error) {
-        alert(`Error saving file: ${error.message}`);
+        showToast(`Error saving file: ${error.message}`, 'error');
     }
 }
 
 async function openShareModal(conversationId) {
-    elements.shareModal.classList.remove('hidden');
+    openModal(elements.shareModal);
     elements.shareUserList.innerHTML = '<p>Loading users...</p>';
     try {
         const response = await getUsers();
@@ -1117,13 +1161,13 @@ async function openShareModal(conversationId) {
                     const shareResponse = await shareConversation(conversationId, user.id);
                     const data = await shareResponse.json();
                     if (shareResponse.ok) {
-                        alert(`Conversation shared with ${user.username}`);
-                        elements.shareModal.classList.add('hidden');
+                        showToast(`Conversation shared with ${user.username}`);
+                        closeModal(elements.shareModal);
                     } else {
                         throw new Error(data.message || 'Failed to share');
                     }
                 } catch (error) {
-                    alert(`Error: ${error.message}`);
+                    showToast(`Error: ${error.message}`, 'error');
                 }
             });
             elements.shareUserList.appendChild(userItem);
