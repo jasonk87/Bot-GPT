@@ -1,12 +1,10 @@
-import inspect
 import json
 import os
 import re
-
-
+import shutil
+import requests
 import time
 import datetime
-
 
 from flask import (
     Blueprint,
@@ -30,6 +28,7 @@ from tools import (
     list_directory_tree,
     open_in_canvas,
     convert_file_main,
+    read_file_main,
 )
 from memory_manager import get_relevant_context, process_conversation_in_background
 from agents import CoderAgent, DebuggerAgent
@@ -197,17 +196,11 @@ def get_models():
     try:
         ollama_host = current_app.config['OLLAMA_HOST']
         response = requests.get(f"{ollama_host}/api/tags")
-        
-        # ADD THIS LINE TO SEE THE STATUS CODE
         print(f"DEBUG: Received status code {response.status_code} from Ollama.")
-
         response.raise_for_status()
         return jsonify(response.json().get('models', []))
     except requests.exceptions.RequestException as e:
-        
-        # ADD THIS LINE TO PRINT THE EXACT ERROR
-        print(f"CRITICAL ERROR in get_models: {e}") 
-        
+        print(f"CRITICAL ERROR in get_models: {e}")
         return jsonify({"error": str(e)}), 502
 
 
@@ -235,28 +228,21 @@ def call_ollama_chat_stream(model, messages, system_prompt):
                 if line.strip():
                     yield line
 
+
 def format_final_answer(content):
     """
     Correctly formats the AI's response by ensuring that blocks of text
     are separated by double newlines, while preserving the single newlines
     inside code blocks (```).
     """
-    # Isolate code blocks from the rest of the text
     parts = re.split(r'(```[\s\S]*?```)', content)
-    
     for i in range(len(parts)):
-        # If the part is a code block (at an odd index), leave it untouched
         if i % 2 == 1:
             continue
-        # Otherwise, it's normal text. Normalize its paragraph breaks.
         else:
-            # Replace any sequence of 2 or more newlines with a consistent double newline
-            # and strip any leading/trailing whitespace from the block.
             parts[i] = re.sub(r'\n{2,}', '\n\n', parts[i]).strip()
-
-    # Join all the parts back together, filtering out any empty strings
-    # This ensures a consistent, clean double newline between each block.
     return '\n\n'.join(p for p in parts if p)
+
 
 @main.route('/api/chat')
 @login_required
@@ -270,8 +256,7 @@ def chat_proxy():
 
         try:
             new_message = json.loads(new_message_str)
-            messages = [] 
-
+            messages = []
             if conversation_id_arg:
                 convo_path = os.path.join(
                     current_app.config['USER_DATA_DIR'], str(current_user.id),
@@ -283,7 +268,7 @@ def chat_proxy():
                         messages = data.get("messages", [])
 
             if new_message:
-                 messages.append(new_message)
+                messages.append(new_message)
 
         except json.JSONDecodeError:
             return "Invalid 'message' format", 400
@@ -291,24 +276,18 @@ def chat_proxy():
         if not model:
             model = current_user.selected_model
 
-        # --- RAG Pipeline ---
         user_id = current_user.id
         user_message = new_message.get('content', '')
         rag_context = get_relevant_context(user_id, user_message)
 
-        # --- V2.0 MODIFICATION START ---
         persona_key = current_user.selected_persona or 'default'
         base_system_prompt = PERSONAS.get(
             persona_key, {}
         ).get('prompt', DEFAULT_SYSTEM_PROMPT)
-        
         current_time_str = datetime.datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
-        time_context = f"CONTEXT: The current date and time is {current_time_str}."
-
-        ui_context = f"CONTEXT: Canvas Mode is currently {'ON' if canvas_mode_enabled else 'OFF'}."
-
-        system_prompt = f"{rag_context}\n\n{ui_context}\n\n{time_context}\n{base_system_prompt}"
-        # --- V2.0 MODIFICATION END ---
+        time_context = "CONTEXT: The current date and time is {}.".format(current_time_str)
+        ui_context = "CONTEXT: Canvas Mode is currently {}.".format('ON' if canvas_mode_enabled else 'OFF')
+        system_prompt = "{}\n\n{}\n\n{}\n{}".format(rag_context, ui_context, time_context, base_system_prompt)
 
         if not messages:
             return "No messages provided", 400
@@ -327,7 +306,6 @@ def chat_proxy():
             )
             db.session.add(owner_participant)
             db.session.commit()
-            
             convo_path = os.path.join(
                 current_app.config['USER_DATA_DIR'], str(user_id),
                 'conversations', f"{conversation_id}.json"
@@ -346,16 +324,11 @@ def chat_proxy():
 
                 if not user or not conversation:
                     error_msg = "User or conversation not found in session."
-                    yield f"data: {json.dumps({'type': 'agent_error', 'error': error_msg})}
-
-"
+                    yield "data: {}\n\n".format(json.dumps({'type': 'agent_error', 'error': error_msg}))
                     return
 
                 try:
-                    yield f"data: {json.dumps({'type': 'conversation_id', 'id': conversation_id})}
-
-"
-
+                    yield "data: {}\n\n".format(json.dumps({'type': 'conversation_id', 'id': conversation_id}))
                     max_iterations = 15
                     for i in range(max_iterations):
                         full_response_content = ""
@@ -367,23 +340,19 @@ def chat_proxy():
                                 parsed_data = json.loads(line)
                                 chunk = parsed_data.get("message", {}).get("content", "")
                                 full_response_content += chunk
-                                yield f"data: {json.dumps({'type': 'assistant_chunk', 'content': chunk})}
-
-"
+                                yield "data: {}\n\n".format(json.dumps({'type': 'assistant_chunk', 'content': chunk}))
                             except json.JSONDecodeError:
                                 continue
 
                         assistant_message['content'] = full_response_content
                         messages.append(assistant_message)
-                        yield f"data: {json.dumps({'type': 'assistant_end'})}
+                        yield "data: {}\n\n".format(json.dumps({'type': 'assistant_end'}))
 
-"
-
-                        print("\n" + "="*80)
-                        print(f">>> MAIN AGENT RAW RESPONSE (Turn {i+1}) <<<")
+                        print("\n" + "=" * 80)
+                        print(">>> MAIN AGENT RAW RESPONSE (Turn {}) <<<".format(i + 1))
                         print("-" * 80)
                         print(full_response_content)
-                        print("="*80 + "\n")
+                        print("=" * 80 + "\n")
 
                         tool_match = re.search(r'```json\s*(\{[\s\S]*?\})\s*```', full_response_content)
                         if not tool_match:
@@ -395,29 +364,25 @@ def chat_proxy():
                             tool_name = tool_call.get('tool')
                             raw_params = tool_call.get('parameters', {})
 
-                            print(f"\n[DEBUG] AGENT REQUESTING TOOL CALL")
-                            print(f"  - Tool: {tool_name}")
-                            print(f"  - Parameters: {json.dumps(raw_params, indent=2)}")
+                            print("\n[DEBUG] AGENT REQUESTING TOOL CALL")
+                            print("  - Tool: {}".format(tool_name))
+                            print("  - Parameters: {}".format(json.dumps(raw_params, indent=2)))
 
                             tool_map = {
-                                "ask_coder": coder_agent.execute, 
-                                "ask_debugger": debugger_agent.execute, 
+                                "ask_coder": coder_agent.execute,
+                                "ask_debugger": debugger_agent.execute,
                                 "web_search": web_search,
-                                "list_directory_tree": list_directory_tree, 
+                                "list_directory_tree": list_directory_tree,
                                 "open_in_canvas": open_in_canvas,
-                                "read_file": read_file_main, 
-                                "write_file": write_file_main, 
+                                "read_file": read_file_main,
+                                "write_file": write_file_main,
                                 "convert_file": convert_file_main,
                             }
 
                             if tool_name in tool_map:
                                 tool_func = tool_map[tool_name]
                                 tool_response_message = ""
-                                
-                                yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'params': raw_params})}
-
-"
-                                
+                                yield "data: {}\n\n".format(json.dumps({'type': 'tool_call', 'name': tool_name, 'params': raw_params}))
                                 if tool_name == "ask_coder":
                                     workspace_path = get_workspace_path(conversation.id, conversation.owner_id)
                                     coder_event_generator = coder_agent.execute(
@@ -426,84 +391,62 @@ def chat_proxy():
                                     )
                                     tool_result = None
                                     for event in coder_event_generator:
-                                        # Add a prefix to the event type to namespace it for the frontend
-                                        event['type'] = f"coder_{event['type']}"
-                                        yield f"data: {json.dumps(event)}
-
-"
+                                        event['type'] = "coder_{}".format(event['type'])
+                                        yield "data: {}\n\n".format(json.dumps(event))
                                         if event['type'] == 'coder_final_result':
-                                            tool_result = event # Capture the final result
+                                            tool_result = event
                                 else:
                                     tool_result = tool_func(**raw_params)
 
-                                print(f"\n[DEBUG] TOOL EXECUTION RESULT")
-                                print(f"  - Tool: {tool_name}")
+                                print("\n[DEBUG] TOOL EXECUTION RESULT")
+                                print("  - Tool: {}".format(tool_name))
                                 if isinstance(tool_result, dict):
-                                    print(f"  - Result: {json.dumps(tool_result, indent=2)}")
+                                    print("  - Result: {}".format(json.dumps(tool_result, indent=2)))
                                 else:
-                                    print(f"  - Result: {tool_result}")
-                                
+                                    print("  - Result: {}".format(tool_result))
                                 if isinstance(tool_result, dict):
                                     if tool_result.get('status') == 'canvas_created':
-                                        yield f"data: {json.dumps({'type': 'open_canvas', 'filename': tool_result.get('filename')})}
-
-"
-                                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
-
-                                    # This now handles the final_result from the Coder Agent
+                                        yield "data: {}\n\n".format(json.dumps({'type': 'open_canvas', 'filename': tool_result.get('filename')}))
+                                        tool_response_message = "TOOL RESPONSE:\n---\n{}\n---".format(tool_result.get('message'))
                                     elif tool_result.get('type') == 'coder_final_result':
-                                        # Reformat the Coder's result to fit the expected PM format
                                         coder_response_for_pm = {
                                             "summary": tool_result.get('summary'),
                                             "modified_files": tool_result.get('modified_files', [])
                                         }
-                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(coder_response_for_pm)}\n---"
-                                        
+                                        tool_response_message = "TOOL RESPONSE:\n---\n{}\n---".format(json.dumps(coder_response_for_pm))
                                     elif 'modified_files' in tool_result:
-                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(tool_result)}\n---"
+                                        tool_response_message = "TOOL RESPONSE:\n---\n{}\n---".format(json.dumps(tool_result))
                                     else:
-                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(tool_result)}\n---"
+                                        tool_response_message = "TOOL RESPONSE:\n---\n{}\n---".format(json.dumps(tool_result))
                                 else:
-                                    tool_response_message = f"TOOL RESPONSE:\n---\n{str(tool_result)}\n---"
+                                    tool_response_message = "TOOL RESPONSE:\n---\n{}\n---".format(str(tool_result))
 
                                 messages.append({"role": "user", "content": tool_response_message})
-                                yield f"data: {json.dumps({'type': 'tool_result', 'result': tool_result})}
-
-"
+                                yield "data: {}\n\n".format(json.dumps({'type': 'tool_result', 'result': tool_result}))
                             else:
-                                error_message = f"Error: Tool '{tool_name}' not found."
-                                messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
-                                yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}
-
-"
+                                error_message = "Error: Tool '{}' not found.".format(tool_name)
+                                messages.append({"role": "user", "content": "TOOL RESPONSE: {}".format(error_message)})
+                                yield "data: {}\n\n".format(json.dumps({'type': 'tool_error', 'error': error_message}))
                         except Exception as e:
-                            error_message = f"Error processing tool: {str(e)}"
-                            messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
-                            yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}
-
-"
-                    
+                            error_message = "Error processing tool: {}".format(str(e))
+                            messages.append({"role": "user", "content": "TOOL RESPONSE: {}".format(error_message)})
+                            yield "data: {}\n\n".format(json.dumps({'type': 'tool_error', 'error': error_message}))
                     if not final_answer_provided and i == max_iterations - 1:
                         error_msg = "The agent reached the maximum number of steps (15) and was unable to complete the task."
-                        yield f"data: {json.dumps({'type': 'agent_error', 'error': error_msg})}
-
-"
+                        yield "data: {}\n\n".format(json.dumps({'type': 'agent_error', 'error': error_msg}))
                         return
 
                     if final_answer_provided:
                         final_content = messages[-1]['content']
                         formatted_content = format_final_answer(final_content)
-                        yield f"data: {json.dumps({'type': 'final_answer', 'content': formatted_content})}
-
-"
+                        yield "data: {}\n\n".format(json.dumps({'type': 'final_answer', 'content': formatted_content}))
 
                 except Exception as e:
-                    yield f"data: {json.dumps({'type': 'agent_error', 'error': str(e)})}
-
-"
+                    yield "data: {}\n\n".format(json.dumps({'type': 'agent_error', 'error': str(e)}))
                 finally:
                     convo = db.session.get(Conversation, conversation_id)
-                    if not convo: return
+                    if not convo:
+                        return
 
                     title = convo.title
                     if title == "New Chat" and len(messages) >= 2:
@@ -511,10 +454,21 @@ def chat_proxy():
                             final_ai_message = next((m['content'] for m in reversed(messages) if m['role'] == 'assistant'), "")
                             cleaned_content = re.sub(r'<think>[\s\S]*?</think>', '', final_ai_message).strip()
                             if cleaned_content:
-                                title_prompt = (f"Based on the following exchange, create a very short, concise title (5 words or less).\n\n"
-                                              f"User: {messages[0]['content']}\nAssistant: {cleaned_content}\n\nTitle:")
+                                title_prompt = (
+                                    "Based on the following exchange, create a very short, "
+                                    "concise title (5 words or less).\n\n"
+                                    "User: {}\nAssistant: {}\n\nTitle:".format(messages[0]['content'], cleaned_content)
+                                )
                                 title_model = "llama3.2:latest"
-                                title_response = requests.post(f"{current_app.config['OLLAMA_HOST']}/api/chat", json={"model": title_model, "messages": [{"role": "user", "content": title_prompt}], "stream": False}, timeout=60)
+                                title_response = requests.post(
+                                    "{}/api/chat".format(current_app.config['OLLAMA_HOST']),
+                                    json={
+                                        "model": title_model,
+                                        "messages": [{"role": "user", "content": title_prompt}],
+                                        "stream": False
+                                    },
+                                    timeout=60
+                                )
                                 title_response.raise_for_status()
                                 raw_title = title_response.json().get("message", {}).get("content", "").strip()
                                 cleaned_title = re.sub(r'<think>[\s\S]*?</think>', '', raw_title).strip().replace('"', '')
@@ -522,11 +476,14 @@ def chat_proxy():
                                     title = cleaned_title
                                     convo.title = title
                         except requests.exceptions.RequestException as e:
-                            print(f"Could not auto-generate title: {e}")
+                            print("Could not auto-generate title: {}".format(e))
 
                     db.session.commit()
 
-                    conversation_path = os.path.join(current_app.config['USER_DATA_DIR'], str(user_id), 'conversations', f"{conversation_id}.json")
+                    conversation_path = os.path.join(
+                        current_app.config['USER_DATA_DIR'], str(user_id),
+                        'conversations', "{}.json".format(conversation_id)
+                    )
 
                     final_messages_to_save = []
                     for msg in messages:
@@ -534,17 +491,15 @@ def chat_proxy():
                             final_messages_to_save.append(msg)
                         elif msg['role'] == 'assistant' and '```json' not in msg['content']:
                             final_messages_to_save.append(msg)
-                    
                     with open(conversation_path, 'w', encoding='utf-8') as f:
                         json.dump({"messages": final_messages_to_save, "title": title}, f, indent=2)
 
                     process_conversation_in_background(conversation_id)
 
-
         return Response(event_stream(), mimetype='text/event-stream')
     except Exception as e:
-        print(f"An error occurred in chat_proxy: {e}")
-        return jsonify({"error": "An internal server error occurred."} ), 500
+        print("An error occurred in chat_proxy: {}".format(e))
+        return jsonify({"error": "An internal server error occurred."}), 500
 
 
 @main.route('/api/workspace/files/<conversation_id>', methods=['GET'])
@@ -645,7 +600,7 @@ def save_workspace_file():
             f.write(content)
         return jsonify({
             "success": True,
-            "message": f"File '{path}' saved successfully."
+            "message": "File '{}' saved successfully.".format(path)
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -686,12 +641,9 @@ def delete_workspace_file():
             os.remove(full_path)
         else:
             return jsonify({"error": "File not found"}), 404
-        return jsonify({"success": True, "message": f"Deleted {path}"})
+        return jsonify({"success": True, "message": "Deleted {}".format(path)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-# --- User Settings ---
 
 
 @main.route('/api/settings', methods=['GET'])
@@ -713,9 +665,6 @@ def update_settings():
     current_user.selected_persona = data.get('persona')
     db.session.commit()
     return jsonify({"message": "Settings updated successfully"}), 200
-
-
-# --- Conversation History Routes ---
 
 
 @main.route('/api/conversations', methods=['GET'])
@@ -753,7 +702,7 @@ def get_conversation(session_id):
     owner_id = conversation.owner_id
     convo_path = os.path.join(
         current_app.config['USER_DATA_DIR'], str(owner_id),
-        'conversations', f"{session_id}.json"
+        'conversations', "{}.json".format(session_id)
     )
 
     if os.path.exists(convo_path):
@@ -761,7 +710,7 @@ def get_conversation(session_id):
             convo_data = json.load(f)
             participant_link = next(
                 (p for p in conversation.participants
-                 if p.user_id == current_user.id), 
+                 if p.user_id == current_user.id),
                 None
             )
             role = participant_link.role if participant_link else None
@@ -839,7 +788,7 @@ def delete_conversation(session_id):
         current_app.config['USER_DATA_DIR'], str(conversation.owner_id)
     )
     convo_path = os.path.join(
-        user_data_dir, 'conversations', f"{session_id}.json"
+        user_data_dir, 'conversations', "{}.json".format(session_id)
     )
     workspace_path = os.path.join(user_data_dir, 'workspaces', session_id)
 
@@ -889,13 +838,14 @@ def upload_file():
     file_list_str = "\n- ".join(filenames)
     message_to_ai = (
         "User uploaded the following files to the workspace:\n"
-        f"- {file_list_str}\n\n"
-        f"User's prompt: {prompt}"
+        "- {}\n\n"
+        "User's prompt: {}".format(file_list_str, prompt)
     )
 
     return jsonify(
         message=message_to_ai, conversation_id=conversation_id
     ), 200
+
 
 @main.route('/api/workspace/download', methods=['GET'])
 @login_required
@@ -911,22 +861,17 @@ def download_workspace_file():
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
-    # Security Check: Ensure the current user is part of the conversation
     is_participant = any(p.user_id == current_user.id for p in conversation.participants)
     if not is_participant:
         return jsonify({"error": "Access denied"}), 403
 
-    # Get the absolute path to the workspace directory
     workspace_dir = get_workspace_path(conversation_id, conversation.owner_id)
     if not workspace_dir:
         return jsonify({"error": "Invalid workspace"}), 400
 
-    # Sanitize the filename to prevent security issues
     filename = os.path.basename(path)
 
     try:
-        # Use Flask's secure send_from_directory to serve the file
-        # as_attachment=True tells the browser to download it, not display it
         return send_from_directory(
             workspace_dir,
             filename,

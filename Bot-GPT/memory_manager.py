@@ -126,7 +126,7 @@ User: Okay, thank you.
 The user's last turn is a simple pleasantry. The creation of a file is a temporary, workspace-specific event, not a universal fact about the user. According to my rules, I must not save this.
 </think>
 No new memories to save.
-""
+"""
 
 # A queue to hold conversations that need processing by the MemoryAgent
 conversation_queue = queue.Queue()
@@ -152,7 +152,7 @@ def get_relevant_context(user_id, user_message):
 
     # Construct the final context block to be injected into the main prompt.
     final_context = (
-        "--- Relevant Context from Memory ---" + 
+        "--- Relevant Context from Memory ---" +
         "\n\n".join(context_parts) +
         "\n-------------------------------------"
     )
@@ -192,7 +192,7 @@ def memory_agent_worker():
             conversation_id = conversation_queue.get()
             if conversation_id is None:
                 break
-            
+
             # Get the conversation from the database
             app = current_app._get_current_object()
             with app.app_context():
@@ -209,7 +209,7 @@ def memory_agent_worker():
 
 
 def ask_memory_agent(transcript: str, user_id: int):
-    """... (this function remains mostly the same, but it will be called by the worker) """
+    """This function remains mostly the same, but it will be called by the worker."""
     # ... (The implementation of ask_memory_agent remains the same as before)
     from app import create_app
     app = create_app()
@@ -217,9 +217,9 @@ def ask_memory_agent(transcript: str, user_id: int):
         print(f"DEBUG: Memory Agent started for user {user_id}.")
 
         analysis_prompt = f"Here is a recent conversation transcript for user ID {user_id}. Please analyze it and save any important facts, relationships, or preferences:\n\n{transcript}"
-        
+
         messages = [{"role": "user", "content": analysis_prompt}]
-        
+
         try:
             ollama_host = current_app.config['OLLAMA_HOST']
             user = User.query.get(user_id)
@@ -231,9 +231,9 @@ def ask_memory_agent(transcript: str, user_id: int):
                 timeout=120
             )
             response.raise_for_status()
-            
+
             agent_response_content = response.json().get("message", {}).get("content", "")
-            
+
             print("\n" + "="*80)
             print(">>> MEMORY AGENT RAW RESPONSE <<<")
             print("-" * 80)
@@ -241,7 +241,7 @@ def ask_memory_agent(transcript: str, user_id: int):
             print("="*80 + "\n")
 
             tool_matches = re.findall(r'```json\s*(\{[\s\S]*?\})\s*```', agent_response_content)
-            
+
             if not tool_matches:
                 print("DEBUG: Memory Agent found no new memories to save.")
                 return "Memory agent finished: No new memories."
@@ -261,11 +261,11 @@ def ask_memory_agent(transcript: str, user_id: int):
                     tool_call = json.loads(tool_call_str)
                     tool_name = tool_call.get("tool")
                     params = tool_call.get("parameters", {})
-                    
+
                     if tool_name in memory_tool_map:
                         # This line works for all three tools now
                         params['user_id'] = user_id
-                        
+
                         tool_func = memory_tool_map[tool_name]
                         result = tool_func(**params)
                         results.append(result)
