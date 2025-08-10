@@ -1,9 +1,15 @@
 import os
 import subprocess
 import re
-import shutil  # Added this import
+import json
+import shutil
 from flask import current_app
-from models import Conversation
+from models import db, Conversation, GlobalKnowledge # <-- Ensure GlobalKnowledge is imported
+import requests
+import datetime
+from bs4 import BeautifulSoup
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # --- Dependencies for Web Browsing ---
 
@@ -182,9 +188,6 @@ def open_in_canvas(path, conversation_id=None, user_id=None):
 
 
 
-
-
-
 def set_current_plan_step(step_number, step_description):
     """Informs the user about the current step of the plan being executed."""
     return {
@@ -249,8 +252,8 @@ def pip(command, conversation_id=None, user_id=None):
 
 def web_search(query, conversation_id=None, user_id=None, selected_model=None):
     """
-    Performs a web search using the Google Search API, scrapes the top
-    results, and uses an AI model to summarize the answer.
+    Performs a web search, scrapes results, summarizes, and SAVES the summary
+    to global knowledge for future RAG. Includes caching.
     """
     api_key = current_app.config.get('GOOGLE_API_KEY')
     cse_id = current_app.config.get('GOOGLE_CSE_ID')
@@ -269,10 +272,26 @@ def web_search(query, conversation_id=None, user_id=None, selected_model=None):
         return f"Error: Missing required libraries: {', '.join(missing)}."
 
     try:
-        # 1. Perform Google Search
+        final_query = query
+        trigger_words = ['new', 'latest', 'current', 'recent']
+        # Check if the query contains a trigger word AND does not already contain a year.
+        if any(word in query.lower() for word in trigger_words) and not re.search(r'\b(20\d{2})\b', query):
+            current_year = datetime.datetime.now().year
+            final_query = f"{query} {current_year}"
+            print(f"INFO: Auto-appended current year to query. New query: '{final_query}'")
+
+        # --- NEW: Check for a cached result first for speed ---
+        cached_knowledge = GlobalKnowledge.query.filter_by(query_text=query).first()
+        if cached_knowledge:
+            print(f"INFO: RAG - Found cached web search result for query: '{query}'")
+            return (
+                    f"Based on previous research, here is the answer to your "
+                    f"query about '{query}':\n\n{cached_knowledge.response_content}")
+
+        # 1. Perform Google Search (num=2 for speed)
         try:
             service = build("customsearch", "v1", developerKey=api_key)
-            res = service.cse().list(q=query, cx=cse_id, num=3).execute()
+            res = service.cse().list(q=query, cx=cse_id, num=2).execute()
             search_results = res.get('items', [])
         except HttpError as e:
             error_content = e.content.decode('utf-8')
@@ -295,7 +314,16 @@ def web_search(query, conversation_id=None, user_id=None, selected_model=None):
                 }
                 response = requests.get(url, headers=headers, timeout=10)
                 response.raise_for_status()
+
+                # Check if the content is likely text/html before parsing.
+                content_type = response.headers.get('content-type', '').lower()
+                if 'text' not in content_type and 'html' not in content_type:
+                    print(f"WARNING: Skipping non-text URL: {url} (Content-Type: {content_type})")
+                    consolidated_content += f"--- Skipped non-text content from {url} ---\n\n"
+                    continue # Move to the next search result
+
                 soup = BeautifulSoup(response.text, 'html.parser')
+                
                 for script_or_style in soup(["script", "style"]):
                     script_or_style.decompose()
                 text = soup.get_text()
@@ -306,7 +334,7 @@ def web_search(query, conversation_id=None, user_id=None, selected_model=None):
                 content_text = '\n'.join(chunk for chunk in chunks if chunk)
                 consolidated_content += f"--- From {url} ---\n{content_text}\n\n"
             except requests.exceptions.RequestException as e:
-                consolidated_content += f"--- Could not get {url}: {e} ---\n\n"
+                consolidated_content += f"--- Could not get {url}: {e}---\n\n"
 
         if not consolidated_content.strip():
             return "Could not retrieve any content from the search results."
@@ -320,15 +348,15 @@ def web_search(query, conversation_id=None, user_id=None, selected_model=None):
         ollama_host = current_app.config['OLLAMA_HOST']
 
         summarization_prompt = (
-            f"Based on the following web content, please provide a "
-            f"comprehensive answer to the user's query: '{query}'. "
-            "Synthesize the information from the sources into a single, "
-            "coherent response. Do not just list the content from each "
-            "source. Your answer should be well-structured, easy to "
-            "understand, and directly address the user's question. Format "
-            "the response using Markdown for readability.\n\n"
-            "--- WEB CONTENT ---\n"
-            f"{consolidated_content}"
+            f"""Based on the following web content, please provide a """
+            f"comprehensive answer to the user's query: '{query}'. """
+            f"Synthesize the information from the sources into a single, """
+            f"coherent response. Do not just list the content from each """
+            f"source. Your answer should be well-structured, easy to """
+            f"understand, and directly address the user's question. Format """
+            f"the response using Markdown for readability.\n\n"""
+            f"--- WEB CONTENT ---\n"""
+            f"{consolidated_content}"""
         )
 
         try:
@@ -343,119 +371,47 @@ def web_search(query, conversation_id=None, user_id=None, selected_model=None):
             )
             response.raise_for_status()
             summary = response.json().get("message", {}).get("content", "")
-            return (f"Based on my web search, here is the answer to your "
+
+            # --- NEW: Save the successful summary to the database ---
+            try:
+                new_knowledge = GlobalKnowledge(
+                    query_text=query,
+                    response_content=summary
+                )
+                db.session.add(new_knowledge)
+                db.session.commit()
+                print(f"INFO: RAG - Successfully saved new web search result to GlobalKnowledge.")
+            except Exception as db_error:
+                db.session.rollback()
+                print(f"ERROR: RAG - Failed to save to GlobalKnowledge: {db_error}")
+            # --- END OF NEW CODE ---
+
+            return (
+                    f"Based on my web search, here is the answer to your "
                     f"query about '{query}':\n\n{summary}")
         except requests.exceptions.RequestException:
-            return ("Warning: Could not connect to the AI model to summarize. "
+            return (
+                    "Warning: Could not connect to the AI model to summarize. "
                     "Returning raw search results.\n\n"
                     f"--- RAW WEB CONTENT ---\n{consolidated_content}")
 
     except Exception as e:
         return f"An unexpected error occurred during web search: {e}"
 
+# --- V2.0: New tools for the Main Agent ---
+def write_file_main(path, content, conversation_id=None, user_id=None):
+    """Writes or overwrites a file in the conversation's workspace. For the main agent."""
+    return write_file(path, content, conversation_id, user_id)
 
-def ask_debugger(failed_command, error_message, selected_model=None, user_id=None):
-    """Delegates a debugging task to a specialist agent."""
-    debugger_prompt = (
-        f"Fix this failed command:\n{failed_command}\n"
-        f"Error:\n{error_message}\nReturn ONLY the corrected JSON."
-    )
-    try:
-        current_model = selected_model or 'default_model_name'
-        response = requests.post(
-            f"{current_app.config['OLLAMA_HOST']}/api/chat",
-            json={
-                "model": current_model,
-                "messages": [{"role": "user", "content": debugger_prompt}],
-                "stream": False
-            },
-            timeout=300
-        )
-        response.raise_for_status()
-        content = response.json().get("message", {}).get("content", "")
-        json_match = re.search(r'{[\s\S]*}', content)
-        if json_match:
-            return f"Debugger agent suggests this fix: {json_match.group(0)}"
-        else:
-            return f"Debugger agent could not find a fix. It responded: {content}"
-    except Exception as e:
-        return f"Error calling debugger agent: {e}"
+def read_file_main(path, conversation_id=None, user_id=None):
+    """Reads the content of a file from the conversation's workspace. For the main agent."""
+    return read_file(path, conversation_id, user_id)
+
+def convert_file_main(input_path, output_path, conversation_id=None, user_id=None):
+    """Converts a file from one format to another. For the main agent."""
+    return convert_file(input_path, output_path, conversation_id, user_id)
 
 
-def ask_coder(task_description, filename, selected_model=None, user_id=None, conversation_id=None):
-    """Delegates a coding task to a specialist agent and saves the code to a file."""
-    coder_prompt = (
-        "Write Python code for the following task. Your code should be "
-        "clean, well-formatted, and include comments where necessary. "
-        "Return ONLY the raw code.\n"
-        f"Task: {task_description}\nCode:"
-    )
-    try:
-        current_model = selected_model or 'default_model_name'
-        response = requests.post(
-            f"{current_app.config['OLLAMA_HOST']}/api/chat",
-            json={
-                "model": current_model,
-                "messages": [{"role": "user", "content": coder_prompt}],
-                "stream": False
-            },
-            timeout=300
-        )
-        response.raise_for_status()
-        content = response.json().get("message", {}).get("content", "")
-        code_match = re.search(r'```(?:\w*\n)?([\s\S]+)```', content)
-        if code_match:
-            code = code_match.group(1).strip()
-        else:
-            code = content.strip()
-
-        write_file(filename, code, conversation_id, user_id)
-        return f"Code saved to {filename}"
-    except Exception as e:
-        return f"Error calling Coder agent: {e}"
-
-# --- V2.0: Specialist Agent Delegation Tools ---
-
-def ask_memory_agent(task: str, user_id=None, conversation_id=None):
-    """
-    Delegates a task to the specialist Memory Agent.
-    Use for any request related to saving or recalling personal information
-    about the user or summarizing conversations.
-    """
-    print(f"DEBUG: Delegating task to Memory Agent for user {user_id}: '{task}'")
-    # TODO: This will trigger the Memory Agent's internal ReAct loop.
-    return "The Memory Agent has processed your request."
-
-def ask_inventory_agent(task: str, user_id=None, conversation_id=None):
-    """
-    Delegates a task to the specialist Pantry Inventory Agent.
-    Use for ALL tasks related to the family's pantry, grocery lists, etc.
-    """
-    print(f"DEBUG: Delegating task to Inventory Agent for user {user_id}: '{task}'")
-    # TODO: This will trigger the Inventory Agent's internal ReAct loop.
-    return "The Inventory Agent is handling your request."
-
-def ask_api_manager(task: str, user_id=None, conversation_id=None):
-    """
-    Delegates a task to the specialist API Manager Agent.
-    Use for any task that requires accessing a real-time external service
-    like weather, Giphy, or price comparisons.
-    """
-    print(f"DEBUG: Delegating task to API Manager: '{task}'")
-    # TODO: This will trigger the API Manager's internal ReAct loop.
-    return "The API Manager is handling your request."
-
-def ask_agent_manager(task: str, user_id=None, conversation_id=None):
-    """
-    Delegates a task to the specialist Agent Manager.
-    Use ONLY when the user explicitly asks to add, remove, or manage
-    other AI agents in the conversation.
-    """
-    print(f"DEBUG: Delegating task to Agent Manager: '{task}'")
-    # TODO: This will trigger the Agent Manager's internal ReAct loop.
-    return "The Agent Manager is handling your request."
-
-# --- V2.0: Advanced Surgical Coding Tools (Fully Implemented) ---
 
 def search_and_replace_in_file(path: str, search_pattern: str, replace_string: str, conversation_id=None, user_id=None):
     """
@@ -558,3 +514,44 @@ def delete_lines_in_file(path: str, start_line: int, end_line: int, conversation
         return f"Error: File not found at '{path}'."
     except Exception as e:
         return f"Error during line deletion: {str(e)}"
+
+def convert_file(input_path: str, output_path: str, conversation_id=None, user_id=None):
+    """
+    Converts a file from one format to another using Pandoc.
+    Supported formats are inferred from file extensions (e.g., .md to .pdf).
+    """
+    workspace_path = get_workspace_path(conversation_id, user_id)
+    if not workspace_path:
+        return "Error: Could not determine workspace."
+
+    # Security: Ensure paths are within the workspace
+    full_input_path = os.path.abspath(os.path.join(workspace_path, input_path))
+    full_output_path = os.path.abspath(os.path.join(workspace_path, output_path))
+    if not full_input_path.startswith(workspace_path) or not full_output_path.startswith(workspace_path):
+        return "Error: Access denied. File paths must be within the workspace."
+
+    if not os.path.exists(full_input_path):
+        return f"Error: Input file '{input_path}' not found."
+
+    command = [
+        'pandoc',
+        full_input_path,
+        '-o',
+        full_output_path
+    ]
+
+    try:
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True  # This will raise an exception if pandoc fails
+        )
+        return f"Successfully converted '{input_path}' to '{output_path}'."
+    except FileNotFoundError:
+        return "Error: The 'pandoc' command was not found. Please ensure Pandoc is installed on the server and in the system's PATH."
+    except subprocess.CalledProcessError as e:
+        return f"Error during conversion: {e.stderr}"
+    except Exception as e:
+        return f"An unexpected error occurred: {str(e)}"

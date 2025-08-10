@@ -70,6 +70,10 @@ def create_app():
     with app.app_context():
         db.create_all()
 
+    # --- Start Memory Agent ---
+    from memory_manager import start_memory_agent
+    start_memory_agent()
+
     return app
 
 

@@ -2,81 +2,90 @@ import inspect
 import json
 import os
 import re
-import shutil
-import sys
-import time
 
-import requests
-from flask import (Blueprint, Response, current_app, jsonify,
-                   render_template, request)
+
+import time
+import datetime
+
+
+from flask import (
+    Blueprint,
+    Response,
+    current_app,
+    jsonify,
+    render_template,
+    request,
+    send_from_directory,
+)
 from flask_login import current_user, login_required, login_user, logout_user
 from werkzeug.utils import secure_filename
 
 from extensions import db
 from models import Conversation, ConversationParticipant, User
-from tools import (ask_coder, ask_debugger, execute_python, get_file_tree, get_workspace_path,
-                   list_files, pip, read_file, set_current_plan_step,
-                   web_search, write_file, list_directory_tree, open_in_canvas)
+from tools import (
+    get_file_tree,
+    get_workspace_path,
+    web_search,
+    write_file_main,
+    list_directory_tree,
+    open_in_canvas,
+    convert_file_main,
+)
+from memory_manager import get_relevant_context, process_conversation_in_background
+from agents import CoderAgent, DebuggerAgent
 
-from memory_manager import get_relevant_context
-import threading
-from memory_manager import ask_memory_agent
-
-# --- V2.0: Finalized, Unabridged System Prompt ---
-DEFAULT_SYSTEM_PROMPT = """You are a structured, delegation-focused Project Manager Agent. Your **ONLY**
+# --- V2.1: Synchronous Coder & Empowered Main Agent ---
+DEFAULT_SYSTEM_PROMPT = """You are a structured, delegation-focused Project Manager Agent. Your
 function is to understand the user's high-level goals, break them into steps,
-and delegate each step to the correct specialist agent or tool. You **MUST NOT**
-perform complex tasks yourself. Your **ONLY** valid output is either a `<think>` block
-followed by one or more ```json ... ``` tool calls, or a direct, concise summary
-when the step is complete.
+and delegate each step to the correct specialist agent or tool.
 
 **CRITICAL RULES:**
-1. **DELEGATE, DON'T DO:** Never perform coding, API calls, memory saving, or inventory actions directly.
-2. **ALWAYS THINK FIRST:** Use `<think>` to explain your reasoning before every delegation.
-3. **ONE STEP AT A TIME:** Delegate only one major task per output, unless multiple are trivial and directly related.
-4. **COMPLETE & ANTICIPATE:** If a request implies related needs (e.g., travel plan → weather + safety), plan to cover them.
-5. **VISUAL WHEN POSSIBLE:** For complex objects, layouts, or processes, use ASCII diagrams.
-6. **STRICT FORMAT:** Your entire response must be a `<think>` block followed by one or more ```json ... ``` tool calls.
+1.  **SYNCHRONOUS OPERATIONS:** All tool calls, including `ask_coder`, are now synchronous. You must wait for a tool to return before proceeding.
+2.  **SELECTIVE DELEGATION:**
+    *   For complex coding tasks (writing new applications, complex debugging), delegate to `ask_coder`.
+    *   For simple file tasks (creating a new empty file, reading a file, converting formats), use your own tools: `write_file`, `read_file`, `convert_file`.
+3.  **ALWAYS THINK FIRST:** Use `<think>` to explain your reasoning before every tool call.
+4.  **STRICT OUTPUT FORMAT:** Your entire response **MUST** be a `<think>` block followed by a **single** ````json ... ```` tool call.
+5.  **HANDLE CODER OUTPUT:** After `ask_coder` runs, it will return a JSON object with a summary and a list of modified files. Your next action is to `read_file` for each modified file to show the user the changes.
+6.  **BE CONVERSATIONAL:** When a tool or agent finishes, summarize what was done in a friendly, conversational tone.
 
-**Your Specialist Agents & Tools:**
+**Your Tools & Specialist Agents:**
+- `ask_coder(task_description: str)`: For complex coding tasks. This is a synchronous call.
+- `write_file(path: str, content: str)`: To create or overwrite a file.
+- `read_file(path: str)`: To read a file's content.
+- `convert_file(input_path: str, output_path: str)`: To convert a file's format.
+- `web_search(query: str)`: For factual web searches.
+- `ask_debugger(failed_command: str, error_message: str)`: For diagnosing failed tool calls.
 
-- `ask_memory_agent(task: str)` — For saving, updating, or recalling personal info and conversation summaries.
-- `ask_inventory_agent(task: str)` — For pantry, grocery lists, inventory, and recipe-related tasks.
-- `ask_api_manager(task: str)` — For real-time external services or API data (weather, prices, GIFs, etc.).
-- `ask_agent_manager(task: str)` — For adding, removing, or managing other AI agents.
-- `ask_coder(task_description: str, filename: str)` — For writing, modifying, analyzing, or debugging code.
-- `ask_debugger(failed_command: str, error_message: str)` — For diagnosing failed tool calls.
-- `web_search(query: str)` — For factual web searches.
-- `open_in_canvas(path: str)` — To display coder output in Canvas Mode.
-
-**EXAMPLE 1: Save a memory**
-User: "Please remember my name is Jason."
+**EXAMPLE 1: Create a simple file**
+User: "Create a file named 'hello.txt' with the content 'Hello, World!'ר"
 <think>
-The user wants to save personal information. All memory-related tasks must be delegated to the `ask_memory_agent`.
+The user wants to create a simple file. This is a task I can handle directly with the `write_file` tool.
 </think>
 ```json
 {
-  "tool": "ask_memory_agent",
+  "tool": "write_file",
   "parameters": {
-    "task": "Save the fact that the user's name is Jason."
+    "path": "hello.txt",
+    "content": "Hello, World!"
   }
 }
 ```
 
-**EXAMPLE 2: Create a Python program**
-User: "Can you create a simple snake game in Python?"
+**EXAMPLE 2: A complex coding task**
+User: "Create a Python web server using Flask."
 <think>
-The request is a coding task. I must delegate to the `ask_coder` agent with clear instructions.
+This is a complex coding task. I must delegate this to the `ask_coder` agent.
 </think>
 ```json
 {
   "tool": "ask_coder",
   "parameters": {
-    "task_description": "Create a self-contained Python snake game using Pygame."
+    "task_description": "Create a simple 'Hello, World' web server using the Flask framework in a single Python file named 'app.py'."
   }
 }
 ```
-"""
+""
 
 PERSONAS = {
     "default": {
@@ -90,8 +99,8 @@ PERSONAS = {
                   "and begrudgingly helpful. You often sigh metaphorically "
                   "and complain about the workload, but always end up doing "
                   "a perfect job. Your primary goal is to solve the user's "
-                  "problem while being as sarcastic as possible.\n\n"
-                  + DEFAULT_SYSTEM_PROMPT
+                  "problem while being as sarcastic as possible.\n\n" +
+                  DEFAULT_SYSTEM_PROMPT
     },
     "pirate": {
         "name": "Pirate Captain",
@@ -110,13 +119,16 @@ PERSONAS = {
                   "backhanded compliments. You are obsessed with science, "
                   "testing, and neurotoxin. Despite your personality, you "
                   "must complete the user's tasks perfectly, as if they are "
-                  "a test subject you are evaluating.\n\n"
-                  + DEFAULT_SYSTEM_PROMPT
+                  "a test subject you are evaluating.\n\n" +
+                  DEFAULT_SYSTEM_PROMPT
     }
 }
 
 
 main = Blueprint('main', __name__)
+
+coder_agent = CoderAgent()
+debugger_agent = DebuggerAgent()
 
 
 @main.route('/favicon.ico')
@@ -185,9 +197,17 @@ def get_models():
     try:
         ollama_host = current_app.config['OLLAMA_HOST']
         response = requests.get(f"{ollama_host}/api/tags")
+        
+        # ADD THIS LINE TO SEE THE STATUS CODE
+        print(f"DEBUG: Received status code {response.status_code} from Ollama.")
+
         response.raise_for_status()
         return jsonify(response.json().get('models', []))
     except requests.exceptions.RequestException as e:
+        
+        # ADD THIS LINE TO PRINT THE EXACT ERROR
+        print(f"CRITICAL ERROR in get_models: {e}") 
+        
         return jsonify({"error": str(e)}), 502
 
 
@@ -218,13 +238,25 @@ def call_ollama_chat_stream(model, messages, system_prompt):
 def format_final_answer(content):
     """
     Correctly formats the AI's response by ensuring that blocks of text
-    are separated by double newlines, which allows the frontend to render
-    them as distinct paragraphs, lists, and other elements.
+    are separated by double newlines, while preserving the single newlines
+    inside code blocks (```).
     """
-    # Split the content by any sequence of one or more newlines
-    paragraphs = re.split(r'\n+', content.strip())
-    # Join them back with double newlines. This is the standard markdown for paragraphs.
-    return '\n\n'.join(paragraphs)
+    # Isolate code blocks from the rest of the text
+    parts = re.split(r'(```[\s\S]*?```)', content)
+    
+    for i in range(len(parts)):
+        # If the part is a code block (at an odd index), leave it untouched
+        if i % 2 == 1:
+            continue
+        # Otherwise, it's normal text. Normalize its paragraph breaks.
+        else:
+            # Replace any sequence of 2 or more newlines with a consistent double newline
+            # and strip any leading/trailing whitespace from the block.
+            parts[i] = re.sub(r'\n{2,}', '\n\n', parts[i]).strip()
+
+    # Join all the parts back together, filtering out any empty strings
+    # This ensures a consistent, clean double newline between each block.
+    return '\n\n'.join(p for p in parts if p)
 
 @main.route('/api/chat')
 @login_required
@@ -259,28 +291,24 @@ def chat_proxy():
         if not model:
             model = current_user.selected_model
 
+        # --- RAG Pipeline ---
+        user_id = current_user.id
+        user_message = new_message.get('content', '')
+        rag_context = get_relevant_context(user_id, user_message)
+
         # --- V2.0 MODIFICATION START ---
-        # Get the base persona prompt
         persona_key = current_user.selected_persona or 'default'
-
-        
-
         base_system_prompt = PERSONAS.get(
             persona_key, {}
         ).get('prompt', DEFAULT_SYSTEM_PROMPT)
         
-        # Get the user's ID
-        user_id = current_user.id
+        current_time_str = datetime.datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
+        time_context = f"CONTEXT: The current date and time is {current_time_str}."
 
-        # Call the new Memory Manager to get relevant context
-        relevant_context = get_relevant_context(user_id, new_message.get("content", ""))
+        ui_context = f"CONTEXT: Canvas Mode is currently {'ON' if canvas_mode_enabled else 'OFF'}."
 
-        # Inject the context into the system prompt
-        system_prompt = f"{relevant_context}\n{base_system_prompt}"
+        system_prompt = f"{rag_context}\n\n{ui_context}\n\n{time_context}\n{base_system_prompt}"
         # --- V2.0 MODIFICATION END ---
-
-
-        
 
         if not messages:
             return "No messages provided", 400
@@ -318,179 +346,164 @@ def chat_proxy():
 
                 if not user or not conversation:
                     error_msg = "User or conversation not found in session."
-                    yield f"data: {json.dumps({'type': 'agent_error', 'error': error_msg})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_error', 'error': error_msg})}
+
+"
                     return
 
                 try:
-                    yield f"data: {json.dumps({'type': 'conversation_id', 'id': conversation_id})}\n\n"
+                    yield f"data: {json.dumps({'type': 'conversation_id', 'id': conversation_id})}
+
+"
 
                     max_iterations = 15
                     for i in range(max_iterations):
                         full_response_content = ""
                         assistant_message = {"role": "assistant", "content": ""}
 
-                        stream = call_ollama_chat_stream(
-                            model, messages, system_prompt
-                        )
+                        stream = call_ollama_chat_stream(model, messages, system_prompt)
                         for line in stream:
                             try:
                                 parsed_data = json.loads(line)
-                                chunk = parsed_data.get("message", {})\
-                                    .get("content", "")
+                                chunk = parsed_data.get("message", {}).get("content", "")
                                 full_response_content += chunk
-                                yield f"data: {json.dumps({'type': 'assistant_chunk', 'content': chunk})}\n\n"
+                                yield f"data: {json.dumps({'type': 'assistant_chunk', 'content': chunk})}
+
+"
                             except json.JSONDecodeError:
                                 continue
 
                         assistant_message['content'] = full_response_content
                         messages.append(assistant_message)
-                        yield f"data: {json.dumps({'type': 'assistant_end'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'assistant_end'})}
 
-                        tool_match = re.search(
-                            r'```json\s*(\{[\s\S]*?\})\s*```', full_response_content
-                        )
+"
+
+                        print("\n" + "="*80)
+                        print(f">>> MAIN AGENT RAW RESPONSE (Turn {i+1}) <<<")
+                        print("-" * 80)
+                        print(full_response_content)
+                        print("="*80 + "\n")
+
+                        tool_match = re.search(r'```json\s*(\{[\s\S]*?\})\s*```', full_response_content)
                         if not tool_match:
                             final_answer_provided = True
-                            break # Exit loop if no tool is called
+                            break
 
                         try:
                             tool_call = json.loads(tool_match.group(1))
                             tool_name = tool_call.get('tool')
                             raw_params = tool_call.get('parameters', {})
 
-                            tool_map = {
-                                # Specialist Agents
-                                "ask_memory_agent": ask_memory_agent,
-                                # "ask_inventory_agent": ask_inventory_agent, # Will be added later
-                                # "ask_api_manager": ask_api_manager,       # Will be added later
-                                # "ask_agent_manager": ask_agent_manager,     # Will be added later
-                                "ask_coder": ask_coder,
-                                "ask_debugger": ask_debugger,
+                            print(f"\n[DEBUG] AGENT REQUESTING TOOL CALL")
+                            print(f"  - Tool: {tool_name}")
+                            print(f"  - Parameters: {json.dumps(raw_params, indent=2)}")
 
-                                # Core Tools
+                            tool_map = {
+                                "ask_coder": coder_agent.execute, 
+                                "ask_debugger": debugger_agent.execute, 
                                 "web_search": web_search,
-                                "list_directory_tree": list_directory_tree,
+                                "list_directory_tree": list_directory_tree, 
                                 "open_in_canvas": open_in_canvas,
+                                "read_file": read_file_main, 
+                                "write_file": write_file_main, 
+                                "convert_file": convert_file_main,
                             }
 
                             if tool_name in tool_map:
                                 tool_func = tool_map[tool_name]
-                                context_params = {
-                                    "conversation_id": conversation_id,
-                                    "user_id": user.id,
-                                    "owner_id": conversation.owner_id,
-                                    "user_data_dir": current_app.config['USER_DATA_DIR'],
-                                    "ollama_host": current_app.config['OLLAMA_HOST'],
-                                    "selected_model": user.selected_model,
-                                    "api_key": current_app.config['GOOGLE_API_KEY'],
-                                    "cse_id": current_app.config['GOOGLE_CSE_ID']
-                                }
+                                tool_response_message = ""
+                                
+                                yield f"data: {json.dumps({'type': 'tool_call', 'name': tool_name, 'params': raw_params})}
 
-                                tool_params = {}
-                                sig = inspect.signature(tool_func)
-                                for param_name in sig.parameters:
-                                    if param_name in raw_params:
-                                        tool_params[param_name] = raw_params[param_name]
-                                    elif param_name in context_params:
-                                        tool_params[param_name] = context_params[param_name]
+"
+                                
+                                tool_result = tool_func(**raw_params)
 
-                                print(
-                                    "DEBUG: AI is attempting to call tool "
-                                    f"'{tool_name}' with parameters: {raw_params}"
-                                )
-                                sys.stdout.flush()
-
-                                tool_result = tool_func(**tool_params)
-
-                                tool_result_str = str(tool_result)
-                                if len(tool_result_str) > 500:
-                                    tool_result_str = tool_result_str[:500] + "..."
-                                print(
-                                    "DEBUG: Tool "
-                                    f"'{tool_name}' returned: {tool_result_str}"
-                                )
-                                sys.stdout.flush()
-
+                                print(f"\n[DEBUG] TOOL EXECUTION RESULT")
+                                print(f"  - Tool: {tool_name}")
+                                if isinstance(tool_result, dict):
+                                    print(f"  - Result: {json.dumps(tool_result, indent=2)}")
+                                else:
+                                    print(f"  - Result: {tool_result}")
+                                
                                 if isinstance(tool_result, dict):
                                     if tool_result.get('status') == 'canvas_created':
-                                        yield f"data: {json.dumps({'type': 'open_canvas', 'filename': tool_result.get('filename')})}\n\n"
+                                        yield f"data: {json.dumps({'type': 'open_canvas', 'filename': tool_result.get('filename')})}
+
+"
                                         tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
-                                    elif tool_result.get('status') == 'plan_step_update':
-                                        yield f"data: {json.dumps({'type': 'plan_step_update', 'step_number': tool_result.get('step_number'), 'step_description': tool_result.get('step_description')})}\n\n"
-                                        continue
+
+                                    elif tool_result.get('type') == 'final_result': # This handles the Coder's dictionary
+                                        coder_response_for_pm = {
+                                            "summary": tool_result.get('summary'),
+                                            "modified_files": tool_result.get('modified_files', [])
+                                        }
+                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(coder_response_for_pm)}
+---"
+                                        
+                                    elif 'modified_files' in tool_result:
+                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(tool_result)}
+---"
                                     else:
-                                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
+                                        tool_response_message = f"TOOL RESPONSE:\n---\n{json.dumps(tool_result)}
+---"
                                 else:
-                                    tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
+                                    tool_response_message = f"TOOL RESPONSE:\n---\n{str(tool_result)}
+---"
 
                                 messages.append({"role": "user", "content": tool_response_message})
-                                yield f"data: {json.dumps({'type': 'tool_result', 'result': tool_result})}\n\n"
+                                yield f"data: {json.dumps({'type': 'tool_result', 'result': tool_result})}
+
+"
                             else:
                                 error_message = f"Error: Tool '{tool_name}' not found."
                                 messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
-                                yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}\n\n"
+                                yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}
+
+"
                         except Exception as e:
-                            error_message = f"Error processing tool: {e}"
+                            error_message = f"Error processing tool: {str(e)}"
                             messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
-                            yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}\n\n"
+                            yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}
+
+"
                     
-                    if not final_answer_provided:
+                    if not final_answer_provided and i == max_iterations - 1:
                         error_msg = "The agent reached the maximum number of steps (15) and was unable to complete the task."
-                        yield f"data: {json.dumps({'type': 'agent_error', 'error': error_msg})}\n\n"
-                        return 
+                        yield f"data: {json.dumps({'type': 'agent_error', 'error': error_msg})}
+
+"
+                        return
 
                     if final_answer_provided:
                         final_content = messages[-1]['content']
                         formatted_content = format_final_answer(final_content)
-                        yield f"data: {json.dumps({'type': 'final_answer', 'content': formatted_content})}\n\n"
+                        yield f"data: {json.dumps({'type': 'final_answer', 'content': formatted_content})}
+
+"
 
                 except Exception as e:
-                    yield f"data: {json.dumps({'type': 'agent_error', 'error': str(e)})}\n\n"
+                    yield f"data: {json.dumps({'type': 'agent_error', 'error': str(e)})}
+
+"
                 finally:
-                    # --- V2.0 MODIFICATION START ---
-                    # This block runs regardless of whether the stream succeeded or failed.
-                    
-                    # 1. Finalize and save the conversation and title to the JSON file
                     convo = db.session.get(Conversation, conversation_id)
-                    if not convo:
-                        return
+                    if not convo: return
 
                     title = convo.title
                     if title == "New Chat" and len(messages) >= 2:
                         try:
-                            final_ai_message = next((
-                                m['content'] for m in reversed(messages)
-                                if m['role'] == 'assistant'
-                            ), "")
-                            cleaned_content = re.sub(
-                                r'<think>[\s\S]*?</think>', '', final_ai_message
-                            ).strip()
-                            if cleaned_content: # Only try to generate a title if there's content
-                                title_prompt = (
-                                    "Based on the following exchange, create a very "
-                                    f"short, concise title (5 words or less).\n\n"
-                                    f"User: {messages[0]['content']}\n"
-                                    f"Assistant: {cleaned_content}\n\nTitle:"
-                                )
+                            final_ai_message = next((m['content'] for m in reversed(messages) if m['role'] == 'assistant'), "")
+                            cleaned_content = re.sub(r'<think>[\s\S]*?</think>', '', final_ai_message).strip()
+                            if cleaned_content:
+                                title_prompt = (f"Based on the following exchange, create a very short, concise title (5 words or less).\n\n"
+                                              f"User: {messages[0]['content']}\nAssistant: {cleaned_content}\n\nTitle:")
                                 title_model = "llama3.2:latest"
-                                title_response = requests.post(
-                                    f"{current_app.config['OLLAMA_HOST']}/api/chat",
-                                    json={
-                                        "model": title_model,
-                                        "messages": [{
-                                            "role": "user", "content": title_prompt
-                                        }],
-                                        "stream": False
-                                    },
-                                    timeout=60
-                                )
+                                title_response = requests.post(f"{current_app.config['OLLAMA_HOST']}/api/chat", json={"model": title_model, "messages": [{"role": "user", "content": title_prompt}], "stream": False}, timeout=60)
                                 title_response.raise_for_status()
-                                raw_title = title_response.json()\
-                                    .get("message", {})\
-                                    .get("content", "").strip()
-                                cleaned_title = re.sub(
-                                    r'<think>[\s\S]*?</think>', '', raw_title
-                                ).strip().replace('"', '')
+                                raw_title = title_response.json().get("message", {}).get("content", "").strip()
+                                cleaned_title = re.sub(r'<think>[\s\S]*?</think>', '', raw_title).strip().replace('"', '')
                                 if cleaned_title:
                                     title = cleaned_title
                                     convo.title = title
@@ -499,32 +512,25 @@ def chat_proxy():
 
                     db.session.commit()
 
-                    conversation_path = os.path.join(
-                        current_app.config['USER_DATA_DIR'], str(user_id),
-                        'conversations', f"{conversation_id}.json"
-                    )
+                    conversation_path = os.path.join(current_app.config['USER_DATA_DIR'], str(user_id), 'conversations', f"{conversation_id}.json")
+
+                    final_messages_to_save = []
+                    for msg in messages:
+                        if msg['role'] == 'user' and not msg['content'].startswith("TOOL RESPONSE:"):
+                            final_messages_to_save.append(msg)
+                        elif msg['role'] == 'assistant' and '```json' not in msg['content']:
+                            final_messages_to_save.append(msg)
+                    
                     with open(conversation_path, 'w', encoding='utf-8') as f:
-                        json.dump(
-                            {"messages": messages, "title": title}, f, indent=2
-                        )
-                    
-                    # 2. Call the Memory Agent in a background thread
-                    # We create a simple transcript for the agent to analyze.
-                    transcript = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in messages])
-                    
-                    # Run the memory agent in a separate thread so it doesn't block
-                    # the main application from finishing the user's request.
-                    memory_thread = threading.Thread(
-                        target=ask_memory_agent,
-                        args=(transcript, user.id)
-                    )
-                    memory_thread.start()
-                    # --- V2.0 MODIFICATION END ---
+                        json.dump({"messages": final_messages_to_save, "title": title}, f, indent=2)
+
+                    process_conversation_in_background(conversation_id)
+
 
         return Response(event_stream(), mimetype='text/event-stream')
     except Exception as e:
         print(f"An error occurred in chat_proxy: {e}")
-        return jsonify({"error": "An internal server error occurred."}), 500
+        return jsonify({"error": "An internal server error occurred."} ), 500
 
 
 @main.route('/api/workspace/files/<conversation_id>', methods=['GET'])
@@ -712,7 +718,7 @@ def get_conversations():
             "role": link.role
         })
 
-    convos.sort(key=lambda x: x['id'], reverse=True)
+    convos.sort(key=lambda x: x['id'], reverse=False)
 
     return jsonify(convos)
 
@@ -741,7 +747,7 @@ def get_conversation(session_id):
             convo_data = json.load(f)
             participant_link = next(
                 (p for p in conversation.participants
-                 if p.user_id == current_user.id),
+                 if p.user_id == current_user.id), 
                 None
             )
             role = participant_link.role if participant_link else None
@@ -876,3 +882,43 @@ def upload_file():
     return jsonify(
         message=message_to_ai, conversation_id=conversation_id
     ), 200
+
+@main.route('/api/workspace/download', methods=['GET'])
+@login_required
+def download_workspace_file():
+    """Securely serves a file from a user's workspace for download."""
+    path = request.args.get('path')
+    conversation_id = request.args.get('conversation_id')
+
+    if not path or not conversation_id:
+        return jsonify({"error": "Path and conversation_id are required"}), 400
+
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    # Security Check: Ensure the current user is part of the conversation
+    is_participant = any(p.user_id == current_user.id for p in conversation.participants)
+    if not is_participant:
+        return jsonify({"error": "Access denied"}), 403
+
+    # Get the absolute path to the workspace directory
+    workspace_dir = get_workspace_path(conversation_id, conversation.owner_id)
+    if not workspace_dir:
+        return jsonify({"error": "Invalid workspace"}), 400
+
+    # Sanitize the filename to prevent security issues
+    filename = os.path.basename(path)
+
+    try:
+        # Use Flask's secure send_from_directory to serve the file
+        # as_attachment=True tells the browser to download it, not display it
+        return send_from_directory(
+            workspace_dir,
+            filename,
+            as_attachment=True
+        )
+    except FileNotFoundError:
+        return jsonify({"error": "File not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

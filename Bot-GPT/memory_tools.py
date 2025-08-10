@@ -1,9 +1,10 @@
 # memory_tools.py
 from models import db, User, UserMemory, UserRelationship, UserPreferences
 
-def _save_user_fact(user_id: int, fact_key: str, fact_value: str):
+def _save_contextual_fact(user_id: int, fact_key: str, fact_value: str, context: str = None):
     """
-    Saves or updates a key-value fact to a specific user's long-term memory.
+    Saves or updates a key-value fact to a user's memory, including optional
+    context to define the scope of the fact (e.g., location, time).
     This is a private tool for the Memory Agent.
     """
     if not user_id or not fact_key or not fact_value:
@@ -13,20 +14,18 @@ def _save_user_fact(user_id: int, fact_key: str, fact_value: str):
     if not user:
         return f"Error: User with ID {user_id} not found."
 
-    # Check if this fact already exists for the user
-    existing_fact = UserMemory.query.filter_by(user_id=user_id, fact_key=fact_key).first()
+    # Look for an existing fact with the same key AND context
+    existing_fact = UserMemory.query.filter_by(user_id=user_id, fact_key=fact_key, context=context).first()
     
     if existing_fact:
-        # Update the existing fact
         existing_fact.fact_value = fact_value
         db.session.commit()
-        return f"Fact updated for {user.username}: '{fact_key}' is now '{fact_value}'."
+        return f"Fact updated for {user.username}: '{fact_key}' (context: {context}) is now '{fact_value}'."
     else:
-        # Add a new fact
-        new_fact = UserMemory(user_id=user_id, fact_key=fact_key, fact_value=fact_value)
+        new_fact = UserMemory(user_id=user_id, fact_key=fact_key, fact_value=fact_value, context=context)
         db.session.add(new_fact)
         db.session.commit()
-        return f"New fact saved for {user.username}: '{fact_key}' is '{fact_value}'."
+        return f"New fact saved for {user.username}: '{fact_key}' (context: {context}) is '{fact_value}'."
 
 def _save_user_relationship(user_one_username: str, user_two_username: str, relationship_description: str):
     """

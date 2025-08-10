@@ -75,6 +75,7 @@ class UserMemory(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     fact_key = db.Column(db.String(150), nullable=False)
     fact_value = db.Column(db.String(500), nullable=False)
+    context = db.Column(db.String(250), nullable=True) # e.g., "for Kentucky", "during 2025"
     user = db.relationship('User', foreign_keys=[user_id])
 
 class UserRelationship(db.Model):
