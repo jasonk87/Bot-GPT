@@ -587,8 +587,6 @@ def ask_agent_manager(task: str, user_id=None, conversation_id=None):
     # TODO: This will trigger the Agent Manager's internal ReAct loop.
     return "The Agent Manager is handling your request."
 
-# --- V2.0: Advanced Surgical Coding Tools (Fully Implemented) ---
-
 def search_and_replace_in_file(path: str, search_pattern: str, replace_string: str, conversation_id=None, user_id=None):
     """
     Performs a regex search and replace for a given pattern in a file.

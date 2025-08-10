@@ -1,5 +1,3 @@
-import { marked } from 'https://cdn.jsdelivr.net/npm/marked/marked.min.js';
-
 let currentAgentBubble = null;
 
 export function getAgentIcon(agentName) {
