@@ -837,9 +837,9 @@ def upload_file():
 
     file_list_str = "\n- ".join(filenames)
     message_to_ai = (
-        "User uploaded the following files to the workspace:\n"
-        "- {}\n\n"
-        "User's prompt: {}".format(file_list_str, prompt)
+        f"User uploaded the following files to the workspace:\n"
+        f"- {file_list_str}\n\n"
+        f"User's prompt: {prompt}"
     )
 
     return jsonify(
