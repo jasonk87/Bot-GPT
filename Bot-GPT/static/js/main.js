@@ -592,9 +592,21 @@ function sendMessage() {
                 case 'final_answer':
                     conversationHistory.push({ role: 'assistant', content: data.content });
                     updateBotBubble(currentAgentBubble, data.content, true);
+                    // DO NOT close the connection or set agent running to false here anymore.
+                    // We will wait for the 'done' event.
+                    break;
+
+                // --- ADD THIS ENTIRE NEW CASE ---
+                case 'done':
+                    // The server has confirmed all work is complete.
                     setAgentRunning(false);
                     eventSource.close();
-                    populateConversations(); // Update title if it was a new chat
+
+                    // Now it is safe to update the UI with the final title
+                    const conversationItem = document.querySelector(`.conversation-item[data-id='${currentConversationId}'] .truncate`);
+                    if (conversationItem && data.title) {
+                        conversationItem.textContent = data.title;
+                    }
                     break;
                 case 'agent_error':
                     updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);

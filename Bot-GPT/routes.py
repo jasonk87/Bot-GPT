@@ -494,6 +494,8 @@ def chat_proxy():
                         {"messages": messages, "title": title}, f, indent=2
                     )
 
+                yield f"data: {json.dumps({'type': 'done', 'title': title})}\n\n"
+
     return Response(event_stream(), mimetype='text/event-stream')
 
 
