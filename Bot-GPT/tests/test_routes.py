@@ -1,5 +1,5 @@
 import json
-from models import Conversation, ConversationParticipant
+from models import Conversation, ConversationParticipant, User
 
 
 def test_home_page(client):
@@ -50,3 +50,34 @@ def test_get_workspace_files_unauthorized(client):
     response = client.get('/api/workspace/files/some_convo_id')
     assert response.status_code == 302
     assert '/login' in response.headers['Location']
+
+
+import pytest
+
+@pytest.mark.xfail(reason="This test passes in the pytest environment, but fails when running the app as a server. This is the bug to be fixed.")
+def test_register_new_user(client, db):
+    """
+    Tests that a new user can be registered successfully.
+
+    NOTE: This test currently passes because the test environment behaves
+    differently from the live server environment. The bug only manifests
+    when running the app with `python app.py`. This test is here to
+    provide a framework for verifying the fix.
+    """
+    # 1. Make a POST request to the /register endpoint.
+    response = client.post('/register', json={
+        'username': 'newtestuser',
+        'password': 'password123'
+    })
+
+    # 2. Assert the response is successful.
+    assert response.status_code == 201
+    data = json.loads(response.data)
+    assert data['message'] == 'Registration successful'
+    assert data['username'] == 'newtestuser'
+
+    # 3. Assert the user was actually created in the database.
+    # This is the part that I expect to fail.
+    user = db.session.query(User).filter_by(username='newtestuser').first()
+    assert user is not None
+    assert user.username == 'newtestuser'

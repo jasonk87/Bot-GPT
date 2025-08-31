@@ -14,12 +14,13 @@ from models import User
 
 
 @pytest.fixture(scope='function')
-def app():
+def app(tmp_path):
     """Create and configure a new app instance for each test."""
+    db_path = tmp_path / "test.db"
     app = create_app()
     app.config.update({
         "TESTING": True,
-        "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
+        "SQLALCHEMY_DATABASE_URI": f"sqlite:///{db_path}",
         "WTF_CSRF_ENABLED": False,
         "SECRET_KEY": "test-secret-key",
     })
