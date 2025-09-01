@@ -230,7 +230,7 @@ def pip(command, conversation_id=None, user_id=None):
         return f"Error: {str(e)}"
 
 
-def web_search(query, conversation_id=None, user_id=None, selected_model=None):
+def web_search(query, conversation_id=None, user_id=None, user=None):
     """
     Performs a web search using the Google Search API, scrapes the top
     results, and uses an AI model to summarize the answer.
@@ -299,7 +299,7 @@ def web_search(query, conversation_id=None, user_id=None, selected_model=None):
         if len(consolidated_content) > max_length:
             consolidated_content = consolidated_content[:max_length] + "..."
 
-        current_model = selected_model or 'default_model_name'
+        current_model = user.selected_model if user else 'default_model_name'
         ollama_host = current_app.config['OLLAMA_HOST']
 
         summarization_prompt = (
@@ -337,14 +337,14 @@ def web_search(query, conversation_id=None, user_id=None, selected_model=None):
         return f"An unexpected error occurred during web search: {e}"
 
 
-def ask_debugger(failed_command, error_message, selected_model=None, user_id=None):
+def ask_debugger(failed_command, error_message, user=None, user_id=None):
     """Delegates a debugging task to a specialist agent."""
     debugger_prompt = (
         f"Fix this failed command:\n{failed_command}\n"
         f"Error:\n{error_message}\nReturn ONLY the corrected JSON."
     )
     try:
-        current_model = selected_model or 'default_model_name'
+        current_model = user.selected_model if user else 'default_model_name'
         response = requests.post(
             f"{current_app.config['OLLAMA_HOST']}/api/chat",
             json={
@@ -365,7 +365,7 @@ def ask_debugger(failed_command, error_message, selected_model=None, user_id=Non
         return f"Error calling debugger agent: {e}"
 
 
-def ask_coder(task_description, selected_model=None, user_id=None):
+def ask_coder(task_description, user=None, user_id=None):
     """Delegates a coding task to a specialist agent."""
     coder_prompt = (
         "Write Python code for the following task. Your code should be "
@@ -374,7 +374,7 @@ def ask_coder(task_description, selected_model=None, user_id=None):
         f"Task: {task_description}\nCode:"
     )
     try:
-        current_model = selected_model or 'default_model_name'
+        current_model = user.selected_model if user else 'default_model_name'
         response = requests.post(
             f"{current_app.config['OLLAMA_HOST']}/api/chat",
             json={

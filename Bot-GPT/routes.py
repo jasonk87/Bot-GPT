@@ -378,9 +378,10 @@ def chat_proxy():
                             context_params = {
                                 "conversation_id": conversation_id,
                                 "owner_id": conversation.owner_id,
+                                "user_id": user_id,
                                 "user_data_dir": current_app.config['USER_DATA_DIR'],
                                 "ollama_host": current_app.config['OLLAMA_HOST'],
-                                "selected_model": current_user.selected_model,
+                                "user": current_user,
                                 "api_key": current_app.config['GOOGLE_API_KEY'],
                                 "cse_id": current_app.config['GOOGLE_CSE_ID']
                             }
