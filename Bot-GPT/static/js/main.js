@@ -32,6 +32,7 @@ let isAgentRunning = false;
 let isCanvasMode = false;
 let currentAgentBubble = null;
 let fullAgentResponse = "";
+let currentResponseContent = "";
 
 document.addEventListener('DOMContentLoaded', async () => {
     const response = await fetch(`${window.location.origin}/check_auth`);
@@ -236,6 +237,21 @@ async function initializeApp(username) {
     socket.on('participant_update', (data) => {
         updateParticipantList(data.participants);
     });
+
+    function updateParticipantList(participants) {
+        if (!participantList) return;
+        participantList.innerHTML = ''; // Clear the list
+        if (participants && participants.length > 0) {
+            participants.forEach(p => {
+                const participantElement = document.createElement('div');
+                participantElement.className = 'p-2 text-sm text-gray-300 truncate';
+                participantElement.textContent = p.username;
+                participantList.appendChild(participantElement);
+            });
+        } else {
+            participantList.innerHTML = '<p class="text-sm text-gray-500">No participants.</p>';
+        }
+    }
 
     // Attach event listeners
     logoutBtn.addEventListener('click', async () => {
@@ -725,7 +741,7 @@ function sendMessage() {
     chatInput.style.height = 'auto';
 
     currentAgentBubble = createBotMessageContainer();
-    let currentResponseContent = "";
+    currentResponseContent = ""; // Reset the content for the new message
     let thinkContent = "";
     let inThinkBlock = true;
 
