@@ -619,15 +619,6 @@ function sendMessage() {
 
     const isNewConversation = !currentConversationId;
 
-            const params = {
-        messages: JSON.stringify(conversationHistory),
-        model: userModel,
-        conversation_id: currentConversationId || ''
-            };
-            if (isCanvasMode) {
-                params.canvas_mode = 'true';
-            }
-
     const params = {
         messages: JSON.stringify(conversationHistory),
         model: userModel,
