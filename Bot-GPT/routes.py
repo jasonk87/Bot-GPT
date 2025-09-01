@@ -477,8 +477,11 @@ def handle_chat_message(data):
     """Handles a chat message received over WebSocket."""
     room = data.get('conversation_id') or request.sid
 
+    # Parse the messages string into a list
+    messages = json.loads(data['messages'])
+
     # Broadcast user's message to the room
-    emit('ai_response', {"type": "user_message", "content": data['messages'][-1]['content']}, room=room, include_self=False)
+    emit('ai_response', {"type": "user_message", "content": messages[-1]['content']}, room=room, include_self=False)
 
     for event in handle_ai_response(data):
         emit('ai_response', event, room=room)
