@@ -334,16 +334,6 @@ async function initializeApp(username) {
     await populateConversations();
 }
 
-function updateParticipantList(participants) {
-    participantList.innerHTML = '';
-    participants.forEach(participant => {
-        const item = document.createElement('div');
-        item.className = 'p-2 text-sm';
-        item.textContent = participant.username;
-        participantList.appendChild(item);
-    });
-}
-
 async function loadUserSettings() {
     try {
         const response = await fetch(`${API_BASE}/settings`);
