@@ -14,6 +14,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/python/python.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
         body { font-family: 'Inter', sans-serif; }
         .scrollable-content::-webkit-scrollbar { width: 6px; }
@@ -236,6 +237,10 @@
             </div>
             <div id="files-panel" class="hidden flex-col flex-1 overflow-hidden">
                  <div id="file-explorer" class="scrollable-content flex-1 p-4 overflow-y-auto"></div>
+            </div>
+            <div id="participants-panel" class="flex-col flex-1 overflow-hidden">
+                <div class="p-2 text-center font-semibold border-b border-gray-700">Participants</div>
+                <div id="participant-list" class="scrollable-content flex-1 p-2 overflow-y-auto"></div>
             </div>
             <div class="p-2 border-t border-gray-700 flex items-center justify-between">
                 <span id="welcome-user" class="text-sm truncate"></span>

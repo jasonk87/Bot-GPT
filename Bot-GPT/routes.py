@@ -11,8 +11,9 @@ from flask import (Blueprint, Response, current_app, jsonify,
                    render_template, request)
 from flask_login import current_user, login_required, login_user, logout_user
 from werkzeug.utils import secure_filename
+from flask_socketio import join_room, leave_room, emit
 
-from extensions import db
+from extensions import db, socketio
 from models import Conversation, ConversationParticipant, User
 from tools import (ask_coder, ask_debugger, create_and_open_canvas,
                    execute_python, get_file_tree, get_workspace_path,
@@ -266,19 +267,17 @@ def call_ollama_chat_stream(model, messages, system_prompt):
                     yield line
 
 
-@main.route('/api/chat')
-@login_required
-def chat_proxy():
-    """Orchestrates the ReAct loop for conversational AI."""
-    messages_str = request.args.get('messages', '[]')
-    model = request.args.get('model')
-    conversation_id_arg = request.args.get('conversation_id')
-    conversation = None  # Initialize conversation to None
+def handle_ai_response(data):
+    """Handles the AI response loop and yields events."""
+    messages_str = data.get('messages', '[]')
+    model = data.get('model')
+    conversation_id_arg = data.get('conversation_id')
 
     try:
         messages = json.loads(messages_str)
     except json.JSONDecodeError:
-        return "Invalid 'messages' format", 400
+        yield {"type": "agent_error", "error": "Invalid 'messages' format"}
+        return
 
     if not model:
         model = current_user.selected_model
@@ -290,11 +289,11 @@ def chat_proxy():
     user_id = current_user.id
 
     if not messages:
-        return "No messages provided", 400
+        yield {"type": "agent_error", "error": "No messages provided"}
+        return
 
     conversation_id = conversation_id_arg or str(int(time.time() * 1000))
 
-    # Check if this is a new conversation and save it immediately
     conversation = Conversation.query.get(conversation_id)
     if not conversation:
         new_convo = Conversation(
@@ -318,188 +317,191 @@ def chat_proxy():
         with open(convo_path, 'w', encoding='utf-8') as f:
             json.dump({"messages": messages, "title": "New Chat"}, f, indent=2)
 
-    app = current_app._get_current_object()
+    yield {"type": "conversation_id", "id": conversation_id}
+
+    final_answer_provided = False
+    max_iterations = 15
+    for i in range(max_iterations):
+        full_response_content = ""
+        assistant_message = {"role": "assistant", "content": ""}
+
+        stream = call_ollama_chat_stream(
+            model, messages, system_prompt
+        )
+        for line in stream:
+            try:
+                parsed_data = json.loads(line)
+                chunk = parsed_data.get("message", {}).get("content", "")
+                full_response_content += chunk
+                yield {"type": "assistant_chunk", "content": chunk}
+            except json.JSONDecodeError:
+                continue
+
+        assistant_message['content'] = full_response_content
+        messages.append(assistant_message)
+        yield {"type": "assistant_end"}
+
+        tool_match = re.search(
+            r'```json\s*(\{[\s\S]*?\})\s*```', full_response_content
+        )
+        if not tool_match:
+            final_answer_provided = True
+            break
+
+        try:
+            tool_call = json.loads(tool_match.group(1))
+            tool_name = tool_call.get('tool')
+            raw_params = tool_call.get('parameters', {})
+
+            tool_map = {
+                "web_search": web_search,
+                "list_files": list_files,
+                "read_file": read_file,
+                "write_file": write_file,
+                "execute_python": execute_python,
+                "pip": pip,
+                "ask_debugger": ask_debugger,
+                "ask_coder": ask_coder,
+                "create_and_open_canvas": create_and_open_canvas,
+                "set_current_plan_step": set_current_plan_step,
+            }
+
+            if tool_name in tool_map:
+                tool_func = tool_map[tool_name]
+                context_params = {
+                    "conversation_id": conversation_id,
+                    "owner_id": conversation.owner_id,
+                    "user_id": user_id,
+                    "user_data_dir": current_app.config['USER_DATA_DIR'],
+                    "ollama_host": current_app.config['OLLAMA_HOST'],
+                    "user": current_user,
+                    "api_key": current_app.config['GOOGLE_API_KEY'],
+                    "cse_id": current_app.config['GOOGLE_CSE_ID']
+                }
+
+                tool_params = {}
+                sig = inspect.signature(tool_func)
+                for param_name in sig.parameters:
+                    if param_name in raw_params:
+                        tool_params[param_name] = raw_params[param_name]
+                    elif param_name in context_params:
+                        tool_params[param_name] = context_params[param_name]
+
+                tool_result = tool_func(**tool_params)
+
+                if isinstance(tool_result, dict) and tool_result.get('status') == 'canvas_created':
+                    yield {"type": "open_canvas", "filename": tool_result.get('filename')}
+                    tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
+                elif isinstance(tool_result, dict) and tool_result.get('status') == 'plan_step_update':
+                    yield {"type": "plan_step_update", "step_number": tool_result.get('step_number'), "step_description": tool_result.get('step_description')}
+                    continue
+                else:
+                    tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
+
+                messages.append({"role": "user", "content": tool_response_message})
+                yield {"type": "tool_result", "result": tool_result}
+            else:
+                error_message = f"Error: Tool '{tool_name}' not found."
+                messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
+                yield {"type": "tool_error", "error": error_message}
+        except Exception as e:
+            print(f"--- FAILED TOOL CALL ---")
+            print(f"AI's full response:\n{full_response_content}")
+            print(f"Error: {e}")
+            print(f"--- END FAILED TOOL CALL ---")
+            error_message = f"Error processing tool: {e}"
+            messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
+            yield {"type": "tool_error", "error": error_message}
+
+    if final_answer_provided:
+        yield {"type": "final_answer", "content": messages[-1]['content']}
+
+    convo = Conversation.query.get(conversation_id)
+    if not convo:
+        return
+
+    title = convo.title
+    if title == "New Chat" and len(messages) >= 2:
+        try:
+            final_ai_message = next((
+                m['content'] for m in reversed(messages)
+                if m['role'] == 'assistant'
+            ), "")
+            cleaned_content = re.sub(
+                r'<think>[\s\S]*?</think>', '', final_ai_message
+            ).strip()
+            title_prompt = (
+                "Based on the following exchange, create a very "
+                f"short, concise title (5 words or less).\n\n"
+                f"User: {messages[0]['content']}\n"
+                f"Assistant: {cleaned_content}\n\nTitle:"
+            )
+            title_model = "llama3.2:latest"
+            title_response = requests.post(
+                f"{current_app.config['OLLAMA_HOST']}/api/chat",
+                json={
+                    "model": title_model,
+                    "messages": [{"role": "user", "content": title_prompt}],
+                    "stream": False
+                },
+                timeout=180
+            )
+            title_response.raise_for_status()
+            raw_title = title_response.json().get("message", {}).get("content", "").strip()
+            cleaned_title = re.sub(
+                r'<think>[\s\S]*?</think>', '', raw_title
+            ).strip().replace('"', '')
+            if cleaned_title:
+                title = cleaned_title
+                convo.title = title
+        except requests.exceptions.RequestException as e:
+            print(f"Could not auto-generate title: {e}")
+
+    db.session.commit()
+
+    conversation_path = os.path.join(
+        current_app.config['USER_DATA_DIR'], str(user_id),
+        'conversations', f"{conversation_id}.json"
+    )
+    with open(conversation_path, 'w', encoding='utf-8') as f:
+        json.dump(
+            {"messages": messages, "title": title}, f, indent=2
+        )
+
+    yield {"type": "done", "title": title}
+
+
+@socketio.on('chat_message')
+@login_required
+def handle_chat_message(data):
+    """Handles a chat message received over WebSocket."""
+    room = data.get('conversation_id') or request.sid
+
+    # Broadcast user's message to the room
+    emit('ai_response', {"type": "user_message", "content": data['messages'][-1]['content']}, room=room, include_self=False)
+
+    for event in handle_ai_response(data):
+        emit('ai_response', event, room=room)
+
+
+@main.route('/api/chat')
+@login_required
+def chat_proxy():
+    """ (DEPRECATED) Orchestrates the ReAct loop for conversational AI."""
+    messages_str = request.args.get('messages', '[]')
+    model = request.args.get('model')
+    conversation_id_arg = request.args.get('conversation_id')
+
+    data = {
+        "messages": messages_str,
+        "model": model,
+        "conversation_id": conversation_id_arg
+    }
 
     def event_stream():
-        final_answer_provided = False
-        with app.app_context():
-            try:
-                yield f"data: {json.dumps({'type': 'conversation_id', 'id': conversation_id})}\n\n"
-
-                max_iterations = 15
-                for i in range(max_iterations):
-                    full_response_content = ""
-                    assistant_message = {"role": "assistant", "content": ""}
-
-                    stream = call_ollama_chat_stream(
-                        model, messages, system_prompt
-                    )
-                    for line in stream:
-                        try:
-                            parsed_data = json.loads(line)
-                            chunk = parsed_data.get("message", {})\
-                                .get("content", "")
-                            full_response_content += chunk
-                            yield f"data: {json.dumps({'type': 'assistant_chunk', 'content': chunk})}\n\n"
-                        except json.JSONDecodeError:
-                            continue
-
-                    assistant_message['content'] = full_response_content
-                    messages.append(assistant_message)
-                    yield f"data: {json.dumps({'type': 'assistant_end'})}\n\n"
-
-                    tool_match = re.search(
-                        r'```json\s*(\{[\s\S]*?\})\s*```', full_response_content
-                    )
-                    if not tool_match:
-                        final_answer_provided = True
-                        break
-
-                    try:
-                        tool_call = json.loads(tool_match.group(1))
-                        tool_name = tool_call.get('tool')
-                        raw_params = tool_call.get('parameters', {})
-
-                        tool_map = {
-                            "web_search": web_search,
-                            "list_files": list_files,
-                            "read_file": read_file,
-                            "write_file": write_file,
-                            "execute_python": execute_python,
-                            "pip": pip,
-                            "ask_debugger": ask_debugger,
-                            "ask_coder": ask_coder,
-                            "create_and_open_canvas": create_and_open_canvas,
-                            "set_current_plan_step": set_current_plan_step,
-                        }
-
-                        if tool_name in tool_map:
-                            tool_func = tool_map[tool_name]
-                            context_params = {
-                                "conversation_id": conversation_id,
-                                "owner_id": conversation.owner_id,
-                                "user_id": user_id,
-                                "user_data_dir": current_app.config['USER_DATA_DIR'],
-                                "ollama_host": current_app.config['OLLAMA_HOST'],
-                                "user": current_user,
-                                "api_key": current_app.config['GOOGLE_API_KEY'],
-                                "cse_id": current_app.config['GOOGLE_CSE_ID']
-                            }
-
-                            tool_params = {}
-                            sig = inspect.signature(tool_func)
-                            for param_name in sig.parameters:
-                                if param_name in raw_params:
-                                    tool_params[param_name] = raw_params[param_name]
-                                elif param_name in context_params:
-                                    tool_params[param_name] = context_params[param_name]
-
-                            print(
-                                "DEBUG: AI is attempting to call tool "
-                                f"'{tool_name}' with parameters: {raw_params}"
-                            )
-                            sys.stdout.flush()
-
-                            tool_result = tool_func(**tool_params)
-
-                            tool_result_str = str(tool_result)
-                            if len(tool_result_str) > 500:
-                                tool_result_str = tool_result_str[:500] + "..."
-                            print(
-                                "DEBUG: Tool "
-                                f"'{tool_name}' returned: {tool_result_str}"
-                            )
-                            sys.stdout.flush()
-
-                            if isinstance(tool_result, dict):
-                                if tool_result.get('status') == 'canvas_created':
-                                    yield f"data: {json.dumps({'type': 'open_canvas', 'filename': tool_result.get('filename')})}\n\n"
-                                    tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
-                                elif tool_result.get('status') == 'plan_step_update':
-                                    yield f"data: {json.dumps({'type': 'plan_step_update', 'step_number': tool_result.get('step_number'), 'step_description': tool_result.get('step_description')})}\n\n"
-                                    continue
-                                else:
-                                    tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
-                            else:
-                                tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
-
-                            messages.append({"role": "user", "content": tool_response_message})
-                            yield f"data: {json.dumps({'type': 'tool_result', 'result': tool_result})}\n\n"
-                        else:
-                            error_message = f"Error: Tool '{tool_name}' not found."
-                            messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
-                            yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}\n\n"
-                    except Exception as e:
-                        print(f"--- FAILED TOOL CALL ---")
-                        print(f"AI's full response:\n{full_response_content}")
-                        print(f"Error: {e}")
-                        print(f"--- END FAILED TOOL CALL ---")
-                        error_message = f"Error processing tool: {e}"
-                        messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
-                        yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}\n\n"
-
-                yield f"data: {json.dumps({'type': 'final_answer', 'content': messages[-1]['content']})}\n\n"
-
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'agent_error', 'error': str(e)})}\n\n"
-            finally:
-                convo = Conversation.query.get(conversation_id)
-                if not convo:
-                    return
-
-                title = convo.title
-                if title == "New Chat" and len(messages) >= 2:
-                    try:
-                        final_ai_message = next((
-                            m['content'] for m in reversed(messages)
-                            if m['role'] == 'assistant'
-                        ), "")
-                        cleaned_content = re.sub(
-                            r'<think>[\s\S]*?</think>', '', final_ai_message
-                        ).strip()
-                        title_prompt = (
-                            "Based on the following exchange, create a very "
-                            f"short, concise title (5 words or less).\n\n"
-                            f"User: {messages[0]['content']}\n"
-                            f"Assistant: {cleaned_content}\n\nTitle:"
-                        )
-                        title_model = "llama3.2:latest"
-                        title_response = requests.post(
-                            f"{current_app.config['OLLAMA_HOST']}/api/chat",
-                            json={
-                                "model": title_model,
-                                "messages": [{
-                                    "role": "user", "content": title_prompt
-                                }],
-                                "stream": False
-                            },
-                            timeout=180
-                        )
-                        title_response.raise_for_status()
-                        raw_title = title_response.json()\
-                            .get("message", {})\
-                            .get("content", "").strip()
-                        cleaned_title = re.sub(
-                            r'<think>[\s\S]*?</think>', '', raw_title
-                        ).strip().replace('"', '')
-                        if cleaned_title:
-                            title = cleaned_title
-                            convo.title = title
-                    except requests.exceptions.RequestException as e:
-                        print(f"Could not auto-generate title: {e}")
-
-                db.session.commit()
-
-                conversation_path = os.path.join(
-                    current_app.config['USER_DATA_DIR'], str(user_id),
-                    'conversations', f"{conversation_id}.json"
-                )
-                with open(conversation_path, 'w', encoding='utf-8') as f:
-                    json.dump(
-                        {"messages": messages, "title": title}, f, indent=2
-                    )
-
-                yield f"data: {json.dumps({'type': 'done', 'title': title})}\n\n"
+        with current_app.app_context():
+            for event in handle_ai_response(data):
+                yield f"data: {json.dumps(event)}\n\n"
 
     return Response(event_stream(), mimetype='text/event-stream')
 
@@ -853,3 +855,35 @@ def upload_file():
     return jsonify(
         message=message_to_ai, conversation_id=conversation_id
     ), 200
+
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
+
+@socketio.on('join')
+def handle_join(data):
+    room = data['room']
+    join_room(room)
+    print(f'Client {request.sid} joined room: {room}')
+
+    # Broadcast the updated participant list
+    conversation = Conversation.query.get(room)
+    if conversation:
+        participants = [{'username': p.user.username} for p in conversation.participants]
+        emit('participant_update', {'participants': participants}, room=room)
+
+@socketio.on('leave')
+def handle_leave(data):
+    room = data['room']
+    leave_room(room)
+    print(f'Client {request.sid} left room: {room}')
+
+    # Broadcast the updated participant list
+    conversation = Conversation.query.get(room)
+    if conversation:
+        participants = [{'username': p.user.username} for p in conversation.participants]
+        emit('participant_update', {'participants': participants}, room=room)

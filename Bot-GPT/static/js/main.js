@@ -14,7 +14,8 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     uploadModal, uploadForm, cancelUploadBtn, dropZone, fileList, uploadPrompt,
     settingsBtn, settingsModal, settingsForm, cancelSettingsBtn, personaSelect, currentModelDisplay,
     shareModal, cancelShareBtn, shareUserList,
-    copyFileBtn, saveFileBtn, canvasToggleBtn;
+    copyFileBtn, saveFileBtn, canvasToggleBtn,
+    participantList;
 
 const API_BASE = '/api';
 let conversationHistory = [];
@@ -23,6 +24,7 @@ let currentConversationRole = null;
 let deleteResolver = null;
 let userModel = null;
 let editor = null;
+let socket = null;
 
 // --- Agent State ---
 let isAgentRunning = false;
@@ -125,14 +127,109 @@ async function initializeApp(username) {
     cancelSettingsBtn = document.getElementById('cancel-settings-btn');
     personaSelect = document.getElementById('persona-select');
     currentModelDisplay = document.getElementById('current-model-display');
-            shareModal = document.getElementById('share-modal');
-            cancelShareBtn = document.getElementById('cancel-share-btn');
-            shareUserList = document.getElementById('share-user-list');
-            copyFileBtn = document.getElementById('copy-file-btn');
-            saveFileBtn = document.getElementById('save-file-btn');
-            canvasToggleBtn = document.getElementById('canvas-toggle-btn');
+    shareModal = document.getElementById('share-modal');
+    cancelShareBtn = document.getElementById('cancel-share-btn');
+    shareUserList = document.getElementById('share-user-list');
+    copyFileBtn = document.getElementById('copy-file-btn');
+    saveFileBtn = document.getElementById('save-file-btn');
+    canvasToggleBtn = document.getElementById('canvas-toggle-btn');
+    participantList = document.getElementById('participant-list');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
+
+    // --- Socket.IO Connection ---
+    socket = io();
+    socket.on('connect', () => {
+        console.log('Socket.IO connected');
+    });
+    socket.on('disconnect', () => {
+        console.log('Socket.IO disconnected');
+    });
+
+    socket.on('ai_response', (data) => {
+        try {
+            switch(data.type) {
+                case 'user_message':
+                    appendMessage(data.content, 'other_user');
+                    break;
+                case 'conversation_id':
+                    if (!currentConversationId) {
+                        currentConversationId = data.id;
+                        addConversationToList(data.id, "New Chat");
+                        socket.emit('join', {room: currentConversationId});
+                    }
+                    break;
+                case 'open_canvas':
+                    openFileCanvas(data.filename);
+                    break;
+                case 'plan_step_update':
+                    const planStepContainer = currentAgentBubble.querySelector('.plan-step-container');
+                    const planStepContent = planStepContainer.querySelector('.plan-step-content');
+                    planStepContainer.style.display = 'block';
+                    planStepContent.textContent = `${data.step_number}. ${data.step_description}`;
+                    break;
+                case 'assistant_chunk':
+                    if (inThinkBlock) {
+                        thinkContent += data.content;
+                        const thinkEndMatch = thinkContent.indexOf('</think>');
+                        if (thinkEndMatch !== -1) {
+                            inThinkBlock = false;
+                            finalAnswerContent = thinkContent.substring(thinkEndMatch + 8);
+                            thinkContent = thinkContent.substring(0, thinkEndMatch);
+
+                            const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
+                            thinkingContainer.querySelector('.thinking-content').style.display = 'none';
+                        }
+
+                        const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
+                        thinkingContainer.style.display = 'block';
+                        const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
+                        thinkingContentEl.innerHTML = marked.parse(thinkContent.replace('<think>', ''));
+                        smartScroll(thinkingContentEl);
+                    } else {
+                        finalAnswerContent += data.content;
+                    }
+                    updateBotBubble(currentAgentBubble, finalAnswerContent);
+                    break;
+                case 'assistant_end':
+                    thinkContent = "";
+                    finalAnswerContent = "";
+                    inThinkBlock = true;
+                    break;
+                case 'tool_call':
+                    showToolCall(currentAgentBubble, data.name, data.params);
+                    break;
+                case 'tool_result':
+                    updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
+                    break;
+                case 'tool_error':
+                    updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);
+                    break;
+                case 'final_answer':
+                    conversationHistory.push({ role: 'assistant', content: data.content });
+                    updateBotBubble(currentAgentBubble, data.content, true);
+                    break;
+                case 'done':
+                    setAgentRunning(false);
+                    const conversationItem = document.querySelector(`.conversation-item[data-id='${currentConversationId}'] .truncate`);
+                    if (conversationItem && data.title) {
+                        conversationItem.textContent = data.title;
+                    }
+                    break;
+                case 'agent_error':
+                    updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);
+                    setAgentRunning(false);
+                    break;
+            }
+            smartScroll(chatContainer);
+        } catch (e) {
+            console.error("Error parsing socket event data:", e);
+        }
+    });
+
+    socket.on('participant_update', (data) => {
+        updateParticipantList(data.participants);
+    });
 
     // Attach event listeners
     logoutBtn.addEventListener('click', async () => {
@@ -235,6 +332,16 @@ async function initializeApp(username) {
     await loadUserSettings();
     await populateFileExplorer();
     await populateConversations();
+}
+
+function updateParticipantList(participants) {
+    participantList.innerHTML = '';
+    participants.forEach(participant => {
+        const item = document.createElement('div');
+        item.className = 'p-2 text-sm';
+        item.textContent = participant.username;
+        participantList.appendChild(item);
+    });
 }
 
 async function loadUserSettings() {
@@ -531,102 +638,13 @@ function sendMessage() {
                 params.canvas_mode = 'true';
             }
 
-            const eventSource = new EventSource(`/api/chat?${new URLSearchParams(params).toString()}`);
-
-    eventSource.onmessage = function(event) {
-        try {
-            const data = JSON.parse(event.data);
-
-            switch(data.type) {
-                case 'conversation_id':
-                    if (isNewConversation) {
-                        currentConversationId = data.id;
-                        addConversationToList(data.id, "New Chat");
-                    }
-                            break;
-                        case 'open_canvas':
-                            openFileCanvas(data.filename);
-                    break;
-                        case 'plan_step_update':
-                            const planStepContainer = currentAgentBubble.querySelector('.plan-step-container');
-                            const planStepContent = planStepContainer.querySelector('.plan-step-content');
-                            planStepContainer.style.display = 'block';
-                            planStepContent.textContent = `${data.step_number}. ${data.step_description}`;
-                            break;
-                case 'assistant_chunk':
-                            if (inThinkBlock) {
-                                thinkContent += data.content;
-                                const thinkEndMatch = thinkContent.indexOf('</think>');
-                                if (thinkEndMatch !== -1) {
-                                    inThinkBlock = false;
-                                    finalAnswerContent = thinkContent.substring(thinkEndMatch + 8);
-                                    thinkContent = thinkContent.substring(0, thinkEndMatch);
-
-                                    const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
-                                    thinkingContainer.querySelector('.thinking-content').style.display = 'none';
-                                }
-
-                                const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
-                                thinkingContainer.style.display = 'block';
-                                const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
-                                thinkingContentEl.innerHTML = marked.parse(thinkContent.replace('<think>', ''));
-                                smartScroll(thinkingContentEl);
-                            } else {
-                                finalAnswerContent += data.content;
-                            }
-                            updateBotBubble(currentAgentBubble, finalAnswerContent);
-                    break;
-                case 'assistant_end':
-                    thinkContent = "";
-                    finalAnswerContent = "";
-                    inThinkBlock = true;
-                    break;
-                case 'tool_call':
-                    showToolCall(currentAgentBubble, data.name, data.params);
-                    break;
-                case 'tool_result':
-                    updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
-                    break;
-                case 'tool_error':
-                    updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);
-                    break;
-                case 'final_answer':
-                    conversationHistory.push({ role: 'assistant', content: data.content });
-                    updateBotBubble(currentAgentBubble, data.content, true);
-                    // DO NOT close the connection or set agent running to false here anymore.
-                    // We will wait for the 'done' event.
-                    break;
-
-                // --- ADD THIS ENTIRE NEW CASE ---
-                case 'done':
-                    // The server has confirmed all work is complete.
-                    setAgentRunning(false);
-                    eventSource.close();
-
-                    // Now it is safe to update the UI with the final title
-                    const conversationItem = document.querySelector(`.conversation-item[data-id='${currentConversationId}'] .truncate`);
-                    if (conversationItem && data.title) {
-                        conversationItem.textContent = data.title;
-                    }
-                    break;
-                case 'agent_error':
-                    updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);
-                    setAgentRunning(false);
-                    eventSource.close();
-                    break;
-            }
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-        } catch (e) {
-            console.error("Error parsing SSE event data:", event.data, e);
-        }
+    const params = {
+        messages: JSON.stringify(conversationHistory),
+        model: userModel,
+        conversation_id: currentConversationId || '',
+        canvas_mode: isCanvasMode,
     };
-
-    eventSource.onerror = function(err) {
-        console.error("EventSource failed:", err);
-        if(currentAgentBubble) updateAgentStatus(currentAgentBubble, "An error occurred. Please check the server logs.", true);
-        setAgentRunning(false);
-        eventSource.close();
-    };
+    socket.emit('chat_message', params);
 }
 
 function createBotMessageContainer(animate = true) {
@@ -870,6 +888,9 @@ async function populateConversations() {
         }
 
 async function loadConversation(id) {
+    if (currentConversationId) {
+        socket.emit('leave', {room: currentConversationId});
+    }
     try {
         const response = await fetch(`${window.location.origin}${API_BASE}/conversation/${id}`);
         const data = await response.json();
@@ -890,6 +911,7 @@ async function loadConversation(id) {
         });
 
         chatContainer.scrollTop = chatContainer.scrollHeight;
+        socket.emit('join', {room: id});
         await populateFileExplorer();
         await populateConversations();
     } catch (error) {
@@ -933,6 +955,16 @@ function appendMessage(text, sender, animate = true) {
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" class="bi bi-person" viewBox="0 0 16 16">
                     <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6m2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0m4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4m-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10s-3.516.68-4.168 1.332c-.678.678-.83 1.418-.832 1.664z"/>
                 </svg>
+            </div>`;
+    } else if (sender === 'other_user') {
+        messageWrapper.innerHTML = `
+            <div class="w-8 h-8 rounded-full bg-green-800 flex-shrink-0 mr-2 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" class="bi bi-person" viewBox="0 0 16 16">
+                    <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6m2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0m4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4m-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10s-3.516.68-4.168 1.332c-.678.678-.83 1.418-.832 1.664z"/>
+                </svg>
+            </div>
+            <div class="flex-1 bot-bubble">
+                <div class="prose prose-invert max-w-none">${marked.parse(text)}</div>
             </div>`;
     }
 

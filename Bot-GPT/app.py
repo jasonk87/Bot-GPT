@@ -1,6 +1,6 @@
 import os
 from flask import Flask
-from extensions import db, login_manager
+from extensions import db, login_manager, socketio
 from models import User
 from routes import main as main_blueprint
 
@@ -56,6 +56,7 @@ def create_app():
     # --- Initialize Extensions ---
     db.init_app(app)
     login_manager.init_app(app)
+    socketio.init_app(app)
     login_manager.login_view = 'main.login'
 
     @login_manager.user_loader
@@ -75,4 +76,4 @@ def create_app():
 
 if __name__ == '__main__':
     app = create_app()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
