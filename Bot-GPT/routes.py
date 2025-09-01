@@ -308,6 +308,7 @@ def chat_proxy():
         )
         db.session.add(owner_participant)
         db.session.commit()
+        conversation = new_convo
 
         convo_path = os.path.join(
             current_app.config['USER_DATA_DIR'], str(user_id),
@@ -428,12 +429,12 @@ def chat_proxy():
                             messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
                             yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}\n\n"
                     except Exception as e:
+                        print(f"!!!!!!!!!! EXCEPTION IN TOOL CALL: {e} !!!!!!!!!!!")
                         error_message = f"Error processing tool: {e}"
                         messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
                         yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}\n\n"
 
-                if not final_answer_provided:
-                    yield f"data: {json.dumps({'type': 'final_answer', 'content': messages[-1]['content']})}\n\n"
+                yield f"data: {json.dumps({'type': 'final_answer', 'content': messages[-1]['content']})}\n\n"
 
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'agent_error', 'error': str(e)})}\n\n"
@@ -468,7 +469,7 @@ def chat_proxy():
                                 }],
                                 "stream": False
                             },
-                            timeout=60
+                            timeout=180
                         )
                         title_response.raise_for_status()
                         raw_title = title_response.json()\
