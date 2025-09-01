@@ -272,6 +272,7 @@ def handle_ai_response(data):
     messages_str = data.get('messages', '[]')
     model = data.get('model')
     conversation_id_arg = data.get('conversation_id')
+    canvas_mode = data.get('canvas_mode', False)
 
     try:
         messages = json.loads(messages_str)
@@ -414,7 +415,35 @@ def handle_ai_response(data):
             yield {"type": "tool_error", "error": error_message}
 
     if final_answer_provided:
-        yield {"type": "final_answer", "content": messages[-1]['content']}
+        final_answer_content = messages[-1]['content']
+        if canvas_mode:
+            # Clean the think blocks from the content to be saved
+            final_answer_cleaned = re.sub(r'<think>[\s\S]*?<\/think>', '', final_answer_content).strip()
+            timestamp = int(time.time())
+            filename = f"canvas_{timestamp}.md"
+
+            # Use the existing write_file tool to save the content
+            write_result = write_file(
+                path=filename,
+                content=final_answer_cleaned,
+                conversation_id=conversation_id,
+                user_id=user_id
+            )
+
+            if "successfully" in write_result:
+                # Signal frontend to open the new file in the canvas
+                yield {"type": "open_canvas", "filename": filename}
+                # Signal frontend to refresh the file explorer
+                yield {"type": "refresh_files"}
+            else:
+                # Inform the user if saving failed
+                yield {"type": "agent_error", "error": f"Failed to save to canvas: {write_result}"}
+
+            # Always yield the original final answer to display in the chat bubble
+            yield {"type": "final_answer", "content": final_answer_content}
+        else:
+            # If not in canvas mode, just yield the final answer as before
+            yield {"type": "final_answer", "content": final_answer_content}
 
     convo = Conversation.query.get(conversation_id)
     if not convo:

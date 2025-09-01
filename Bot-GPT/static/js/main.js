@@ -220,6 +220,9 @@ async function initializeApp(username) {
                     updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);
                     setAgentRunning(false);
                     break;
+                case 'refresh_files':
+                    populateFileExplorer();
+                    break;
             }
             smartScroll(chatContainer);
         } catch (e) {
@@ -901,11 +904,18 @@ async function loadConversation(id) {
 }
 
 function smartScroll(element) {
-    const threshold = 10; // Pixels from bottom
-    const isScrolledToBottom = element.scrollHeight - element.clientHeight <= element.scrollTop + threshold;
-    if (isScrolledToBottom) {
-        element.scrollTop = element.scrollHeight;
-    }
+    // Use a small timeout to allow the DOM to update before we calculate scroll positions
+    setTimeout(() => {
+        if (!element) return;
+        const threshold = 20; // A bit more lenient
+        // Check if the user has scrolled up from the bottom
+        const isScrolledUp = element.scrollHeight - element.clientHeight > element.scrollTop + threshold;
+
+        // Only scroll to the bottom if the user hasn't intentionally scrolled up
+        if (!isScrolledUp) {
+            element.scrollTop = element.scrollHeight;
+        }
+    }, 50); // 50ms delay to be safe
 }
 
 function startNewChat() {
