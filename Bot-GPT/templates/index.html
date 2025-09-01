@@ -22,7 +22,10 @@
         .scrollable-content::-webkit-scrollbar-thumb { background-color: #4b5563; border-radius: 20px; }
         .item-hover:hover .delete-btn { opacity: 1; }
         .delete-btn { opacity: 0; transition: opacity 0.2s; }
-        .prose { word-break: break-word; }
+        .prose {
+            overflow-wrap: break-word;
+            word-break: break-word; /* For broader compatibility */
+        }
         .prose table { width: 100%; border-collapse: collapse; margin-top: 1.5rem; margin-bottom: 1.5rem; }
         .prose th, .prose td { border: 1px solid #4b5563; padding: 8px; }
         .prose th { background-color: #374151; }
@@ -124,6 +127,9 @@
         .tool-activity-body .status-success { color: #4ade80; }
         .tool-activity-body .status-error { color: #f87171; }
 
+        .user-bubble, .bot-bubble {
+            overflow-wrap: break-word;
+        }
         .user-bubble {
             background-color: #1e3a8a; /* A shade of blue */
             padding: 0.75rem;
@@ -206,6 +212,53 @@
         #upload-btn.toggled:hover, #canvas-toggle-btn.toggled:hover {
             background-color: #e5e7eb;
         }
+
+        /* Styles for Side-by-Side Canvas Layout */
+        #resizer {
+            background-color: #1f2937;
+            cursor: col-resize;
+            width: 4px;
+            flex-shrink: 0;
+            transition: background-color 0.2s;
+        }
+        #resizer:hover {
+            background-color: #3b82f6;
+        }
+        #canvas-panel {
+            border-left: 1px solid #1f2937;
+        }
+        .canvas-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid #1f2937;
+            flex-shrink: 0;
+        }
+        .canvas-header-title {
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .canvas-header-buttons button {
+            background-color: #374151;
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            margin-left: 0.5rem;
+        }
+        .canvas-header-buttons button:hover {
+            background-color: #4b5563;
+        }
+        #file-viewer {
+            flex-grow: 1;
+            overflow: hidden;
+        }
+        .resizing {
+            user-select: none;
+        }
     </style>
 </head>
 <body class="bg-gray-800 text-gray-200">
@@ -287,37 +340,46 @@
         <div id="overlay" class="fixed inset-0 bg-black bg-opacity-50 z-20 hidden sm:hidden"></div>
 
         <!-- Main Content -->
-        <div class="flex-1 flex flex-col relative bg-gray-800 overflow-hidden">
-            <header class="bg-gray-800 border-b border-gray-700 p-4 flex items-center flex-shrink-0">
-                <button id="menu-btn" class="sm:hidden mr-4">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
-                </button>
-                <div class="flex-1 text-center text-xs text-gray-400">
-                    Model: <span id="current-model-display" class="font-mono text-white"></span>
-                </div>
-            </header>
-            <main id="chat-container" class="scrollable-content flex-1 overflow-y-auto p-4 flex flex-col space-y-4">
-                <div id="welcome-message" class="text-center text-gray-400 h-full flex flex-col justify-center items-center">
-                    <h1 class="text-4xl font-bold">Ollama Agent</h1>
-                    <p class="mt-2">Start a new conversation to begin.</p>
-                </div>
-            </main>
-            <footer class="p-4 bg-gray-800 flex-shrink-0">
-                <div class="max-w-3xl mx-auto">
-                    <div class="relative flex items-center bg-gray-700 rounded-lg p-2 space-x-2">
-                        <button id="upload-btn" class="p-2 text-gray-400 hover:text-white" title="Upload File">
-                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
-                        </button>
-                        <button id="canvas-toggle-btn" class="p-2 text-gray-400 hover:text-white" title="Canvas Mode">
-                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                        </button>
-                        <textarea id="chat-input" rows="1" class="flex-1 bg-transparent border-none focus:ring-0 text-gray-200 resize-none" placeholder="Type your message here..."></textarea>
-                        <button id="send-button" class="ml-3 bg-blue-600 hover:bg-blue-700 text-white font-bold p-2 rounded-lg flex items-center justify-center w-10 h-10">
-                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"></path></svg>
-                        </button>
+        <div id="main-content-wrapper" class="flex-1 flex flex-row overflow-hidden">
+            <!-- Chat Column -->
+            <div id="chat-column" class="flex-1 flex flex-col h-full relative">
+                <header class="bg-gray-800 border-b border-gray-700 p-4 flex items-center flex-shrink-0">
+                    <button id="menu-btn" class="sm:hidden mr-4">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                    </button>
+                    <div class="flex-1 text-center text-xs text-gray-400">
+                        Model: <span id="current-model-display" class="font-mono text-white"></span>
                     </div>
-                </div>
-            </footer>
+                </header>
+                <main id="chat-container" class="scrollable-content flex-1 overflow-y-auto p-4 flex flex-col space-y-4">
+                    <div id="welcome-message" class="text-center text-gray-400 h-full flex flex-col justify-center items-center">
+                        <h1 class="text-4xl font-bold">Ollama Agent</h1>
+                        <p class="mt-2">Start a new conversation to begin.</p>
+                    </div>
+                </main>
+                <footer class="p-4 bg-gray-800 flex-shrink-0">
+                    <div class="max-w-3xl mx-auto">
+                        <div class="relative flex items-center bg-gray-700 rounded-lg p-2 space-x-2">
+                            <button id="upload-btn" class="p-2 text-gray-400 hover:text-white" title="Upload File">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                            </button>
+                            <button id="canvas-toggle-btn" class="p-2 text-gray-400 hover:text-white" title="Canvas Mode">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                            </button>
+                            <textarea id="chat-input" rows="1" class="flex-1 bg-transparent border-none focus:ring-0 text-gray-200 resize-none" placeholder="Type your message here..."></textarea>
+                            <button id="send-button" class="ml-3 bg-blue-600 hover:bg-blue-700 text-white font-bold p-2 rounded-lg flex items-center justify-center w-10 h-10">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"></path></svg>
+                            </button>
+                        </div>
+                    </div>
+                </footer>
+            </div>
+            <!-- Resizer -->
+            <div id="resizer" class="w-2 cursor-col-resize bg-gray-700 hover:bg-gray-600 hidden"></div>
+            <!-- Canvas Panel -->
+            <div id="canvas-panel" class="w-1/2 flex-shrink-0 flex flex-col h-full bg-gray-900 hidden">
+                <!-- Canvas content will be moved here by JS -->
+            </div>
         </div>
     </div>
     
@@ -388,20 +450,7 @@
         </div>
     </div>
     
-    <!-- File Canvas Modal -->
-    <div id="file-viewer-container" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-30">
-        <div class="bg-gray-800 rounded-lg shadow-xl w-3/4 h-3/4 flex flex-col">
-            <div class="flex justify-between items-center p-4 border-b border-gray-700">
-                <h3 id="file-viewer-filename" class="text-lg font-bold"></h3>
-                <div>
-                    <button id="copy-file-btn" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded mr-2">Copy</button>
-                    <button id="save-file-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded">Save</button>
-                    <button id="close-viewer-btn" class="text-white font-bold ml-4">&times;</button>
-                </div>
-            </div>
-            <div id="file-viewer" class="flex-1"></div>
-        </div>
-    </div>
+    <!-- File Canvas Modal has been removed and will be integrated into the canvas-panel -->
 
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
 </body>

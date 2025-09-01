@@ -25,6 +25,7 @@ let deleteResolver = null;
 let userModel = null;
 let editor = null;
 let socket = null;
+let debounceTimer = null;
 
 // --- Agent State ---
 let isAgentRunning = false;
@@ -169,34 +170,22 @@ async function initializeApp(username) {
                     planStepContent.textContent = `${data.step_number}. ${data.step_description}`;
                     break;
                 case 'assistant_chunk':
-                    if (inThinkBlock) {
-                        thinkContent += data.content;
-                        const thinkEndMatch = thinkContent.indexOf('</think>');
-                        if (thinkEndMatch !== -1) {
-                            inThinkBlock = false;
-                            finalAnswerContent = thinkContent.substring(thinkEndMatch + 8);
-                            thinkContent = thinkContent.substring(0, thinkEndMatch);
-
-                            const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
-                            thinkingContainer.querySelector('.thinking-content').style.display = 'none';
-                        }
-
-                        const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
-                        thinkingContainer.style.display = 'block';
-                        const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
-                        thinkingContentEl.innerHTML = marked.parse(thinkContent.replace('<think>', ''));
-                        smartScroll(thinkingContentEl);
-                    } else {
-                        finalAnswerContent += data.content;
-                    }
-                    updateBotBubble(currentAgentBubble, finalAnswerContent);
+                    // This is the main event for streaming content
+                    currentResponseContent += data.content;
+                    updateBotBubble(currentAgentBubble, currentResponseContent, false);
                     break;
                 case 'assistant_end':
-                    thinkContent = "";
-                    finalAnswerContent = "";
-                    inThinkBlock = true;
+                    // This signals the end of a single thought-act-observe loop from the AI
+                    // We add the full response to history here to ensure it's available for the next loop
+                    conversationHistory.push({ role: 'assistant', content: currentResponseContent });
+                    // Final render of this loop's output, with code highlighting
+                    updateBotBubble(currentAgentBubble, currentResponseContent, true);
+                    // Reset for the next potential stream of thought from the AI
+                    currentResponseContent = "";
                     break;
                 case 'tool_call':
+                     // A tool call is part of the assistant's response, so we display it.
+                    updateBotBubble(currentAgentBubble, currentResponseContent, true);
                     showToolCall(currentAgentBubble, data.name, data.params);
                     break;
                 case 'tool_result':
@@ -206,15 +195,21 @@ async function initializeApp(username) {
                     updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);
                     break;
                 case 'final_answer':
-                    conversationHistory.push({ role: 'assistant', content: data.content });
-                    updateBotBubble(currentAgentBubble, data.content, true);
+                    // This is now the definitive final answer from the agent.
+                    // The content here is the complete, final conversational response.
+                    currentResponseContent = data.content;
+                    conversationHistory.push({ role: 'assistant', content: currentResponseContent });
+                    updateBotBubble(currentAgentBubble, currentResponseContent, true);
                     break;
                 case 'done':
+                    // The 'done' event now signifies the absolute end of the agent's work.
                     setAgentRunning(false);
                     const conversationItem = document.querySelector(`.conversation-item[data-id='${currentConversationId}'] .truncate`);
                     if (conversationItem && data.title) {
                         conversationItem.textContent = data.title;
                     }
+                    // Reset content for the next user message
+                    currentResponseContent = "";
                     break;
                 case 'agent_error':
                     updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);
@@ -222,6 +217,14 @@ async function initializeApp(username) {
                     break;
                 case 'refresh_files':
                     populateFileExplorer();
+                    break;
+                case 'file_updated':
+                    if (editor) {
+                        const currentPath = document.querySelector('#canvas-panel .canvas-header-title')?.title;
+                        if (currentPath === data.path) {
+                            editor.setValue(data.content);
+                        }
+                    }
                     break;
             }
             smartScroll(chatContainer);
@@ -243,7 +246,6 @@ async function initializeApp(username) {
     newChatBtn.addEventListener('click', startNewChat);
     cancelDeleteBtn.addEventListener('click', () => deleteResolver(false));
     confirmDeleteBtn.addEventListener('click', () => deleteResolver(true));
-    closeViewerBtn.addEventListener('click', () => fileViewerContainer.style.display = 'none');
 
     chatsTabBtn.addEventListener('click', () => switchSidePanel('chats'));
     filesTabBtn.addEventListener('click', () => switchSidePanel('files'));
@@ -281,42 +283,17 @@ async function initializeApp(username) {
             // --- Share Modal Logic ---
             cancelShareBtn.addEventListener('click', () => shareModal.classList.add('hidden'));
 
-            // --- File Canvas Logic ---
+            // --- Canvas Toggle Logic ---
             canvasToggleBtn.addEventListener('click', () => {
-                isCanvasMode = !isCanvasMode;
-                canvasToggleBtn.classList.toggle('bg-blue-600', isCanvasMode);
-                canvasToggleBtn.classList.toggle('text-white', isCanvasMode);
-            });
-
-            copyFileBtn.addEventListener('click', () => {
-                if (editor) {
-                    navigator.clipboard.writeText(editor.getValue());
-                    alert('File content copied to clipboard.');
+                const canvasPanel = document.getElementById('canvas-panel');
+                // If the panel is visible, hide it. A file click is required to open it.
+                if (canvasPanel && !canvasPanel.classList.contains('hidden')) {
+                    hideCanvasPanel();
                 }
             });
 
-            saveFileBtn.addEventListener('click', async () => {
-                if (editor) {
-                    const path = document.getElementById('file-viewer-filename').textContent;
-                    const content = editor.getValue();
-                    try {
-                        const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                path: path,
-                                content: content,
-                                conversation_id: currentConversationId
-                            })
-                        });
-                        const data = await response.json();
-                        if (!response.ok) throw new Error(data.error);
-                        alert('File saved successfully.');
-                    } catch (error) {
-                        alert(`Error saving file: ${error.message}`);
-                    }
-                }
-            });
+            // The old copy/save listeners are removed as their functionality
+            // is now part of the dynamically created canvas header in showCanvasPanel.
 
     sendButton.addEventListener('click', () => sendMessage());
     chatInput.addEventListener('keydown', (event) => {
@@ -335,6 +312,49 @@ async function initializeApp(username) {
     await loadUserSettings();
     await populateFileExplorer();
     await populateConversations();
+
+    // --- Resizer Logic ---
+    const resizer = document.getElementById('resizer');
+    const chatColumn = document.getElementById('chat-column');
+    const canvasPanel = document.getElementById('canvas-panel');
+
+    let isResizing = false;
+
+    if (resizer) {
+        resizer.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            // Add a class to the body to prevent text selection during resize
+            document.body.classList.add('resizing');
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', () => {
+                isResizing = false;
+                document.body.classList.remove('resizing');
+                document.removeEventListener('mousemove', handleMouseMove);
+                // Optional: Recalculate CodeMirror layout
+                if (editor) {
+                    editor.refresh();
+                }
+            }, { once: true });
+        });
+    }
+
+    function handleMouseMove(e) {
+        if (!isResizing) return;
+        const mainWrapper = document.getElementById('main-content-wrapper');
+        const totalWidth = mainWrapper.offsetWidth;
+        // Calculate new width based on mouse position relative to the main wrapper's start
+        const newChatWidth = e.clientX - mainWrapper.getBoundingClientRect().left;
+
+        // Enforce min/max widths
+        const minWidth = totalWidth * 0.2; // 20% min width
+        const maxWidth = totalWidth * 0.8; // 80% max width
+
+        if (newChatWidth > minWidth && newChatWidth < maxWidth) {
+            const newCanvasWidth = totalWidth - newChatWidth - resizer.offsetWidth;
+            chatColumn.style.width = `${newChatWidth}px`;
+            canvasPanel.style.width = `${newCanvasWidth}px`;
+        }
+    }
 }
 
 async function loadUserSettings() {
@@ -470,20 +490,94 @@ function attachFileEventListeners() {
     });
 }
 
+        function showCanvasPanel(path, content, mode) {
+            const canvasPanel = document.getElementById('canvas-panel');
+            const resizer = document.getElementById('resizer');
+
+            canvasPanel.innerHTML = `
+                <div class="canvas-header">
+                    <h3 class="canvas-header-title" title="${path}">${path}</h3>
+                    <div class="canvas-header-buttons">
+                        <button id="canvas-copy-btn">Copy</button>
+                        <button id="canvas-save-btn">Save</button>
+                        <button id="canvas-close-btn">&times;</button>
+                    </div>
+                </div>
+                <div id="file-viewer" class="flex-1"></div>
+            `;
+
+            canvasPanel.classList.remove('hidden');
+            canvasPanel.classList.add('flex');
+            resizer.classList.remove('hidden');
+
+            // Attach event listeners for the new buttons
+            document.getElementById('canvas-copy-btn').addEventListener('click', () => {
+                if (editor) navigator.clipboard.writeText(editor.getValue());
+            });
+            document.getElementById('canvas-save-btn').addEventListener('click', async () => {
+                if (editor) {
+                    const path = document.querySelector('#canvas-panel .canvas-header-title').title;
+                    const newContent = editor.getValue();
+                    try {
+                        const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                path: path,
+                                content: newContent,
+                                conversation_id: currentConversationId
+                            })
+                        });
+                        if (!response.ok) {
+                            const data = await response.json();
+                            throw new Error(data.error);
+                        }
+                        const saveBtn = document.getElementById('canvas-save-btn');
+                        saveBtn.textContent = 'Saved!';
+                        setTimeout(() => { saveBtn.textContent = 'Save'; }, 2000);
+                    } catch (error) {
+                        alert(`Error saving file: ${error.message}`);
+                    }
+                }
+            });
+            document.getElementById('canvas-close-btn').addEventListener('click', hideCanvasPanel);
+
+            initializeEditor(content, mode);
+        }
+
+        function hideCanvasPanel() {
+            const canvasPanel = document.getElementById('canvas-panel');
+            const resizer = document.getElementById('resizer');
+
+            canvasPanel.classList.add('hidden');
+            canvasPanel.classList.remove('flex');
+            resizer.classList.add('hidden');
+
+            if (editor) {
+                // This is a bit of a hack to ensure CodeMirror instance is destroyed
+                editor.getWrapperElement().remove();
+                editor = null;
+            }
+
+            isCanvasMode = false;
+            canvasToggleBtn.classList.remove('toggled');
+        }
+
         async function openFileCanvas(path) {
             try {
                 const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file?path=${encodeURIComponent(path)}&conversation_id=${currentConversationId}`);
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.error);
 
-                document.getElementById('file-viewer-filename').textContent = path;
-                fileViewerContainer.classList.remove('hidden');
-
                 let mode = 'text/plain';
                 if (path.endsWith('.py')) mode = 'python';
                 if (path.endsWith('.js')) mode = 'javascript';
 
-                initializeEditor(data.content, mode);
+                showCanvasPanel(path, data.content, mode);
+
+                isCanvasMode = true;
+                canvasToggleBtn.classList.add('toggled');
+
             } catch (error) {
                 alert(`Error opening file: ${error.message}`);
             }
@@ -491,13 +585,28 @@ function attachFileEventListeners() {
 
         function initializeEditor(content, mode) {
             const editorContainer = document.getElementById('file-viewer');
-            editorContainer.innerHTML = ''; // Clear previous editor
+            if (!editorContainer) return;
+            editorContainer.innerHTML = '';
             editor = CodeMirror(editorContainer, {
                 value: content,
                 mode: mode,
                 theme: 'dracula',
                 lineNumbers: true,
                 readOnly: currentConversationRole !== 'owner'
+            });
+
+            // Add debounce for auto-saving
+            editor.on('change', () => {
+                clearTimeout(debounceTimer);
+                const saveBtn = document.getElementById('canvas-save-btn');
+                if (saveBtn) {
+                    saveBtn.textContent = 'Saving...';
+                }
+                debounceTimer = setTimeout(() => {
+                    if (saveBtn) {
+                        saveBtn.click(); // Trigger the save button's existing click logic
+                    }
+                }, 1500); // Save after 1.5 seconds of inactivity
             });
         }
 
@@ -616,8 +725,8 @@ function sendMessage() {
     chatInput.style.height = 'auto';
 
     currentAgentBubble = createBotMessageContainer();
+    let currentResponseContent = "";
     let thinkContent = "";
-    let finalAnswerContent = "";
     let inThinkBlock = true;
 
     const isNewConversation = !currentConversationId;

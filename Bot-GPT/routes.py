@@ -404,13 +404,26 @@ Params: {tool_params}
 {tool_result}
 --- END TOOL RESULT ---''')
 
-                if isinstance(tool_result, dict) and tool_result.get('status') == 'canvas_created':
-                    yield {"type": "open_canvas", "filename": tool_result.get('filename')}
-                    tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
-                elif isinstance(tool_result, dict) and tool_result.get('status') == 'plan_step_update':
-                    yield {"type": "plan_step_update", "step_number": tool_result.get('step_number'), "step_description": tool_result.get('step_description')}
-                    continue
+                if isinstance(tool_result, dict):
+                    status = tool_result.get('status')
+                    if status == 'canvas_created':
+                        yield {"type": "open_canvas", "filename": tool_result.get('filename')}
+                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
+                    elif status == 'file_written':
+                        yield {
+                            "type": "file_updated",
+                            "path": tool_result.get('path'),
+                            "content": tool_result.get('content')
+                        }
+                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
+                    elif status == 'plan_step_update':
+                        yield {"type": "plan_step_update", "step_number": tool_result.get('step_number'), "step_description": tool_result.get('step_description')}
+                        continue
+                    else:
+                        # Handle other dict-based results, like errors from write_file
+                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message', str(tool_result))}\n---"
                 else:
+                    # Handle string-based results from other tools
                     tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
 
                 messages.append({"role": "user", "content": tool_response_message})

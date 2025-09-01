@@ -146,19 +146,24 @@ def write_file(path, content, conversation_id=None, user_id=None):
     """Writes or overwrites a file in the conversation's workspace."""
     workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path:
-        return "Error: Could not determine workspace."
+        return {"status": "error", "message": "Error: Could not determine workspace."}
 
     file_path = os.path.abspath(os.path.join(workspace_path, path))
     if not file_path.startswith(os.path.abspath(workspace_path)):
-        return "Error: Access denied."
+        return {"status": "error", "message": "Error: Access denied."}
 
     try:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write(content)
-        return f"File '{path}' written successfully."
+        return {
+            "status": "file_written",
+            "path": path,
+            "content": content,
+            "message": f"File '{path}' written successfully."
+        }
     except Exception as e:
-        return f"Error: {str(e)}"
+        return {"status": "error", "message": f"Error: {str(e)}"}
 
 def create_and_open_canvas(
         filename, content, conversation_id=None, user_id=None):
