@@ -321,6 +321,7 @@ def handle_ai_response(data):
     yield {"type": "conversation_id", "id": conversation_id}
 
     final_answer_provided = False
+    file_creation_tool_used = False
     max_iterations = 15
     for i in range(max_iterations):
         full_response_content = ""
@@ -372,6 +373,8 @@ def handle_ai_response(data):
             }
 
             if tool_name in tool_map:
+                if tool_name in ['create_and_open_canvas', 'write_file']:
+                    file_creation_tool_used = True
                 tool_func = tool_map[tool_name]
                 context_params = {
                     "conversation_id": conversation_id,
@@ -427,7 +430,7 @@ Params: {tool_params}
 
     if final_answer_provided:
         final_answer_content = messages[-1]['content']
-        if canvas_mode:
+        if canvas_mode and not file_creation_tool_used:
             # --- New Canvas Saving Logic ---
             code_block_match = re.search(r'```(\w*)\n([\s\S]+?)```', final_answer_content)
 
