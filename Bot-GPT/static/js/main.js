@@ -570,6 +570,7 @@ function sendMessage() {
                                 thinkingContainer.style.display = 'block';
                                 const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
                                 thinkingContentEl.innerHTML = marked.parse(thinkContent.replace('<think>', ''));
+                                smartScroll(thinkingContentEl);
                             } else {
                                 finalAnswerContent += data.content;
                             }
@@ -637,7 +638,12 @@ function createBotMessageContainer(animate = true) {
     botMessageWrapper.className = classes;
 
     botMessageWrapper.innerHTML = `
-        <div class="w-8 h-8 rounded-full bg-gray-600 flex-shrink-0 mr-2"></div>
+        <div class="w-8 h-8 rounded-full bg-gray-600 flex-shrink-0 mr-2 flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" class="bi bi-robot" viewBox="0 0 16 16">
+                <path d="M6 12.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5M3 8.062C3 6.76 4.235 5.765 5.53 5.886a26.6 26.6 0 0 0 4.94 0C11.765 5.765 13 6.76 13 8.062v1.157a.93.93 0 0 1-.765.935c-.845.147-2.34.346-4.235.346s-3.39-.2-4.235-.346A.93.93 0 0 1 3 9.219zm4.542-.827a.25.25 0 0 0-.217.068l-.92.9a25 25 0 0 1-1.871-.183.25.25 0 0 0-.217.068l-.92.9a.25.25 0 0 0 .169.434h.295c.079 0 .152-.031.206-.086l.92-.9a.25.25 0 0 1 .169-.068c.975.083 2.04.083 3.015 0a.25.25 0 0 1 .169.068l.92.9c.054.055.127.086.206.086h.295a.25.25 0 0 0 .169-.434l-.92-.9a.25.25 0 0 0-.217-.068 25 25 0 0 1-1.871.183l-.92-.9a.25.25 0 0 0-.217-.068Z"/>
+                <path d="M8 1a2.5 2.5 0 0 1 2.5 2.5V4h-5v-.5A2.5 2.5 0 0 1 8 1m3.5 3v-.5a3.5 3.5 0 1 0-7 0V4H1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V4zM1 5h14v9a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1z"/>
+            </svg>
+        </div>
         <div class="flex-1 bot-bubble">
                     <div class="thinking-process-container" style="display: none;">
                         <div class="thinking-header">
@@ -677,7 +683,7 @@ function createBotMessageContainer(animate = true) {
                 thinkingContent.style.display = thinkingContent.style.display === 'none' ? 'block' : 'none';
             });
 
-    chatContainer.scrollTop = chatContainer.scrollHeight;
+    smartScroll(chatContainer);
     return botMessageWrapper;
 }
 
@@ -891,6 +897,14 @@ async function loadConversation(id) {
     }
 }
 
+function smartScroll(element) {
+    const threshold = 10; // Pixels from bottom
+    const isScrolledToBottom = element.scrollHeight - element.clientHeight <= element.scrollTop + threshold;
+    if (isScrolledToBottom) {
+        element.scrollTop = element.scrollHeight;
+    }
+}
+
 function startNewChat() {
     if (isAgentRunning) return;
     currentConversationId = null;
@@ -915,9 +929,13 @@ function appendMessage(text, sender, animate = true) {
             <div class="flex-1 user-bubble">
                 <div class="prose prose-invert max-w-none">${marked.parse(text)}</div>
             </div>
-            <div class="w-8 h-8 rounded-full bg-blue-800 flex-shrink-0 ml-2"></div>`;
+            <div class="w-8 h-8 rounded-full bg-blue-800 flex-shrink-0 ml-2 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" class="bi bi-person" viewBox="0 0 16 16">
+                    <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6m2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0m4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4m-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10s-3.516.68-4.168 1.332c-.678.678-.83 1.418-.832 1.664z"/>
+                </svg>
+            </div>`;
     }
 
     chatContainer.appendChild(messageWrapper);
-    chatContainer.scrollTop = chatContainer.scrollHeight;
+    smartScroll(chatContainer);
 }

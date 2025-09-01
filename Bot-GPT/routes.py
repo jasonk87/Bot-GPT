@@ -429,7 +429,10 @@ def chat_proxy():
                             messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
                             yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}\n\n"
                     except Exception as e:
-                        print(f"!!!!!!!!!! EXCEPTION IN TOOL CALL: {e} !!!!!!!!!!!")
+                        print(f"--- FAILED TOOL CALL ---")
+                        print(f"AI's full response:\n{full_response_content}")
+                        print(f"Error: {e}")
+                        print(f"--- END FAILED TOOL CALL ---")
                         error_message = f"Error processing tool: {e}"
                         messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
                         yield f"data: {json.dumps({'type': 'tool_error', 'error': error_message})}\n\n"
