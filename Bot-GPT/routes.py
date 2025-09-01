@@ -342,6 +342,10 @@ def handle_ai_response(data):
         messages.append(assistant_message)
         yield {"type": "assistant_end"}
 
+        print("--- AI RESPONSE ---")
+        print(full_response_content)
+        print("--- END AI RESPONSE ---")
+
         tool_match = re.search(
             r'```json\s*(\{[\s\S]*?\})\s*```', full_response_content
         )
@@ -388,7 +392,14 @@ def handle_ai_response(data):
                     elif param_name in context_params:
                         tool_params[param_name] = context_params[param_name]
 
+                print(f'''--- TOOL CALL ---
+Tool: {tool_name}
+Params: {tool_params}
+--- END TOOL CALL ---''')
                 tool_result = tool_func(**tool_params)
+                print(f'''--- TOOL RESULT ---
+{tool_result}
+--- END TOOL RESULT ---''')
 
                 if isinstance(tool_result, dict) and tool_result.get('status') == 'canvas_created':
                     yield {"type": "open_canvas", "filename": tool_result.get('filename')}
@@ -417,32 +428,51 @@ def handle_ai_response(data):
     if final_answer_provided:
         final_answer_content = messages[-1]['content']
         if canvas_mode:
-            # Clean the think blocks from the content to be saved
-            final_answer_cleaned = re.sub(r'<think>[\s\S]*?<\/think>', '', final_answer_content).strip()
-            timestamp = int(time.time())
-            filename = f"canvas_{timestamp}.md"
+            # --- New Canvas Saving Logic ---
+            code_block_match = re.search(r'```(\w*)\n([\s\S]+?)```', final_answer_content)
 
-            # Use the existing write_file tool to save the content
+            content_to_save = ""
+            file_extension = ""
+
+            if code_block_match:
+                language = code_block_match.group(1).lower()
+                content_to_save = code_block_match.group(2).strip()
+
+                # Map language to file extension
+                lang_to_ext = {
+                    'python': 'py',
+                    'javascript': 'js',
+                    'html': 'html',
+                    'css': 'css',
+                    'json': 'json',
+                    'sql': 'sql',
+                    'shell': 'sh',
+                    'bash': 'sh',
+                }
+                file_extension = lang_to_ext.get(language, 'txt')
+            else:
+                # Fallback for non-code content
+                content_to_save = re.sub(r'<think>[\s\S]*?<\/think>', '', final_answer_content).strip()
+                file_extension = 'md'
+
+            timestamp = int(time.time())
+            filename = f"canvas_{timestamp}.{file_extension}"
+
             write_result = write_file(
                 path=filename,
-                content=final_answer_cleaned,
+                content=content_to_save,
                 conversation_id=conversation_id,
                 user_id=user_id
             )
 
             if "successfully" in write_result:
-                # Signal frontend to open the new file in the canvas
                 yield {"type": "open_canvas", "filename": filename}
-                # Signal frontend to refresh the file explorer
                 yield {"type": "refresh_files"}
             else:
-                # Inform the user if saving failed
                 yield {"type": "agent_error", "error": f"Failed to save to canvas: {write_result}"}
 
-            # Always yield the original final answer to display in the chat bubble
             yield {"type": "final_answer", "content": final_answer_content}
         else:
-            # If not in canvas mode, just yield the final answer as before
             yield {"type": "final_answer", "content": final_answer_content}
 
     convo = Conversation.query.get(conversation_id)
