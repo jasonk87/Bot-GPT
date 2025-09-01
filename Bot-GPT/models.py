@@ -10,7 +10,9 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(150), nullable=False)
 
     # User-specific settings
-    selected_model = db.Column(db.String(150), nullable=True)
+    selected_model = db.Column(
+        db.String(150), nullable=False, default='qwen3:8b'
+    )
     selected_persona = db.Column(
         db.String(150), nullable=True, default='default'
     )
