@@ -33,7 +33,6 @@ let isCanvasMode = false;
 let currentAgentBubble = null;
 let fullAgentResponse = "";
 let currentResponseContent = "";
-let currentThinkingContent = "";
 let lastOpenedCanvasPath = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -304,11 +303,18 @@ async function initializeApp(username) {
             // --- Canvas Toggle Logic ---
             canvasToggleBtn.addEventListener('click', () => {
                 const canvasPanel = document.getElementById('canvas-panel');
-                if (canvasPanel && !canvasPanel.classList.contains('hidden')) {
-                    hideCanvasPanel();
-                } else {
-                    if (lastOpenedCanvasPath) {
+                isCanvasMode = !isCanvasMode; // Toggle canvas mode state
+                canvasToggleBtn.classList.toggle('toggled', isCanvasMode); // Toggle visual style
+
+                if (isCanvasMode) {
+                    // If entering canvas mode, and a file is open, ensure it's visible
+                    if (lastOpenedCanvasPath && canvasPanel.classList.contains('hidden')) {
                         openFileCanvas(lastOpenedCanvasPath);
+                    }
+                } else {
+                    // If leaving canvas mode, hide the panel
+                    if (canvasPanel && !canvasPanel.classList.contains('hidden')) {
+                        hideCanvasPanel();
                     }
                 }
             });
@@ -376,11 +382,6 @@ async function initializeApp(username) {
             canvasPanel.style.width = `${newCanvasWidth}px`;
         }
     }
-
-    const resizeObserver = new ResizeObserver(() => {
-        smartScroll(chatContainer);
-    });
-    resizeObserver.observe(chatContainer);
 }
 
 async function loadUserSettings() {
@@ -752,14 +753,10 @@ function sendMessage() {
     chatInput.style.height = 'auto';
 
     currentAgentBubble = createBotMessageContainer();
+    updateBotBubble(currentAgentBubble, "", false); // Show thinking indicator immediately
     currentResponseContent = ""; // Reset the content for the new message
-    currentThinkingContent = ""; // Reset thinking content
-
-    // Immediately show the thinking container and expand it
-    const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
-    const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
-    thinkingContainer.style.display = 'block';
-    thinkingContentEl.style.display = 'block';
+    let thinkContent = "";
+    let inThinkBlock = true;
 
     const isNewConversation = !currentConversationId;
 
@@ -839,12 +836,9 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     const agentStatus = bubbleElement.querySelector('.agent-status');
     const toolActivity = bubbleElement.querySelector('.tool-activity');
 
-    // Extract thought content, which might be partial
+    // Extract thought content
     const thinkMatch = responseContent.match(/<think>([\s\S]*?)<\/think>/);
-    if (thinkMatch && thinkMatch[1]) {
-        // Append new thinking content to our accumulator
-        currentThinkingContent += thinkMatch[1];
-    }
+    const thinkContent = thinkMatch ? thinkMatch[1] : null;
 
     // Extract conversational content (everything outside think and tool blocks)
     const conversationalContent = responseContent
@@ -852,20 +846,19 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
         .replace(/```json\s*([\s\S]*?)\s*```/g, '')
         .trim();
 
-    if (currentThinkingContent) {
+    if (thinkContent) {
         thinkingContainer.style.display = 'block';
-        thinkingContentEl.innerHTML = marked.parse(currentThinkingContent);
+        thinkingContentEl.innerHTML = marked.parse(thinkContent);
         smartScroll(thinkingContentEl);
     } else {
-        // Hide it only if we are in a final state and there was never any thinking content
+        // Hide it only if we are in a final state, otherwise it might just not have arrived yet
         if (isFinal) {
             thinkingContainer.style.display = 'none';
         }
     }
 
     if (conversationalContent) {
-        agentStatus.style.opacity = '0';
-        setTimeout(() => { agentStatus.style.display = 'none'; }, 300);
+        agentStatus.style.display = 'none';
         answerContent.style.display = 'block';
         answerContent.innerHTML = marked.parse(conversationalContent);
     } else {
@@ -879,7 +872,7 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     if (isFinal) {
         // Hide the main thinking indicator when the turn is truly over
         agentStatus.style.display = 'none';
-        if (!conversationalContent && !currentThinkingContent) {
+        if (!conversationalContent && !thinkContent) {
             // If there's no content at all in the end, don't show an empty bubble.
             // This can happen if the AI only calls a tool.
             answerContent.style.display = 'none';
@@ -898,6 +891,7 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
             block.parentElement.appendChild(copyBtn);
         });
     }
+    smartScroll(chatContainer);
 }
 
 function updateAgentStatus(bubbleElement, statusText, isError = false) {
@@ -925,27 +919,9 @@ function showToolCall(bubbleElement, toolName, toolParams) {
     agentStatus.style.display = 'none';
     answerContent.style.display = 'none';
     toolActivity.style.display = 'block';
-    toolActivity.style.position = 'relative'; // For positioning the copy button
 
-    toolHeaderEl.textContent = `Action: ${toolName}`;
-    const paramsText = JSON.stringify(toolParams, null, 2);
-    toolParamsEl.textContent = paramsText;
-
-    // Add a copy button
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'copy-btn';
-    copyBtn.textContent = 'Copy';
-    copyBtn.style.opacity = '1'; // Make it visible by default on tool calls
-    copyBtn.onclick = () => {
-        navigator.clipboard.writeText(paramsText);
-        copyBtn.textContent = 'Copied!';
-        setTimeout(() => copyBtn.textContent = 'Copy', 2000);
-    };
-
-    // Check if a copy button already exists before appending
-    if (!toolActivity.querySelector('.copy-btn')) {
-        toolActivity.appendChild(copyBtn);
-    }
+            toolHeaderEl.textContent = `Action: ${toolName}`;
+    toolParamsEl.textContent = JSON.stringify(toolParams, null, 2);
 }
 
 function addConversationToList(id, title) {
@@ -1158,19 +1134,4 @@ function appendMessage(text, sender, animate = true) {
 
     chatContainer.appendChild(messageWrapper);
     smartScroll(chatContainer);
-}
-
-function smartScroll(element) {
-    // Use a small timeout to allow the DOM to update before we calculate scroll positions
-    setTimeout(() => {
-        if (!element) return;
-        const threshold = 20; // A bit more lenient
-        // Check if the user has scrolled up from the bottom
-        const isScrolledUp = element.scrollHeight - element.clientHeight > element.scrollTop + threshold;
-
-        // Only scroll to the bottom if the user hasn't intentionally scrolled up
-        if (!isScrolledUp) {
-            element.scrollTop = element.scrollHeight;
-        }
-    }, 50); // 50ms delay to be safe
 }
