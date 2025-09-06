@@ -212,6 +212,7 @@ async function initializeApp(username) {
                     }
                     // Reset content for the next user message
                     currentResponseContent = "";
+                    smartScroll(chatContainer);
                     break;
                 case 'agent_error':
                     updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);
@@ -229,7 +230,6 @@ async function initializeApp(username) {
                     }
                     break;
             }
-            smartScroll(chatContainer);
         } catch (e) {
             console.error("Error parsing socket event data:", e);
         }
@@ -302,20 +302,14 @@ async function initializeApp(username) {
 
             // --- Canvas Toggle Logic ---
             canvasToggleBtn.addEventListener('click', () => {
-                const canvasPanel = document.getElementById('canvas-panel');
-                isCanvasMode = !isCanvasMode; // Toggle canvas mode state
-                canvasToggleBtn.classList.toggle('toggled', isCanvasMode); // Toggle visual style
+                isCanvasMode = !isCanvasMode;
+                canvasToggleBtn.classList.toggle('toggled', isCanvasMode);
 
-                if (isCanvasMode) {
-                    // If entering canvas mode, and a file is open, ensure it's visible
-                    if (lastOpenedCanvasPath && canvasPanel.classList.contains('hidden')) {
-                        openFileCanvas(lastOpenedCanvasPath);
-                    }
-                } else {
-                    // If leaving canvas mode, hide the panel
-                    if (canvasPanel && !canvasPanel.classList.contains('hidden')) {
-                        hideCanvasPanel();
-                    }
+                const canvasPanel = document.getElementById('canvas-panel');
+                if (!isCanvasMode && canvasPanel && !canvasPanel.classList.contains('hidden')) {
+                    hideCanvasPanel();
+                } else if (isCanvasMode && lastOpenedCanvasPath && canvasPanel.classList.contains('hidden')) {
+                    openFileCanvas(lastOpenedCanvasPath);
                 }
             });
 
@@ -832,50 +826,47 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
 
     const thinkingContainer = bubbleElement.querySelector('.thinking-process-container');
     const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
-    const answerContent = bubbleElement.querySelector('.answer-content');
+    const answerContentEl = bubbleElement.querySelector('.answer-content');
     const agentStatus = bubbleElement.querySelector('.agent-status');
     const toolActivity = bubbleElement.querySelector('.tool-activity');
 
-    // Extract thought content
-    const thinkMatch = responseContent.match(/<think>([\s\S]*?)<\/think>/);
-    const thinkContent = thinkMatch ? thinkMatch[1] : null;
+    // New logic to handle streaming think/talk content
+    let thinkContent = "";
+    const thinkMatch = responseContent.match(/<think>([\s\S]*)/);
+    if (thinkMatch) {
+        thinkContent = thinkMatch[1].replace(/<\/think>.*/, '');
+    }
 
-    // Extract conversational content (everything outside think and tool blocks)
-    const conversationalContent = responseContent
-        .replace(/<think>[\s\S]*?<\/think>/g, '')
-        .replace(/```json\s*([\s\S]*?)\s*```/g, '')
-        .trim();
+    const conversationalContent = responseContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
     if (thinkContent) {
+        agentStatus.style.display = 'none';
         thinkingContainer.style.display = 'block';
         thinkingContentEl.innerHTML = marked.parse(thinkContent);
         smartScroll(thinkingContentEl);
     } else {
-        // Hide it only if we are in a final state, otherwise it might just not have arrived yet
-        if (isFinal) {
-            thinkingContainer.style.display = 'none';
-        }
+        if (isFinal) thinkingContainer.style.display = 'none';
     }
 
     if (conversationalContent) {
         agentStatus.style.display = 'none';
-        answerContent.style.display = 'block';
-        answerContent.innerHTML = marked.parse(conversationalContent);
+        answerContentEl.style.display = 'block';
+        answerContentEl.innerHTML = marked.parse(conversationalContent);
+        smartScroll(chatContainer);
     } else {
-        answerContent.style.display = 'none';
-        // If there's no conversational content yet, and no tool is active, show the "thinking" status
-        if ((!toolActivity.style.display || toolActivity.style.display === 'none') && !isFinal) {
-             agentStatus.style.display = 'block';
-        }
+        if (isFinal) answerContentEl.style.display = 'none';
+    }
+
+    if (!thinkContent && !conversationalContent && !isFinal && toolActivity.style.display === 'none') {
+        agentStatus.style.display = 'block';
+    } else if (thinkContent || conversationalContent) {
+        agentStatus.style.display = 'none';
     }
 
     if (isFinal) {
-        // Hide the main thinking indicator when the turn is truly over
         agentStatus.style.display = 'none';
-        if (!conversationalContent && !thinkContent) {
-            // If there's no content at all in the end, don't show an empty bubble.
-            // This can happen if the AI only calls a tool.
-            answerContent.style.display = 'none';
+        if (!conversationalContent && !thinkContent && toolActivity.style.display === 'none') {
+            bubbleElement.style.display = 'none';
         }
 
         bubbleElement.querySelectorAll('pre code').forEach((block) => {
@@ -891,7 +882,6 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
             block.parentElement.appendChild(copyBtn);
         });
     }
-    smartScroll(chatContainer);
 }
 
 function updateAgentStatus(bubbleElement, statusText, isError = false) {
@@ -1133,5 +1123,5 @@ function appendMessage(text, sender, animate = true) {
     }
 
     chatContainer.appendChild(messageWrapper);
-    smartScroll(chatContainer);
+    smartScroll(chatContainer); // Scroll when any new message is added
 }
