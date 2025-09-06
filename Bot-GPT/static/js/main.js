@@ -377,8 +377,6 @@ async function initializeApp(username) {
         }
     }
 
-    // Add a ResizeObserver to automatically scroll down when new elements
-    // (like images from markdown) are loaded and change the container height.
     const resizeObserver = new ResizeObserver(() => {
         smartScroll(chatContainer);
     });
@@ -757,15 +755,11 @@ function sendMessage() {
     currentResponseContent = ""; // Reset the content for the new message
     currentThinkingContent = ""; // Reset thinking content
 
-    // Immediately show the thinking container
+    // Immediately show the thinking container and expand it
     const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
     const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
-    const thinkingHeader = thinkingContainer.querySelector('.thinking-header span');
-
     thinkingContainer.style.display = 'block';
-    thinkingContentEl.style.display = 'block'; // Expand by default
-    thinkingHeader.textContent = 'Thinking...';
-
+    thinkingContentEl.style.display = 'block';
 
     const isNewConversation = !currentConversationId;
 
@@ -799,7 +793,7 @@ function createBotMessageContainer(animate = true) {
                             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path></svg>
                             <span>Thinking...</span>
                         </div>
-                        <div class="thinking-content prose prose-invert max-w-none" style="display: block;"></div>
+                        <div class="thinking-content prose prose-invert max-w-none"></div>
                     </div>
             <div class="plan-step-container" style="display: none;">
                 <div class="plan-step-header">
