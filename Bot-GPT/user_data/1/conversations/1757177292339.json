@@ -1,0 +1,9 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "User uploaded the following files to the workspace:\n- dummy_file.txt\n\nUser's prompt:"
+    }
+  ],
+  "title": "New Chat"
+}

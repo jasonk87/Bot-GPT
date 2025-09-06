@@ -187,13 +187,16 @@ def register():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
+    print(f"--- Registering user: {username} ---")
     if User.query.filter_by(username=username).first():
+        print("--- User already exists ---")
         return jsonify({"message": "Username already exists"}), 409
     new_user = User(username=username)
     new_user.set_password(password)
     db.session.add(new_user)
     db.session.commit()
     login_user(new_user, remember=True)
+    print("--- Registration successful ---")
     return jsonify({
         "message": "Registration successful",
         "username": new_user.username
@@ -233,13 +236,12 @@ def check_auth():
 @login_required
 def get_models():
     """Fetches the available models from the Ollama host."""
-    try:
-        ollama_host = current_app.config['OLLAMA_HOST']
-        response = requests.get(f"{ollama_host}/api/tags")
-        response.raise_for_status()
-        return jsonify(response.json().get('models', []))
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    # MOCKED RESPONSE to avoid dependency on Ollama service
+    dummy_models = [
+        {"name": "mock-model-1:latest", "details": {"family": "mock"}},
+        {"name": "mock-model-2:latest", "details": {"family": "mock"}},
+    ]
+    return jsonify(dummy_models)
 
 
 def call_ollama_chat_stream(model, messages, system_prompt):
@@ -908,6 +910,12 @@ def upload_file():
 
     if not conversation_id:
         conversation_id = str(int(time.time() * 1000))
+        # Create the conversation and add the user as a participant
+        new_convo = Conversation(id=conversation_id, title="New Chat", owner_id=current_user.id)
+        db.session.add(new_convo)
+        participant = ConversationParticipant(user_id=current_user.id, conversation_id=conversation_id, role='owner')
+        db.session.add(participant)
+        db.session.commit()
 
     if not files or files[0].filename == '':
         return jsonify(error='No selected file'), 400
@@ -929,6 +937,9 @@ def upload_file():
         f"- {file_list_str}\n\n"
         f"User's prompt: {prompt}"
     )
+
+    # Emit an event to the client to refresh the file explorer
+    socketio.emit('ai_response', {'type': 'refresh_files'}, room=conversation_id)
 
     return jsonify(
         message=message_to_ai, conversation_id=conversation_id

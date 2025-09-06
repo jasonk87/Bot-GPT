@@ -294,6 +294,12 @@ async function initializeApp(username) {
     fileInput.addEventListener('change', updateFileList);
     uploadForm.addEventListener('submit', handleFileUpload);
 
+    uploadModal.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            uploadModal.classList.add('hidden');
+        }
+    });
+
     // --- Settings Modal Logic ---
     settingsBtn.addEventListener('click', () => settingsModal.classList.remove('hidden'));
     cancelSettingsBtn.addEventListener('click', () => settingsModal.classList.add('hidden'));
