@@ -33,6 +33,7 @@ let isCanvasMode = false;
 let currentAgentBubble = null;
 let fullAgentResponse = "";
 let currentResponseContent = "";
+let lastOpenedCanvasPath = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
     const response = await fetch(`${window.location.origin}/check_auth`);
@@ -302,9 +303,12 @@ async function initializeApp(username) {
             // --- Canvas Toggle Logic ---
             canvasToggleBtn.addEventListener('click', () => {
                 const canvasPanel = document.getElementById('canvas-panel');
-                // If the panel is visible, hide it. A file click is required to open it.
                 if (canvasPanel && !canvasPanel.classList.contains('hidden')) {
                     hideCanvasPanel();
+                } else {
+                    if (lastOpenedCanvasPath) {
+                        openFileCanvas(lastOpenedCanvasPath);
+                    }
                 }
             });
 
@@ -580,6 +584,7 @@ function attachFileEventListeners() {
         }
 
         async function openFileCanvas(path) {
+            lastOpenedCanvasPath = path; // Store the path
             try {
                 const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file?path=${encodeURIComponent(path)}&conversation_id=${currentConversationId}`);
                 const data = await response.json();
@@ -816,21 +821,55 @@ function createBotMessageContainer(animate = true) {
 
 function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     if (!bubbleElement) return;
+
+    const thinkingContainer = bubbleElement.querySelector('.thinking-process-container');
+    const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
+    const answerContent = bubbleElement.querySelector('.answer-content');
     const agentStatus = bubbleElement.querySelector('.agent-status');
     const toolActivity = bubbleElement.querySelector('.tool-activity');
-    const answerContent = bubbleElement.querySelector('.answer-content');
 
-    agentStatus.style.display = 'none';
-    toolActivity.style.display = 'none';
-    answerContent.style.display = 'block';
+    // Extract thought content
+    const thinkMatch = responseContent.match(/<think>([\s\S]*?)<\/think>/);
+    const thinkContent = thinkMatch ? thinkMatch[1] : null;
 
-    const finalConversational = responseContent
+    // Extract conversational content (everything outside think and tool blocks)
+    const conversationalContent = responseContent
         .replace(/<think>[\s\S]*?<\/think>/g, '')
         .replace(/```json\s*([\s\S]*?)\s*```/g, '')
         .trim();
-    answerContent.innerHTML = marked.parse(finalConversational);
+
+    if (thinkContent) {
+        thinkingContainer.style.display = 'block';
+        thinkingContentEl.innerHTML = marked.parse(thinkContent);
+        smartScroll(thinkingContentEl);
+    } else {
+        // Hide it only if we are in a final state, otherwise it might just not have arrived yet
+        if (isFinal) {
+            thinkingContainer.style.display = 'none';
+        }
+    }
+
+    if (conversationalContent) {
+        agentStatus.style.display = 'none';
+        answerContent.style.display = 'block';
+        answerContent.innerHTML = marked.parse(conversationalContent);
+    } else {
+        answerContent.style.display = 'none';
+        // If there's no conversational content yet, and no tool is active, show the "thinking" status
+        if ((!toolActivity.style.display || toolActivity.style.display === 'none') && !isFinal) {
+             agentStatus.style.display = 'block';
+        }
+    }
 
     if (isFinal) {
+        // Hide the main thinking indicator when the turn is truly over
+        agentStatus.style.display = 'none';
+        if (!conversationalContent && !thinkContent) {
+            // If there's no content at all in the end, don't show an empty bubble.
+            // This can happen if the AI only calls a tool.
+            answerContent.style.display = 'none';
+        }
+
         bubbleElement.querySelectorAll('pre code').forEach((block) => {
             hljs.highlightElement(block);
             const copyBtn = document.createElement('button');
