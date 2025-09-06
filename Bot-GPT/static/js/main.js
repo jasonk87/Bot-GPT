@@ -33,6 +33,7 @@ let isCanvasMode = false;
 let currentAgentBubble = null;
 let fullAgentResponse = "";
 let currentResponseContent = "";
+let currentThinkingContent = "";
 let lastOpenedCanvasPath = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -375,6 +376,13 @@ async function initializeApp(username) {
             canvasPanel.style.width = `${newCanvasWidth}px`;
         }
     }
+
+    // Add a ResizeObserver to automatically scroll down when new elements
+    // (like images from markdown) are loaded and change the container height.
+    const resizeObserver = new ResizeObserver(() => {
+        smartScroll(chatContainer);
+    });
+    resizeObserver.observe(chatContainer);
 }
 
 async function loadUserSettings() {
@@ -747,8 +755,17 @@ function sendMessage() {
 
     currentAgentBubble = createBotMessageContainer();
     currentResponseContent = ""; // Reset the content for the new message
-    let thinkContent = "";
-    let inThinkBlock = true;
+    currentThinkingContent = ""; // Reset thinking content
+
+    // Immediately show the thinking container
+    const thinkingContainer = currentAgentBubble.querySelector('.thinking-process-container');
+    const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
+    const thinkingHeader = thinkingContainer.querySelector('.thinking-header span');
+
+    thinkingContainer.style.display = 'block';
+    thinkingContentEl.style.display = 'block'; // Expand by default
+    thinkingHeader.textContent = 'Thinking...';
+
 
     const isNewConversation = !currentConversationId;
 
@@ -782,7 +799,7 @@ function createBotMessageContainer(animate = true) {
                             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path></svg>
                             <span>Thinking...</span>
                         </div>
-                        <div class="thinking-content prose prose-invert max-w-none"></div>
+                        <div class="thinking-content prose prose-invert max-w-none" style="display: block;"></div>
                     </div>
             <div class="plan-step-container" style="display: none;">
                 <div class="plan-step-header">
@@ -828,9 +845,12 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     const agentStatus = bubbleElement.querySelector('.agent-status');
     const toolActivity = bubbleElement.querySelector('.tool-activity');
 
-    // Extract thought content
+    // Extract thought content, which might be partial
     const thinkMatch = responseContent.match(/<think>([\s\S]*?)<\/think>/);
-    const thinkContent = thinkMatch ? thinkMatch[1] : null;
+    if (thinkMatch && thinkMatch[1]) {
+        // Append new thinking content to our accumulator
+        currentThinkingContent += thinkMatch[1];
+    }
 
     // Extract conversational content (everything outside think and tool blocks)
     const conversationalContent = responseContent
@@ -838,19 +858,20 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
         .replace(/```json\s*([\s\S]*?)\s*```/g, '')
         .trim();
 
-    if (thinkContent) {
+    if (currentThinkingContent) {
         thinkingContainer.style.display = 'block';
-        thinkingContentEl.innerHTML = marked.parse(thinkContent);
+        thinkingContentEl.innerHTML = marked.parse(currentThinkingContent);
         smartScroll(thinkingContentEl);
     } else {
-        // Hide it only if we are in a final state, otherwise it might just not have arrived yet
+        // Hide it only if we are in a final state and there was never any thinking content
         if (isFinal) {
             thinkingContainer.style.display = 'none';
         }
     }
 
     if (conversationalContent) {
-        agentStatus.style.display = 'none';
+        agentStatus.style.opacity = '0';
+        setTimeout(() => { agentStatus.style.display = 'none'; }, 300);
         answerContent.style.display = 'block';
         answerContent.innerHTML = marked.parse(conversationalContent);
     } else {
@@ -864,7 +885,7 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     if (isFinal) {
         // Hide the main thinking indicator when the turn is truly over
         agentStatus.style.display = 'none';
-        if (!conversationalContent && !thinkContent) {
+        if (!conversationalContent && !currentThinkingContent) {
             // If there's no content at all in the end, don't show an empty bubble.
             // This can happen if the AI only calls a tool.
             answerContent.style.display = 'none';
@@ -910,9 +931,27 @@ function showToolCall(bubbleElement, toolName, toolParams) {
     agentStatus.style.display = 'none';
     answerContent.style.display = 'none';
     toolActivity.style.display = 'block';
+    toolActivity.style.position = 'relative'; // For positioning the copy button
 
-            toolHeaderEl.textContent = `Action: ${toolName}`;
-    toolParamsEl.textContent = JSON.stringify(toolParams, null, 2);
+    toolHeaderEl.textContent = `Action: ${toolName}`;
+    const paramsText = JSON.stringify(toolParams, null, 2);
+    toolParamsEl.textContent = paramsText;
+
+    // Add a copy button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-btn';
+    copyBtn.textContent = 'Copy';
+    copyBtn.style.opacity = '1'; // Make it visible by default on tool calls
+    copyBtn.onclick = () => {
+        navigator.clipboard.writeText(paramsText);
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => copyBtn.textContent = 'Copy', 2000);
+    };
+
+    // Check if a copy button already exists before appending
+    if (!toolActivity.querySelector('.copy-btn')) {
+        toolActivity.appendChild(copyBtn);
+    }
 }
 
 function addConversationToList(id, title) {

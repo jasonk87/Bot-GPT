@@ -57,13 +57,15 @@
             color: #9ca3af;
             font-size: 0.875rem;
             margin-bottom: 0.75rem;
+            transition: opacity 0.3s ease-in-out;
         }
 
         .tool-activity {
             border: 1px solid #4a5568;
-            border-radius: 0.5rem;
+            border-radius: 0.75rem; /* Match bubbles */
             margin-top: 1rem;
             background-color: #2d3748;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
         }
         .tool-activity-header {
             display: flex;
@@ -85,8 +87,9 @@
         .thinking-process-container {
             background-color: #2d3748;
             border: 1px solid #4a5568;
-            border-radius: 0.5rem;
+            border-radius: 0.75rem; /* Match bubbles */
             margin-bottom: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
         }
         .thinking-header {
             display: flex;
@@ -129,16 +132,20 @@
 
         .user-bubble, .bot-bubble {
             overflow-wrap: break-word;
+            word-break: break-word; /* Redundant but good for safety */
+            max-width: 100%;
         }
         .user-bubble {
             background-color: #1e3a8a; /* A shade of blue */
-            padding: 0.75rem;
-            border-radius: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-radius: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
         }
         .bot-bubble {
             background-color: #374151; /* A darker grey */
-            padding: 0.75rem;
-            border-radius: 0.75rem;
+            padding: 0.75rem 1rem;
+            border-radius: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
         }
         #drop-zone {
             border: 2px dashed #4b5563;
