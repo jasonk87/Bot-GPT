@@ -315,6 +315,9 @@
                 <button id="files-tab-btn" class="side-panel-tab flex-1 p-2 text-center font-semibold border-b-2 border-transparent">Files</button>
             </div>
             <div id="conversations-panel" class="flex flex-col flex-1 overflow-hidden">
+                <div class="p-2 border-b border-gray-700">
+                    <input type="search" id="conversation-search-input" placeholder="Search conversations..." class="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
                 <div id="conversation-list" class="scrollable-content flex-1 p-2 overflow-y-auto"></div>
             </div>
             <div id="files-panel" class="hidden flex-col flex-1 overflow-hidden">
