@@ -1,10 +1,20 @@
-[2025-09-06 20:56:34 +0000] [76742] [INFO] Starting gunicorn 23.0.0
-[2025-09-06 20:56:34 +0000] [76742] [INFO] Listening at: http://0.0.0.0:5001 (76742)
-[2025-09-06 20:56:34 +0000] [76742] [INFO] Using worker: gthread
-[2025-09-06 20:56:34 +0000] [76858] [INFO] Booting worker with pid: 76858
-[2025-09-06 20:56:53 +0000] [76742] [INFO] Handling signal: term
-[2025-09-06 20:56:54 +0000] [76858] [INFO] Worker exiting (pid: 76858)
+[2025-09-06 22:51:37 +0000] [83684] [INFO] Starting gunicorn 23.0.0
+[2025-09-06 22:51:37 +0000] [83684] [INFO] Listening at: http://0.0.0.0:5001 (83684)
+[2025-09-06 22:51:37 +0000] [83684] [INFO] Using worker: gthread
+[2025-09-06 22:51:37 +0000] [83800] [INFO] Booting worker with pid: 83800
+[2025-09-06 22:52:02 +0000] [83684] [INFO] Handling signal: term
+[2025-09-06 22:52:02 +0000] [83800] [INFO] Worker exiting (pid: 83800)
 INFO: 'key.py' not found. Falling back to env vars.
 Client connected
+Client mv0PFUWUaIFd8tD9AAAB joined room: 1757199116277
 Client disconnected
-[2025-09-06 20:56:54 +0000] [76742] [INFO] Shutting down: Master
+Client connected
+Client disconnected
+Client connected
+Client disconnected
+Client connected
+Client kpjEGOFBTeATjfp3AAAH joined room: 1757199121176
+Client disconnected
+Client connected
+Client disconnected
+[2025-09-06 22:52:03 +0000] [83684] [INFO] Shutting down: Master
