@@ -1159,3 +1159,18 @@ function appendMessage(text, sender, animate = true) {
     chatContainer.appendChild(messageWrapper);
     smartScroll(chatContainer);
 }
+
+function smartScroll(element) {
+    // Use a small timeout to allow the DOM to update before we calculate scroll positions
+    setTimeout(() => {
+        if (!element) return;
+        const threshold = 20; // A bit more lenient
+        // Check if the user has scrolled up from the bottom
+        const isScrolledUp = element.scrollHeight - element.clientHeight > element.scrollTop + threshold;
+
+        // Only scroll to the bottom if the user hasn't intentionally scrolled up
+        if (!isScrolledUp) {
+            element.scrollTop = element.scrollHeight;
+        }
+    }, 50); // 50ms delay to be safe
+}
