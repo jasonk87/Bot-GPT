@@ -15,11 +15,10 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     settingsBtn, settingsModal, settingsForm, cancelSettingsBtn, personaSelect, currentModelDisplay,
     shareModal, cancelShareBtn, shareUserList,
     copyFileBtn, saveFileBtn, canvasToggleBtn,
-    participantList, conversationSearchInput;
+    participantList;
 
 const API_BASE = '/api';
 let conversationHistory = [];
-let allConversations = [];
 let currentConversationId = null;
 let currentConversationRole = null;
 let deleteResolver = null;
@@ -138,7 +137,6 @@ async function initializeApp(username) {
     saveFileBtn = document.getElementById('save-file-btn');
     canvasToggleBtn = document.getElementById('canvas-toggle-btn');
     participantList = document.getElementById('participant-list');
-    conversationSearchInput = document.getElementById('conversation-search-input');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
 
@@ -214,7 +212,6 @@ async function initializeApp(username) {
                     }
                     // Reset content for the next user message
                     currentResponseContent = "";
-                    smartScroll(chatContainer);
                     break;
                 case 'agent_error':
                     updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);
@@ -232,6 +229,7 @@ async function initializeApp(username) {
                     }
                     break;
             }
+            smartScroll(chatContainer);
         } catch (e) {
             console.error("Error parsing socket event data:", e);
         }
@@ -294,12 +292,6 @@ async function initializeApp(username) {
     fileInput.addEventListener('change', updateFileList);
     uploadForm.addEventListener('submit', handleFileUpload);
 
-    uploadModal.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            uploadModal.classList.add('hidden');
-        }
-    });
-
     // --- Settings Modal Logic ---
     settingsBtn.addEventListener('click', () => settingsModal.classList.remove('hidden'));
     cancelSettingsBtn.addEventListener('click', () => settingsModal.classList.add('hidden'));
@@ -310,14 +302,13 @@ async function initializeApp(username) {
 
             // --- Canvas Toggle Logic ---
             canvasToggleBtn.addEventListener('click', () => {
-                isCanvasMode = !isCanvasMode;
-                canvasToggleBtn.classList.toggle('toggled', isCanvasMode);
-
                 const canvasPanel = document.getElementById('canvas-panel');
-                if (!isCanvasMode && canvasPanel && !canvasPanel.classList.contains('hidden')) {
+                if (canvasPanel && !canvasPanel.classList.contains('hidden')) {
                     hideCanvasPanel();
-                } else if (isCanvasMode && lastOpenedCanvasPath && canvasPanel.classList.contains('hidden')) {
-                    openFileCanvas(lastOpenedCanvasPath);
+                } else {
+                    if (lastOpenedCanvasPath) {
+                        openFileCanvas(lastOpenedCanvasPath);
+                    }
                 }
             });
 
@@ -384,14 +375,6 @@ async function initializeApp(username) {
             canvasPanel.style.width = `${newCanvasWidth}px`;
         }
     }
-
-    conversationSearchInput.addEventListener('input', (e) => {
-        const searchTerm = e.target.value.toLowerCase();
-        const filteredConversations = allConversations.filter(convo =>
-            convo.title.toLowerCase().includes(searchTerm)
-        );
-        renderConversationList(filteredConversations);
-    });
 }
 
 async function loadUserSettings() {
@@ -763,7 +746,6 @@ function sendMessage() {
     chatInput.style.height = 'auto';
 
     currentAgentBubble = createBotMessageContainer();
-    updateBotBubble(currentAgentBubble, "", false); // Show thinking indicator immediately
     currentResponseContent = ""; // Reset the content for the new message
     let thinkContent = "";
     let inThinkBlock = true;
@@ -842,47 +824,50 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
 
     const thinkingContainer = bubbleElement.querySelector('.thinking-process-container');
     const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
-    const answerContentEl = bubbleElement.querySelector('.answer-content');
+    const answerContent = bubbleElement.querySelector('.answer-content');
     const agentStatus = bubbleElement.querySelector('.agent-status');
     const toolActivity = bubbleElement.querySelector('.tool-activity');
 
-    // New logic to handle streaming think/talk content
-    let thinkContent = "";
-    const thinkMatch = responseContent.match(/<think>([\s\S]*)/);
-    if (thinkMatch) {
-        thinkContent = thinkMatch[1].replace(/<\/think>.*/, '');
-    }
+    // Extract thought content
+    const thinkMatch = responseContent.match(/<think>([\s\S]*?)<\/think>/);
+    const thinkContent = thinkMatch ? thinkMatch[1] : null;
 
-    const conversationalContent = responseContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    // Extract conversational content (everything outside think and tool blocks)
+    const conversationalContent = responseContent
+        .replace(/<think>[\s\S]*?<\/think>/g, '')
+        .replace(/```json\s*([\s\S]*?)\s*```/g, '')
+        .trim();
 
     if (thinkContent) {
-        agentStatus.style.display = 'none';
         thinkingContainer.style.display = 'block';
         thinkingContentEl.innerHTML = marked.parse(thinkContent);
         smartScroll(thinkingContentEl);
     } else {
-        if (isFinal) thinkingContainer.style.display = 'none';
+        // Hide it only if we are in a final state, otherwise it might just not have arrived yet
+        if (isFinal) {
+            thinkingContainer.style.display = 'none';
+        }
     }
 
     if (conversationalContent) {
         agentStatus.style.display = 'none';
-        answerContentEl.style.display = 'block';
-        answerContentEl.innerHTML = marked.parse(conversationalContent);
-        smartScroll(chatContainer);
+        answerContent.style.display = 'block';
+        answerContent.innerHTML = marked.parse(conversationalContent);
     } else {
-        if (isFinal) answerContentEl.style.display = 'none';
-    }
-
-    if (!thinkContent && !conversationalContent && !isFinal && toolActivity.style.display === 'none') {
-        agentStatus.style.display = 'block';
-    } else if (thinkContent || conversationalContent) {
-        agentStatus.style.display = 'none';
+        answerContent.style.display = 'none';
+        // If there's no conversational content yet, and no tool is active, show the "thinking" status
+        if ((!toolActivity.style.display || toolActivity.style.display === 'none') && !isFinal) {
+             agentStatus.style.display = 'block';
+        }
     }
 
     if (isFinal) {
+        // Hide the main thinking indicator when the turn is truly over
         agentStatus.style.display = 'none';
-        if (!conversationalContent && !thinkContent && toolActivity.style.display === 'none') {
-            bubbleElement.style.display = 'none';
+        if (!conversationalContent && !thinkContent) {
+            // If there's no content at all in the end, don't show an empty bubble.
+            // This can happen if the AI only calls a tool.
+            answerContent.style.display = 'none';
         }
 
         bubbleElement.querySelectorAll('pre code').forEach((block) => {
@@ -970,48 +955,44 @@ function addConversationToList(id, title) {
 async function populateConversations() {
     try {
         const response = await fetch(`${window.location.origin}${API_BASE}/conversations`);
-        allConversations = await response.json();
-        renderConversationList(allConversations);
+        const convos = await response.json();
+        conversationList.innerHTML = '';
+        convos.forEach(convo => {
+            const item = document.createElement('div');
+            const isActive = convo.id === currentConversationId;
+            item.className = `conversation-item item-hover group flex justify-between items-center p-2 rounded-md cursor-pointer hover:bg-gray-700 ${isActive ? 'active' : ''}`;
+            item.dataset.id = convo.id;
+
+                    let buttons = '';
+                    if (convo.role === 'owner') {
+                        buttons = `<button class="share-btn p-1 text-gray-400 hover:text-white" title="Share">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12s-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6.002l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.368a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z"></path></svg>
+                                   </button>
+                                   <button class="delete-btn p-1 text-gray-400 hover:text-white" title="Delete">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                   </button>`;
+                    }
+                    item.innerHTML = `<span class="truncate flex-1">${convo.title}</span><div class="flex items-center">${buttons}</div>`;
+
+            item.addEventListener('click', () => {
+                if (!isActive && !isAgentRunning) loadConversation(convo.id);
+            });
+
+                    if (convo.role === 'owner') {
+                        item.querySelector('.share-btn').addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            openShareModal(convo.id);
+                        });
+                        item.querySelector('.delete-btn').addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            confirmDeletion(convo.id, 'conversation', 'conversation');
+                        });
+                    }
+            conversationList.appendChild(item);
+        });
     } catch (error) {
         console.error("Failed to populate conversations:", error);
     }
-}
-
-function renderConversationList(convos) {
-    conversationList.innerHTML = '';
-    convos.forEach(convo => {
-        const item = document.createElement('div');
-        const isActive = convo.id === currentConversationId;
-        item.className = `conversation-item item-hover group flex justify-between items-center p-2 rounded-md cursor-pointer hover:bg-gray-700 ${isActive ? 'active' : ''}`;
-        item.dataset.id = convo.id;
-
-        let buttons = '';
-        if (convo.role === 'owner') {
-            buttons = `<button class="share-btn p-1 text-gray-400 hover:text-white" title="Share">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12s-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6.002l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.368a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z"></path></svg>
-                               </button>
-                               <button class="delete-btn p-1 text-gray-400 hover:text-white" title="Delete">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                               </button>`;
-        }
-        item.innerHTML = `<span class="truncate flex-1">${convo.title}</span><div class="flex items-center">${buttons}</div>`;
-
-        item.addEventListener('click', () => {
-            if (!isActive && !isAgentRunning) loadConversation(convo.id);
-        });
-
-        if (convo.role === 'owner') {
-            item.querySelector('.share-btn').addEventListener('click', (e) => {
-                e.stopPropagation();
-                openShareModal(convo.id);
-            });
-            item.querySelector('.delete-btn').addEventListener('click', (e) => {
-                e.stopPropagation();
-                confirmDeletion(convo.id, 'conversation', 'conversation');
-            });
-        }
-        conversationList.appendChild(item);
-    });
 }
 
         async function openShareModal(conversationId) {
@@ -1143,5 +1124,5 @@ function appendMessage(text, sender, animate = true) {
     }
 
     chatContainer.appendChild(messageWrapper);
-    smartScroll(chatContainer); // Scroll when any new message is added
+    smartScroll(chatContainer);
 }

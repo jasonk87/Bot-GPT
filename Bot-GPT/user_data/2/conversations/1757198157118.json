@@ -1,9 +1,0 @@
-{
-  "messages": [
-    {
-      "role": "user",
-      "content": "This conversation will be deleted."
-    }
-  ],
-  "title": "New Chat"
-}
