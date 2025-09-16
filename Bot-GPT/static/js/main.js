@@ -142,6 +142,12 @@ async function initializeApp(username) {
     canvasToggleBtn = document.getElementById('canvas-toggle-btn');
     participantList = document.getElementById('participant-list');
 
+    humanInputModal = document.getElementById('human-input-modal');
+    humanInputPrompt = document.getElementById('human-input-prompt');
+    humanInputForm = document.getElementById('human-input-form');
+    humanInputTextarea = document.getElementById('human-input-textarea');
+    cancelHumanInputBtn = document.getElementById('cancel-human-input-btn');
+
     welcomeUser.textContent = `Welcome, ${username}!`;
 
     // --- Socket.IO Connection ---
@@ -231,6 +237,9 @@ async function initializeApp(username) {
                             editor.setValue(data.content);
                         }
                     }
+                    break;
+                case 'human_input_required':
+                    handleHumanInput(data.prompt);
                     break;
             }
             smartScroll(chatContainer);
@@ -426,6 +435,25 @@ async function handleSaveSettings(e) {
     } catch (error) {
         alert(`Error saving settings: ${error.message}`);
     }
+}
+
+function handleHumanInput(prompt) {
+    humanInputPrompt.textContent = prompt;
+    humanInputModal.classList.remove('hidden');
+
+    humanInputForm.onsubmit = (e) => {
+        e.preventDefault();
+        const response = humanInputTextarea.value;
+        humanInputModal.classList.add('hidden');
+        humanInputTextarea.value = '';
+        socket.emit('human_response', { response: response, conversation_id: currentConversationId });
+    };
+
+    cancelHumanInputBtn.onclick = () => {
+        humanInputModal.classList.add('hidden');
+        humanInputTextarea.value = '';
+        socket.emit('human_response', { response: '', conversation_id: currentConversationId }); // Send empty response on cancel
+    };
 }
 
 function switchSidePanel(tab) {

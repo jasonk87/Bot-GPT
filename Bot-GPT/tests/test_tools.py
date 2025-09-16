@@ -1,4 +1,6 @@
-from tools import get_file_tree
+import sqlite3
+from unittest.mock import patch
+from tools import get_file_tree, request_human_input, query_database
 
 
 def test_get_file_tree(tmp_path):
@@ -75,3 +77,39 @@ def test_get_file_tree_on_nonexistent_path():
     """
     tree = get_file_tree("a/path/that/does/not/exist")
     assert tree == []
+
+
+def test_request_human_input():
+    """Tests the request_human_input tool."""
+    prompt = "What is your name?"
+    result = request_human_input(prompt)
+    assert result == {
+        "status": "human_input_required",
+        "prompt": prompt
+    }
+
+
+@patch('tools.get_workspace_path')
+def test_query_database(mock_get_workspace_path, tmp_path):
+    """Tests the query_database tool."""
+    mock_get_workspace_path.return_value = str(tmp_path)
+
+    # Test creating a table and inserting data
+    create_query = "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)"
+    result = query_database(create_query, "test_convo", "test_user")
+    assert "Query executed successfully" in result
+
+    insert_query = "INSERT INTO users (name) VALUES ('Alice')"
+    result = query_database(insert_query, "test_convo", "test_user")
+    assert "1 rows affected" in result
+
+    # Test selecting data
+    select_query = "SELECT * FROM users"
+    result = query_database(select_query, "test_convo", "test_user")
+    assert "| id | name |" in result
+    assert "| 1 | Alice |" in result
+
+    # Test invalid query
+    invalid_query = "SELECT * FROM non_existent_table"
+    result = query_database(invalid_query, "test_convo", "test_user")
+    assert "Database Error" in result

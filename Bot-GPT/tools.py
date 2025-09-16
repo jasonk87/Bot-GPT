@@ -3,6 +3,7 @@ import subprocess
 import re
 import sys
 import shlex
+import sqlite3
 from flask import current_app
 from extensions import db
 from models import Conversation
@@ -193,6 +194,14 @@ def set_current_plan_step(step_number, step_description):
     }
 
 
+def request_human_input(prompt: str):
+    """Prompts the user for input and waits for a response."""
+    return {
+        "status": "human_input_required",
+        "prompt": prompt
+    }
+
+
 def execute_python(path, conversation_id=None, user_id=None):
     """Executes a Python script within the conversation's workspace."""
     if '..' in path:
@@ -238,6 +247,41 @@ def pip(command, conversation_id=None, user_id=None):
         return output
     except Exception as e:
         return f"Error: {str(e)}"
+
+
+def query_database(query: str, conversation_id=None, user_id=None):
+    """Executes a SQL query against the workspace database."""
+    workspace_path = get_workspace_path(conversation_id, user_id)
+    if not workspace_path:
+        return "Error: Could not determine workspace."
+
+    db_path = os.path.join(workspace_path, 'workspace.db')
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(query)
+
+        if query.strip().upper().startswith("SELECT"):
+            results = cursor.fetchall()
+            if not results:
+                return "Query executed successfully, but returned no results."
+
+            headers = [description[0] for description in cursor.description]
+            table = f"| {' | '.join(headers)} |\n"
+            table += f"| {' | '.join(['---'] * len(headers))} |\n"
+            for row in results:
+                table += f"| {' | '.join(map(str, row))} |\n"
+            return table
+        else:
+            conn.commit()
+            return f"Query executed successfully. {cursor.rowcount} rows affected."
+
+    except sqlite3.Error as e:
+        return f"Database Error: {e}"
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
 
 
 def web_search(query, conversation_id=None, user_id=None, user=None):

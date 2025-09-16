@@ -18,7 +18,7 @@ from models import Conversation, ConversationParticipant, User
 from tools import (ask_coder, ask_debugger, create_and_open_canvas,
                    execute_python, get_file_tree, get_workspace_path,
                    list_files, pip, read_file, set_current_plan_step,
-                   web_search, write_file)
+                   web_search, write_file, request_human_input, query_database)
 
 # --- System Prompt ---
 DEFAULT_SYSTEM_PROMPT = """
@@ -131,6 +131,10 @@ not make up parameters.
   piece of code.
 - `ask_debugger(failed_command: str, error_message: str)`: Asks a specialist
   agent for help with a failed tool call.
+- `request_human_input(prompt: str)`: Asks the user for input. Use this
+  when you are stuck or need clarification.
+- `query_database(query: str)`: Executes a SQL query against the workspace
+  database. The database is a SQLite database located at `workspace.db`.
 """
 
 
@@ -377,6 +381,8 @@ def handle_ai_response(data):
                 "ask_coder": ask_coder,
                 "create_and_open_canvas": create_and_open_canvas,
                 "set_current_plan_step": set_current_plan_step,
+                "request_human_input": request_human_input,
+                "query_database": query_database,
             }
 
             if tool_name in tool_map:
@@ -426,6 +432,9 @@ Params: {tool_params}
                     elif status == 'plan_step_update':
                         yield {"type": "plan_step_update", "step_number": tool_result.get('step_number'), "step_description": tool_result.get('step_description')}
                         continue
+                    elif status == 'human_input_required':
+                        yield {"type": "human_input_required", "prompt": tool_result.get("prompt")}
+                        return  # Stop the loop and wait for human response
                     else:
                         # Handle other dict-based results, like errors from write_file
                         tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message', str(tool_result))}\n---"
@@ -571,6 +580,44 @@ def handle_chat_message(data):
         emit('ai_response', {"type": "user_message", "content": messages[-1]['content']}, room=room, include_self=False)
 
     for event in handle_ai_response(data):
+        emit('ai_response', event, room=room)
+
+
+@socketio.on('human_response')
+@login_required
+def handle_human_response(data):
+    response = data.get('response')
+    conversation_id = data.get('conversation_id')
+
+    if not conversation_id:
+        return
+
+    # Load conversation from file
+    user_id = current_user.id
+    convo_path = os.path.join(
+        current_app.config['USER_DATA_DIR'], str(user_id),
+        'conversations', f"{conversation_id}.json"
+    )
+    if os.path.exists(convo_path):
+        with open(convo_path, 'r', encoding='utf-8') as f:
+            convo_data = json.load(f)
+        messages = convo_data.get('messages', [])
+    else:
+        # Should not happen if the conversation exists
+        messages = []
+
+    # Append the human response to the messages
+    messages.append({"role": "user", "content": f"USER INPUT:\n---\n{response}\n---"})
+
+    # Resume the agent loop
+    model = current_user.selected_model
+    new_data = {
+        "messages": json.dumps(messages),
+        "model": model,
+        "conversation_id": conversation_id
+    }
+    room = conversation_id or request.sid
+    for event in handle_ai_response(new_data):
         emit('ai_response', event, room=room)
 
 
