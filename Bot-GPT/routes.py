@@ -191,7 +191,7 @@ def profile():
 @main.route('/register', methods=['POST'])
 def register():
     """Handles user registration."""
-    data = request.get_json()
+    data = request.get_json(silent=True) or request.form
     username = data.get('username')
     password = data.get('password')
     if User.query.filter_by(username=username).first():
@@ -560,10 +560,15 @@ def handle_chat_message(data):
     room = data.get('conversation_id') or request.sid
 
     # Parse the messages string into a list
-    messages = json.loads(data['messages'])
+    try:
+        messages = json.loads(data['messages'])
+    except (json.JSONDecodeError, TypeError):
+        emit('ai_response', {"type": "agent_error", "error": "Invalid message format: Not valid JSON."})
+        return
 
     # Broadcast user's message to the room
-    emit('ai_response', {"type": "user_message", "content": messages[-1]['content']}, room=room, include_self=False)
+    if messages:
+        emit('ai_response', {"type": "user_message", "content": messages[-1]['content']}, room=room, include_self=False)
 
     for event in handle_ai_response(data):
         emit('ai_response', event, room=room)

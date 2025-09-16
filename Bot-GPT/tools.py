@@ -1,6 +1,7 @@
 import os
 import subprocess
 import re
+import sys
 from flask import current_app
 from models import Conversation
 
@@ -172,7 +173,7 @@ def create_and_open_canvas(
     """
     write_result = write_file(filename, content, conversation_id, user_id)
 
-    if "successfully" in write_result:
+    if write_result.get("status") == "file_written":
         return {
             "status": "canvas_created",
             "filename": filename,
@@ -220,7 +221,7 @@ def execute_python(path, conversation_id=None, user_id=None):
 def pip(command, conversation_id=None, user_id=None):
     """Installs a Python package using pip."""
     try:
-        command_list = ['pip'] + command.split() + ['--disable-pip-version-check']
+        command_list = [sys.executable, '-m', 'pip'] + command.split() + ['--disable-pip-version-check']
         process = subprocess.run(
             command_list,
             capture_output=True,
@@ -344,6 +345,9 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
 
 def ask_debugger(failed_command, error_message, user=None, user_id=None):
     """Delegates a debugging task to a specialist agent."""
+    if not requests:
+        return "Error: Missing required library: 'requests'."
+
     debugger_prompt = (
         f"Fix this failed command:\n{failed_command}\n"
         f"Error:\n{error_message}\nReturn ONLY the corrected JSON."
@@ -372,6 +376,9 @@ def ask_debugger(failed_command, error_message, user=None, user_id=None):
 
 def ask_coder(task_description, user=None, user_id=None):
     """Delegates a coding task to a specialist agent."""
+    if not requests:
+        return "Error: Missing required library: 'requests'."
+
     coder_prompt = (
         "Write Python code for the following task. Your code should be "
         "clean, well-formatted, and include comments where necessary. "
