@@ -6,3 +6,4 @@ beautifulsoup4
 Werkzeug
 google-api-python-client
 flask-socketio
+Flask-WTF

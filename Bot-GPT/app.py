@@ -1,6 +1,7 @@
 import os
+import json
 from flask import Flask
-from extensions import db, login_manager, socketio
+from extensions import db, login_manager, socketio, csrf
 from models import User
 from routes import main as main_blueprint
 
@@ -14,7 +15,13 @@ def create_app():
     )
 
     # --- Configuration ---
-    app.config['SECRET_KEY'] = 'a_very_secret_key_that_should_be_changed'
+    try:
+        with open('../credentials.json') as f:
+            credentials = json.load(f)
+        app.config['SECRET_KEY'] = credentials['SECRET_KEY']
+    except (FileNotFoundError, KeyError):
+        print("WARNING: credentials.json not found or SECRET_KEY not set. Using a temporary secret key.")
+        app.config['SECRET_KEY'] = 'a_very_secret_key_that_should_be_changed'
     # Use instance folder for the database.
     db_path = os.path.join(app.instance_path, 'users.db')
     app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_path}"
@@ -57,6 +64,7 @@ def create_app():
     db.init_app(app)
     login_manager.init_app(app)
     socketio.init_app(app)
+    csrf.init_app(app)
     login_manager.login_view = 'main.login'
 
     @login_manager.user_loader
@@ -76,4 +84,5 @@ def create_app():
 
 if __name__ == '__main__':
     app = create_app()
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    debug_mode = os.environ.get('FLASK_DEBUG', 'false').lower() in ['true', '1', 't']
+    socketio.run(app, host='0.0.0.0', port=5000, debug=debug_mode)

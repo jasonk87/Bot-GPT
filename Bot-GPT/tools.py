@@ -2,6 +2,7 @@ import os
 import subprocess
 import re
 import sys
+import shlex
 from flask import current_app
 from extensions import db
 from models import Conversation
@@ -194,6 +195,8 @@ def set_current_plan_step(step_number, step_description):
 
 def execute_python(path, conversation_id=None, user_id=None):
     """Executes a Python script within the conversation's workspace."""
+    if '..' in path:
+        return "Error: Relative paths are not allowed."
     workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path:
         return "Error: Could not determine workspace."
@@ -222,7 +225,7 @@ def execute_python(path, conversation_id=None, user_id=None):
 def pip(command, conversation_id=None, user_id=None):
     """Installs a Python package using pip."""
     try:
-        command_list = [sys.executable, '-m', 'pip'] + command.split() + ['--disable-pip-version-check']
+        command_list = [sys.executable, '-m', 'pip'] + shlex.split(command) + ['--disable-pip-version-check']
         process = subprocess.run(
             command_list,
             capture_output=True,

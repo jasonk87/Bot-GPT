@@ -10,3 +10,6 @@ instance/
 
 # User-generated data
 user_data/
+
+# Credentials
+credentials.json

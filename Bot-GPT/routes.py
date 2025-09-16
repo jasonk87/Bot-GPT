@@ -210,7 +210,7 @@ def register():
 @main.route('/login', methods=['POST'])
 def login():
     """Handles user login."""
-    data = request.get_json()
+    data = request.get_json(silent=True) or request.form
     user = User.query.filter_by(username=data.get('username')).first()
     if user and user.check_password(data.get('password')):
         login_user(user, remember=True)
