@@ -134,4 +134,6 @@ def main_menu():
 
 if __name__ == '__main__':
     with app.app_context():
+        # Create the database tables if they don't exist
+        db.create_all()
         main_menu()
