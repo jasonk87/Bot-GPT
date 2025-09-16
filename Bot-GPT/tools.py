@@ -3,6 +3,7 @@ import subprocess
 import re
 import sys
 from flask import current_app
+from extensions import db
 from models import Conversation
 
 # --- Dependencies for Web Browsing ---
@@ -31,7 +32,7 @@ def get_workspace_path(conversation_id, user_id):
     if not user_id or not conversation_id:
         return None
 
-    conversation = Conversation.query.get(conversation_id)
+    conversation = db.session.get(Conversation, conversation_id)
     if not conversation:
         owner_id = user_id
     else:

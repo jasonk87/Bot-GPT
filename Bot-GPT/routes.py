@@ -302,7 +302,7 @@ def handle_ai_response(data):
 
     conversation_id = conversation_id_arg or str(int(time.time() * 1000))
 
-    conversation = Conversation.query.get(conversation_id)
+    conversation = db.session.get(Conversation, conversation_id)
     if not conversation:
         new_convo = Conversation(
             id=conversation_id, title="New Chat", owner_id=user_id
@@ -498,7 +498,7 @@ Params: {tool_params}
         else:
             yield {"type": "final_answer", "content": final_answer_content}
 
-    convo = Conversation.query.get(conversation_id)
+    convo = db.session.get(Conversation, conversation_id)
     if not convo:
         return
 
@@ -599,7 +599,7 @@ def chat_proxy():
 @main.route('/api/workspace/files/<conversation_id>', methods=['GET'])
 @login_required
 def get_workspace_files(conversation_id):
-    conversation = Conversation.query.get(conversation_id)
+    conversation = db.session.get(Conversation, conversation_id)
     if not conversation:
         return jsonify([])
 
@@ -626,7 +626,7 @@ def get_workspace_file_content():
     if not path or not conversation_id:
         return jsonify({"error": "Path and conversation_id are required"}), 400
 
-    conversation = Conversation.query.get(conversation_id)
+    conversation = db.session.get(Conversation, conversation_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -669,7 +669,7 @@ def save_workspace_file():
             "error": "Path, content, and conversation_id are required"
         }), 400
 
-    conversation = Conversation.query.get(conversation_id)
+    conversation = db.session.get(Conversation, conversation_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -710,7 +710,7 @@ def delete_workspace_file():
     if not path or not conversation_id:
         return jsonify({"error": "Path and conversation_id are required"}), 400
 
-    conversation = Conversation.query.get(conversation_id)
+    conversation = db.session.get(Conversation, conversation_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -789,7 +789,7 @@ def get_conversations():
 @main.route('/api/conversation/<session_id>', methods=['GET'])
 @login_required
 def get_conversation(session_id):
-    conversation = Conversation.query.get(session_id)
+    conversation = db.session.get(Conversation, session_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -836,7 +836,7 @@ def get_users():
 @login_required
 def share_conversation(session_id):
     """Shares a conversation with another user."""
-    conversation = Conversation.query.get(session_id)
+    conversation = db.session.get(Conversation, session_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -850,7 +850,7 @@ def share_conversation(session_id):
     if not user_id_to_share_with:
         return jsonify({"error": "user_id is required"}), 400
 
-    user_to_share_with = User.query.get(user_id_to_share_with)
+    user_to_share_with = db.session.get(User, user_id_to_share_with)
     if not user_to_share_with:
         return jsonify({"error": "User to share with not found"}), 404
 
@@ -875,7 +875,7 @@ def share_conversation(session_id):
 @login_required
 def delete_conversation(session_id):
     """Deletes a conversation and its associated workspace."""
-    conversation = Conversation.query.get(session_id)
+    conversation = db.session.get(Conversation, session_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -961,7 +961,7 @@ def handle_join(data):
     print(f'Client {request.sid} joined room: {room}')
 
     # Broadcast the updated participant list
-    conversation = Conversation.query.get(room)
+    conversation = db.session.get(Conversation, room)
     if conversation:
         participants = [{'username': p.user.username} for p in conversation.participants]
         emit('participant_update', {'participants': participants}, room=room)
@@ -973,7 +973,7 @@ def handle_leave(data):
     print(f'Client {request.sid} left room: {room}')
 
     # Broadcast the updated participant list
-    conversation = Conversation.query.get(room)
+    conversation = db.session.get(Conversation, room)
     if conversation:
         participants = [{'username': p.user.username} for p in conversation.participants]
         emit('participant_update', {'participants': participants}, room=room)

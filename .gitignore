@@ -7,3 +7,6 @@ instance/
 
 # Log files
 *.log
+
+# User-generated data
+user_data/

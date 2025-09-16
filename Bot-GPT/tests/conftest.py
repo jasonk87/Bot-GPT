@@ -48,7 +48,7 @@ def db(app):
 @pytest.fixture
 def test_user(db):
     """Create a test user."""
-    user = User(id=1, username='testuser')
+    user = User(username='testuser')
     user.set_password('password')
     db.session.add(user)
     db.session.commit()
