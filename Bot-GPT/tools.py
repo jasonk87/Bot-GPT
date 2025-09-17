@@ -1,7 +1,11 @@
 import os
 import subprocess
 import re
+import sys
+import shlex
+import sqlite3
 from flask import current_app
+from extensions import db
 from models import Conversation
 
 # --- Dependencies for Web Browsing ---
@@ -25,12 +29,14 @@ except ImportError:
     HttpError = None
 
 # --- Helper function for conversation-specific workspaces ---
+
+
 def get_workspace_path(conversation_id, user_id):
     """Constructs a path to a conversation-specific workspace."""
     if not user_id or not conversation_id:
         return None
 
-    conversation = Conversation.query.get(conversation_id)
+    conversation = db.session.get(Conversation, conversation_id)
     if not conversation:
         owner_id = user_id
     else:
@@ -69,6 +75,7 @@ def list_files(path='.', conversation_id=None, user_id=None):
         return "\n".join(files)
     except Exception as e:
         return f"Error: {str(e)}"
+
 
 def list_directory_tree(path='.', conversation_id=None, user_id=None):
     """Recursively lists the contents of a directory in a tree format."""
@@ -146,7 +153,10 @@ def write_file(path, content, conversation_id=None, user_id=None):
     """Writes or overwrites a file in the conversation's workspace."""
     workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path:
-        return {"status": "error", "message": "Error: Could not determine workspace."}
+        return {
+            "status": "error",
+            "message": "Error: Could not determine workspace."
+        }
 
     file_path = os.path.abspath(os.path.join(workspace_path, path))
     if not file_path.startswith(os.path.abspath(workspace_path)):
@@ -165,6 +175,7 @@ def write_file(path, content, conversation_id=None, user_id=None):
     except Exception as e:
         return {"status": "error", "message": f"Error: {str(e)}"}
 
+
 def create_and_open_canvas(
         filename, content, conversation_id=None, user_id=None):
     """
@@ -172,7 +183,7 @@ def create_and_open_canvas(
     """
     write_result = write_file(filename, content, conversation_id, user_id)
 
-    if "successfully" in write_result:
+    if write_result.get("status") == "file_written":
         return {
             "status": "canvas_created",
             "filename": filename,
@@ -190,8 +201,18 @@ def set_current_plan_step(step_number, step_description):
     }
 
 
+def request_human_input(prompt: str):
+    """Prompts the user for input and waits for a response."""
+    return {
+        "status": "human_input_required",
+        "prompt": prompt
+    }
+
+
 def execute_python(path, conversation_id=None, user_id=None):
     """Executes a Python script within the conversation's workspace."""
+    if '..' in path:
+        return "Error: Relative paths are not allowed."
     workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path:
         return "Error: Could not determine workspace."
@@ -220,7 +241,9 @@ def execute_python(path, conversation_id=None, user_id=None):
 def pip(command, conversation_id=None, user_id=None):
     """Installs a Python package using pip."""
     try:
-        command_list = ['pip'] + command.split() + ['--disable-pip-version-check']
+        command_list = [
+            sys.executable, '-m', 'pip'
+        ] + shlex.split(command) + ['--disable-pip-version-check']
         process = subprocess.run(
             command_list,
             capture_output=True,
@@ -233,6 +256,41 @@ def pip(command, conversation_id=None, user_id=None):
         return output
     except Exception as e:
         return f"Error: {str(e)}"
+
+
+def query_database(query: str, conversation_id=None, user_id=None):
+    """Executes a SQL query against the workspace database."""
+    workspace_path = get_workspace_path(conversation_id, user_id)
+    if not workspace_path:
+        return "Error: Could not determine workspace."
+    db_path = os.path.join(workspace_path, 'workspace.db')
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(query)
+        if query.strip().upper().startswith("SELECT"):
+            results = cursor.fetchall()
+            if not results:
+                return "Query executed successfully, but returned no results."
+            headers = [description[0] for description in cursor.description]
+            table = f"| {' | '.join(headers)} |\n"
+            table += f"| {' | '.join(['---'] * len(headers))} |\n"
+            for row in results:
+                table += f"| {' | '.join(map(str, row))} |\n"
+            return table
+        else:
+            conn.commit()
+            return (
+                "Query executed successfully. "
+                f"{cursor.rowcount} rows affected."
+            )
+
+    except sqlite3.Error as e:
+        return f"Database Error: {e}"
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
 
 
 def web_search(query, conversation_id=None, user_id=None, user=None):
@@ -254,7 +312,10 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
                 ("'google-api-python-client'", build)
             ] if not present
         ]
-        return f"Error: Missing required libraries: {', '.join(missing)}."
+        return (
+            "Error: Missing required libraries: "
+            f"{', '.join(missing)}."
+        )
 
     try:
         # 1. Perform Google Search
@@ -264,9 +325,15 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
             search_results = res.get('items', [])
         except HttpError as e:
             error_content = e.content.decode('utf-8')
-            return f"Error: Google Search API HTTP error: {error_content}"
+            return (
+                "Error: Google Search API HTTP error: "
+                f"{error_content}"
+            )
         except Exception as e:
-            return f"An unexpected error occurred during Google search: {e}"
+            return (
+                "An unexpected error occurred during "
+                f"Google search: {e}"
+            )
 
         if not search_results:
             return f"No results found for '{query}'."
@@ -277,9 +344,11 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
             try:
                 url = result['link']
                 headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                                  'AppleWebKit/537.36 (KHTML, like Gecko) '
-                                  'Chrome/91.0.4472.124 Safari/537.36'
+                    'User-Agent': (
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                        'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        'Chrome/91.0.4472.124 Safari/537.36'
+                    )
                 }
                 response = requests.get(url, headers=headers, timeout=10)
                 response.raise_for_status()
@@ -304,7 +373,9 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
         if len(consolidated_content) > max_length:
             consolidated_content = consolidated_content[:max_length] + "..."
 
-        current_model = user.selected_model if user else 'default_model_name'
+        current_model = (
+            user.selected_model if user else 'default_model_name'
+        )
         ollama_host = current_app.config['OLLAMA_HOST']
 
         summarization_prompt = (
@@ -324,26 +395,38 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
                 f"{ollama_host}/api/chat",
                 json={
                     "model": current_model,
-                    "messages": [{"role": "user", "content": summarization_prompt}],
+                    "messages": [
+                        {"role": "user", "content": summarization_prompt}
+                    ],
                     "stream": False
                 },
                 timeout=120
             )
             response.raise_for_status()
             summary = response.json().get("message", {}).get("content", "")
-            return (f"Based on my web search, here is the answer to your "
-                    f"query about '{query}':\n\n{summary}")
+            return (
+                "Based on my web search, here is the answer to your "
+                f"query about '{query}':\n\n{summary}"
+            )
         except requests.exceptions.RequestException:
-            return ("Warning: Could not connect to the AI model to summarize. "
-                    "Returning raw search results.\n\n"
-                    f"--- RAW WEB CONTENT ---\n{consolidated_content}")
+            return (
+                "Warning: Could not connect to the AI model to summarize. "
+                "Returning raw search results.\n\n"
+                f"--- RAW WEB CONTENT ---\n{consolidated_content}"
+            )
 
     except Exception as e:
-        return f"An unexpected error occurred during web search: {e}"
+        return (
+            "An unexpected error occurred during web search: "
+            f"{e}"
+        )
 
 
 def ask_debugger(failed_command, error_message, user=None, user_id=None):
     """Delegates a debugging task to a specialist agent."""
+    if not requests:
+        return "Error: Missing required library: 'requests'."
+
     debugger_prompt = (
         f"Fix this failed command:\n{failed_command}\n"
         f"Error:\n{error_message}\nReturn ONLY the corrected JSON."
@@ -363,15 +446,24 @@ def ask_debugger(failed_command, error_message, user=None, user_id=None):
         content = response.json().get("message", {}).get("content", "")
         json_match = re.search(r'{[\s\S]*}', content)
         if json_match:
-            return f"Debugger agent suggests this fix: {json_match.group(0)}"
+            return (
+                "Debugger agent suggests this fix: "
+                f"{json_match.group(0)}"
+            )
         else:
-            return f"Debugger agent could not find a fix. It responded: {content}"
+            return (
+                "Debugger agent could not find a fix. "
+                f"It responded: {content}"
+            )
     except Exception as e:
         return f"Error calling debugger agent: {e}"
 
 
 def ask_coder(task_description, user=None, user_id=None):
     """Delegates a coding task to a specialist agent."""
+    if not requests:
+        return "Error: Missing required library: 'requests'."
+
     coder_prompt = (
         "Write Python code for the following task. Your code should be "
         "clean, well-formatted, and include comments where necessary. "

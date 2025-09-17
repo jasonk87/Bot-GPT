@@ -74,10 +74,14 @@ async function handleAuthFormSubmit(e) {
     const url = isLogin ? '/login' : '/register';
     const username = document.getElementById(`${isLogin ? 'login' : 'register'}-username`).value;
     const password = document.getElementById(`${isLogin ? 'login' : 'register'}-password`).value;
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 
     const response = await fetch(`${window.location.origin}${url}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': csrfToken
+        },
         body: JSON.stringify({ username, password }),
     });
     const data = await response.json();
@@ -137,6 +141,12 @@ async function initializeApp(username) {
     saveFileBtn = document.getElementById('save-file-btn');
     canvasToggleBtn = document.getElementById('canvas-toggle-btn');
     participantList = document.getElementById('participant-list');
+
+    humanInputModal = document.getElementById('human-input-modal');
+    humanInputPrompt = document.getElementById('human-input-prompt');
+    humanInputForm = document.getElementById('human-input-form');
+    humanInputTextarea = document.getElementById('human-input-textarea');
+    cancelHumanInputBtn = document.getElementById('cancel-human-input-btn');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
 
@@ -227,6 +237,9 @@ async function initializeApp(username) {
                             editor.setValue(data.content);
                         }
                     }
+                    break;
+                case 'human_input_required':
+                    handleHumanInput(data.prompt);
                     break;
             }
             smartScroll(chatContainer);
@@ -405,10 +418,14 @@ async function handleSaveSettings(e) {
     e.preventDefault();
     const newModel = modelSelect.value;
     const newPersona = personaSelect.value;
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
     try {
         const response = await fetch(`${API_BASE}/settings`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': csrfToken
+            },
             body: JSON.stringify({ model: newModel, persona: newPersona }),
         });
         if (!response.ok) throw new Error('Failed to save settings');
@@ -418,6 +435,25 @@ async function handleSaveSettings(e) {
     } catch (error) {
         alert(`Error saving settings: ${error.message}`);
     }
+}
+
+function handleHumanInput(prompt) {
+    humanInputPrompt.textContent = prompt;
+    humanInputModal.classList.remove('hidden');
+
+    humanInputForm.onsubmit = (e) => {
+        e.preventDefault();
+        const response = humanInputTextarea.value;
+        humanInputModal.classList.add('hidden');
+        humanInputTextarea.value = '';
+        socket.emit('human_response', { response: response, conversation_id: currentConversationId });
+    };
+
+    cancelHumanInputBtn.onclick = () => {
+        humanInputModal.classList.add('hidden');
+        humanInputTextarea.value = '';
+        socket.emit('human_response', { response: '', conversation_id: currentConversationId }); // Send empty response on cancel
+    };
 }
 
 function switchSidePanel(tab) {
@@ -538,10 +574,14 @@ function attachFileEventListeners() {
                 if (editor) {
                     const path = document.querySelector('#canvas-panel .canvas-header-title').title;
                     const newContent = editor.getValue();
+                    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
                     try {
                         const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file`, {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-CSRF-TOKEN': csrfToken
+                            },
                             body: JSON.stringify({
                                 path: path,
                                 content: newContent,
@@ -645,9 +685,13 @@ async function confirmDeletion(id, type, itemType) {
                 url = `${API_BASE}/conversation/${id}`;
                 body = {};
             }
+            const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
             const response = await fetch(url, {
                 method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken
+                },
                 body: JSON.stringify(body),
             });
             if (!response.ok) throw new Error(await response.text());
@@ -685,6 +729,8 @@ async function handleFileUpload(event) {
     }
 
     const formData = new FormData();
+    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    formData.append('csrf_token', csrfToken);
     formData.append('prompt', uploadPrompt.value);
     formData.append('conversation_id', currentConversationId || '');
 
@@ -840,7 +886,7 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
 
     if (thinkContent) {
         thinkingContainer.style.display = 'block';
-        thinkingContentEl.innerHTML = marked.parse(thinkContent);
+        thinkingContentEl.innerHTML = DOMPurify.sanitize(marked.parse(thinkContent));
         smartScroll(thinkingContentEl);
     } else {
         // Hide it only if we are in a final state, otherwise it might just not have arrived yet
@@ -852,7 +898,7 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     if (conversationalContent) {
         agentStatus.style.display = 'none';
         answerContent.style.display = 'block';
-        answerContent.innerHTML = marked.parse(conversationalContent);
+        answerContent.innerHTML = DOMPurify.sanitize(marked.parse(conversationalContent));
     } else {
         answerContent.style.display = 'none';
         // If there's no conversational content yet, and no tool is active, show the "thinking" status
@@ -1012,9 +1058,13 @@ async function populateConversations() {
                     userItem.textContent = user.username;
                     userItem.addEventListener('click', async () => {
                         try {
+                            const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
                             const shareResponse = await fetch(`${window.location.origin}${API_BASE}/conversation/${conversationId}/share`, {
                                 method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'X-CSRF-TOKEN': csrfToken
+                                },
                                 body: JSON.stringify({ user_id: user.id }),
                             });
                             const data = await shareResponse.json();
@@ -1104,7 +1154,7 @@ function appendMessage(text, sender, animate = true) {
     if (sender === 'user') {
         messageWrapper.innerHTML = `
             <div class="flex-1 user-bubble">
-                <div class="prose prose-invert max-w-none">${marked.parse(text)}</div>
+                <div class="prose prose-invert max-w-none">${DOMPurify.sanitize(marked.parse(text))}</div>
             </div>
             <div class="w-8 h-8 rounded-full bg-blue-800 flex-shrink-0 ml-2 flex items-center justify-center">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" class="bi bi-person" viewBox="0 0 16 16">
@@ -1119,7 +1169,7 @@ function appendMessage(text, sender, animate = true) {
                 </svg>
             </div>
             <div class="flex-1 bot-bubble">
-                <div class="prose prose-invert max-w-none">${marked.parse(text)}</div>
+                <div class="prose prose-invert max-w-none">${DOMPurify.sanitize(marked.parse(text))}</div>
             </div>`;
     }
 

@@ -1,4 +1,5 @@
 import json
+import pytest
 from models import Conversation, ConversationParticipant, User
 
 
@@ -52,9 +53,10 @@ def test_get_workspace_files_unauthorized(client):
     assert '/login' in response.headers['Location']
 
 
-import pytest
-
-@pytest.mark.xfail(reason="This test passes in the pytest environment, but fails when running the app as a server. This is the bug to be fixed.")
+@pytest.mark.xfail(
+    reason="This test passes in the pytest environment, but fails when "
+           "running the app as a server. This is the bug to be fixed."
+)
 def test_register_new_user(client, db):
     """
     Tests that a new user can be registered successfully.
