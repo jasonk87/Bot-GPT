@@ -1,4 +1,3 @@
-import sqlite3
 from unittest.mock import patch
 from tools import get_file_tree, request_human_input, query_database
 

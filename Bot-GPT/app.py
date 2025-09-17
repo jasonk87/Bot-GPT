@@ -20,7 +20,10 @@ def create_app():
             credentials = json.load(f)
         app.config['SECRET_KEY'] = credentials['SECRET_KEY']
     except (FileNotFoundError, KeyError):
-        print("WARNING: credentials.json not found or SECRET_KEY not set. Using a temporary secret key.")
+        app.logger.warning(
+            "credentials.json not found or SECRET_KEY not set. "
+            "Using a temporary secret key."
+        )
         app.config['SECRET_KEY'] = 'a_very_secret_key_that_should_be_changed'
     # Use instance folder for the database.
     db_path = os.path.join(app.instance_path, 'users.db')
@@ -40,12 +43,12 @@ def create_app():
         from key import GOOGLE_API_KEY, GOOGLE_CSE_ID
         app.config['GOOGLE_API_KEY'] = GOOGLE_API_KEY
         app.config['GOOGLE_CSE_ID'] = GOOGLE_CSE_ID
-        print("INFO: Successfully loaded Google API keys from key.py")
+        app.logger.info("Successfully loaded Google API keys from key.py")
     except ImportError as e:
         if "No module named 'key'" in str(e):
-            print("INFO: 'key.py' not found. Falling back to env vars.")
+            app.logger.info("'key.py' not found. Falling back to env vars.")
         else:
-            print(f"WARNING: Could not import from 'key.py': {e}")
+            app.logger.warning(f"Could not import from 'key.py': {e}")
 
         # Fallback to environment variables
         app.config['GOOGLE_API_KEY'] = os.environ.get("GOOGLE_API_KEY", "")
@@ -84,5 +87,7 @@ def create_app():
 
 if __name__ == '__main__':
     app = create_app()
-    debug_mode = os.environ.get('FLASK_DEBUG', 'false').lower() in ['true', '1', 't']
+    debug_mode = os.environ.get(
+        'FLASK_DEBUG', 'false'
+    ).lower() in ['true', '1', 't']
     socketio.run(app, host='0.0.0.0', port=5000, debug=debug_mode)

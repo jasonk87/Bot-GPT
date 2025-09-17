@@ -2,15 +2,17 @@ import os
 import sys
 import json
 
-# This line must come before the app imports.
-# It adds the project root to the Python path.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import pytest
 
-from app import create_app
-from extensions import db as _db
-from models import User
+# This line must come before the app imports.
+# It adds the project root to the Python path.
+sys.path.insert(
+    0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+)
+
+from app import create_app  # noqa: E402
+from extensions import db as _db  # noqa: E402
+from models import User  # noqa: E402
 
 
 @pytest.fixture(scope='function')
