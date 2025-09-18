@@ -1,5 +1,8 @@
 from unittest.mock import patch
-from tools import get_file_tree, request_human_input, query_database
+from tools import (
+    get_file_tree, request_human_input, query_database,
+    save_memory, recall_memory, search_memories, delete_memory
+)
 
 
 def test_get_file_tree(tmp_path):
@@ -112,3 +115,60 @@ def test_query_database(mock_get_workspace_path, tmp_path):
     invalid_query = "SELECT * FROM non_existent_table"
     result = query_database(invalid_query, "test_convo", "test_user")
     assert "Database Error" in result
+
+
+def test_save_and_recall_memory(app, test_user):
+    """Tests saving and recalling a memory."""
+    with app.app_context():
+        # Save a new memory
+        result = save_memory("test_key", "test_value", user_id=test_user.id)
+        assert result == "Memory 'test_key' saved."
+
+        # Recall the memory
+        result = recall_memory("test_key", user_id=test_user.id)
+        assert result == "test_value"
+
+        # Overwrite the memory
+        result = save_memory("test_key", "new_value", user_id=test_user.id)
+        assert result == "Memory 'test_key' saved."
+
+        # Recall the overwritten memory
+        result = recall_memory("test_key", user_id=test_user.id)
+        assert result == "new_value"
+
+
+def test_search_memories(app, test_user):
+    """Tests searching for memories."""
+    with app.app_context():
+        save_memory("color", "My favorite color is blue.", user_id=test_user.id)
+        save_memory("food", "My favorite food is pizza.", user_id=test_user.id)
+
+        # Search for a specific memory
+        result = search_memories("blue", user_id=test_user.id)
+        assert "color: My favorite color is blue." in result
+
+        # Search for another memory
+        result = search_memories("pizza", user_id=test_user.id)
+        assert "food: My favorite food is pizza." in result
+
+        # Search for a non-existent memory
+        result = search_memories("red", user_id=test_user.id)
+        assert result == "No memories found matching the query."
+
+
+def test_delete_memory(app, test_user):
+    """Tests deleting a memory."""
+    with app.app_context():
+        save_memory("to_delete", "This will be deleted.", user_id=test_user.id)
+
+        # Delete the memory
+        result = delete_memory("to_delete", user_id=test_user.id)
+        assert result == "Memory 'to_delete' deleted."
+
+        # Try to recall the deleted memory
+        result = recall_memory("to_delete", user_id=test_user.id)
+        assert result == "No memory found for key 'to_delete'."
+
+        # Try to delete a non-existent memory
+        result = delete_memory("non_existent", user_id=test_user.id)
+        assert result == "No memory found for key 'non_existent'."

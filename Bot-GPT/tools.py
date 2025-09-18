@@ -6,7 +6,7 @@ import shlex
 import sqlite3
 from flask import current_app
 from extensions import db
-from models import Conversation
+from models import Conversation, Memory
 
 # --- Dependencies for Web Browsing ---
 
@@ -489,3 +489,71 @@ def ask_coder(task_description, user=None, user_id=None):
         return content.strip()
     except Exception as e:
         return f"Error calling Coder agent: {e}"
+
+
+def save_memory(key: str, value: str, user_id=None, **kwargs):
+    """Saves a key-value pair to the user's long-term memory."""
+    if not user_id:
+        return "Error: User not found."
+    try:
+        # Overwrite if exists, create if not
+        memory = Memory.query.filter_by(user_id=user_id, key=key).first()
+        if memory:
+            memory.value = value
+        else:
+            memory = Memory(user_id=user_id, key=key, value=value)
+            db.session.add(memory)
+        db.session.commit()
+        return f"Memory '{key}' saved."
+    except Exception as e:
+        db.session.rollback()
+        return f"Error saving memory: {e}"
+
+
+def recall_memory(key: str, user_id=None, **kwargs):
+    """Recalls a value from the user's long-term memory based on a key."""
+    if not user_id:
+        return "Error: User not found."
+    try:
+        memory = Memory.query.filter_by(user_id=user_id, key=key).first()
+        if memory:
+            return memory.value
+        return f"No memory found for key '{key}'."
+    except Exception as e:
+        return f"Error recalling memory: {e}"
+
+
+def search_memories(query: str, user_id=None, **kwargs):
+    """Searches the user's long-term memories for a query."""
+    if not user_id:
+        return "Error: User not found."
+    try:
+        # Basic case-insensitive search
+        memories = Memory.query.filter(
+            Memory.user_id == user_id,
+            Memory.value.ilike(f'%{query}%')
+        ).all()
+        if not memories:
+            return "No memories found matching the query."
+        results = "\n".join(
+            [f"- {m.key}: {m.value}" for m in memories]
+        )
+        return f"Found memories:\n{results}"
+    except Exception as e:
+        return f"Error searching memories: {e}"
+
+
+def delete_memory(key: str, user_id=None, **kwargs):
+    """Deletes a memory from the user's long-term memory."""
+    if not user_id:
+        return "Error: User not found."
+    try:
+        memory = Memory.query.filter_by(user_id=user_id, key=key).first()
+        if memory:
+            db.session.delete(memory)
+            db.session.commit()
+            return f"Memory '{key}' deleted."
+        return f"No memory found for key '{key}'."
+    except Exception as e:
+        db.session.rollback()
+        return f"Error deleting memory: {e}"

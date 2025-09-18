@@ -134,6 +134,13 @@ not make up parameters.
   when you are stuck or need clarification.
 - `query_database(query: str)`: Executes a SQL query against the workspace
   database. The database is a SQLite database located at `workspace.db`.
+- `save_memory(key: str, value: str)`: Saves a key-value pair to your
+  long-term memory. Use this to remember user preferences, facts, or
+  anything else that might be useful in future conversations.
+- `recall_memory(key: str)`: Recalls a value from your long-term memory.
+- `search_memories(query: str)`: Searches your long-term memories and
+  returns a list of memories that match the query.
+- `delete_memory(key: str)`: Deletes a memory from your long-term memory.
 """
 
 
