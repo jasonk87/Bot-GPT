@@ -1,7 +1,8 @@
 from unittest.mock import patch
 from tools import (
     get_file_tree, request_human_input, query_database,
-    save_memory, recall_memory, search_memories, delete_memory
+    save_memory, recall_memory, search_memories, delete_memory,
+    summarize_and_save_memory
 )
 
 
@@ -117,7 +118,7 @@ def test_query_database(mock_get_workspace_path, tmp_path):
     assert "Database Error" in result
 
 
-def test_save_and_recall_memory(app, test_user):
+def test_save_and_recall_memory(app, test_user, cleanup_chroma):
     """Tests saving and recalling a memory."""
     with app.app_context():
         # Save a new memory
@@ -137,7 +138,7 @@ def test_save_and_recall_memory(app, test_user):
         assert result == "new_value"
 
 
-def test_search_memories(app, test_user):
+def test_search_memories(app, test_user, cleanup_chroma):
     """Tests searching for memories."""
     with app.app_context():
         save_memory("color", "My favorite color is blue.", user_id=test_user.id)
@@ -152,11 +153,11 @@ def test_search_memories(app, test_user):
         assert "food: My favorite food is pizza." in result
 
         # Search for a non-existent memory
-        result = search_memories("red", user_id=test_user.id)
+        result = search_memories("green", user_id=test_user.id)
         assert result == "No memories found matching the query."
 
 
-def test_delete_memory(app, test_user):
+def test_delete_memory(app, test_user, cleanup_chroma):
     """Tests deleting a memory."""
     with app.app_context():
         save_memory("to_delete", "This will be deleted.", user_id=test_user.id)
@@ -172,3 +173,28 @@ def test_delete_memory(app, test_user):
         # Try to delete a non-existent memory
         result = delete_memory("non_existent", user_id=test_user.id)
         assert result == "No memory found for key 'non_existent'."
+
+
+@patch('tools.requests.post')
+def test_summarize_and_save_memory(mock_post, app, test_user, cleanup_chroma):
+    """Tests summarizing and saving a memory."""
+    with app.app_context():
+        # Mock the response from the Ollama API
+        mock_post.return_value.json.return_value = {
+            "message": {
+                "content": "This is a summary."
+            }
+        }
+        mock_post.return_value.raise_for_status.return_value = None
+
+        # Summarize and save a new memory
+        result = summarize_and_save_memory(
+            "This is a long piece of text to summarize.",
+            user_id=test_user.id,
+            user=test_user
+        )
+        assert result == "Memory 'This is a summary.' saved."
+
+        # Recall the memory
+        result = recall_memory("This is a summary.", user_id=test_user.id)
+        assert result == "This is a long piece of text to summarize."

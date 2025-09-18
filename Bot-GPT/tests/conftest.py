@@ -3,6 +3,8 @@ import sys
 import json
 
 import pytest
+import chromadb
+from chromadb.config import Settings
 
 # This line must come before the app imports.
 # It adds the project root to the Python path.
@@ -19,12 +21,20 @@ from models import User  # noqa: E402
 def app(tmp_path):
     """Create and configure a new app instance for each test."""
     db_path = tmp_path / "test.db"
+    chroma_path = tmp_path / "chroma"
+    chroma_path.mkdir()
+
     app = create_app()
     app.config.update({
         "TESTING": True,
         "SQLALCHEMY_DATABASE_URI": f"sqlite:///{db_path}",
         "WTF_CSRF_ENABLED": False,
         "SECRET_KEY": "test-secret-key",
+        "CHROMA_SETTINGS": Settings(
+            is_persistent=True,
+            persist_directory=str(chroma_path),
+            allow_reset=True
+        ),
     })
 
     with app.app_context():
@@ -70,3 +80,11 @@ def logged_in_client(client, test_user):
     )
     assert response.status_code == 200
     return client
+
+
+@pytest.fixture(scope='function')
+def cleanup_chroma(app):
+    """Clears the ChromaDB database before each test."""
+    with app.app_context():
+        client = chromadb.Client(app.config['CHROMA_SETTINGS'])
+        client.reset()

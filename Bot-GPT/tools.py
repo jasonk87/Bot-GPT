@@ -7,6 +7,8 @@ import sqlite3
 from flask import current_app
 from extensions import db
 from models import Conversation, Memory
+import chromadb
+from sentence_transformers import SentenceTransformer
 
 # --- Dependencies for Web Browsing ---
 
@@ -491,33 +493,63 @@ def ask_coder(task_description, user=None, user_id=None):
         return f"Error calling Coder agent: {e}"
 
 
+# --- Memory Tools ---
+
+# Initialize ChromaDB client and sentence transformer model
+# This is done once when the module is loaded.
+try:
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+except Exception as e:
+    model = None
+    current_app.logger.error(f"Failed to initialize SentenceTransformer: {e}")
+
+
+def get_chroma_client():
+    """Initializes and returns a ChromaDB client."""
+    try:
+        if current_app and 'CHROMA_SETTINGS' in current_app.config:
+            return chromadb.Client(current_app.config['CHROMA_SETTINGS'])
+        return chromadb.Client()
+    except Exception as e:
+        current_app.logger.error(f"Failed to initialize ChromaDB: {e}")
+        return None
+
+
 def save_memory(key: str, value: str, user_id=None, **kwargs):
     """Saves a key-value pair to the user's long-term memory."""
+    chroma_client = get_chroma_client()
+    if not all([chroma_client, model]):
+        return "Error: Memory system not initialized."
     if not user_id:
         return "Error: User not found."
+
     try:
-        # Overwrite if exists, create if not
-        memory = Memory.query.filter_by(user_id=user_id, key=key).first()
-        if memory:
-            memory.value = value
-        else:
-            memory = Memory(user_id=user_id, key=key, value=value)
-            db.session.add(memory)
-        db.session.commit()
+        collection = chroma_client.get_or_create_collection(name=f"user_{user_id}")
+        embedding = model.encode(value).tolist()
+        collection.upsert(
+            embeddings=[embedding],
+            documents=[value],
+            metadatas=[{"key": key}],
+            ids=[key]
+        )
         return f"Memory '{key}' saved."
     except Exception as e:
-        db.session.rollback()
         return f"Error saving memory: {e}"
 
 
 def recall_memory(key: str, user_id=None, **kwargs):
     """Recalls a value from the user's long-term memory based on a key."""
+    chroma_client = get_chroma_client()
+    if not all([chroma_client, model]):
+        return "Error: Memory system not initialized."
     if not user_id:
         return "Error: User not found."
+
     try:
-        memory = Memory.query.filter_by(user_id=user_id, key=key).first()
-        if memory:
-            return memory.value
+        collection = chroma_client.get_or_create_collection(name=f"user_{user_id}")
+        result = collection.get(ids=[key])
+        if result['documents']:
+            return result['documents'][0]
         return f"No memory found for key '{key}'."
     except Exception as e:
         return f"Error recalling memory: {e}"
@@ -525,35 +557,87 @@ def recall_memory(key: str, user_id=None, **kwargs):
 
 def search_memories(query: str, user_id=None, **kwargs):
     """Searches the user's long-term memories for a query."""
+    chroma_client = get_chroma_client()
+    if not all([chroma_client, model]):
+        return "Error: Memory system not initialized."
     if not user_id:
         return "Error: User not found."
+
     try:
-        # Basic case-insensitive search
-        memories = Memory.query.filter(
-            Memory.user_id == user_id,
-            Memory.value.ilike(f'%{query}%')
-        ).all()
-        if not memories:
-            return "No memories found matching the query."
-        results = "\n".join(
-            [f"- {m.key}: {m.value}" for m in memories]
+        collection = chroma_client.get_or_create_collection(name=f"user_{user_id}")
+        query_embedding = model.encode(query).tolist()
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=5,
+            include=['distances', 'metadatas', 'documents']
         )
-        return f"Found memories:\n{results}"
+
+        if not results['documents'][0]:
+            return "No memories found matching the query."
+
+        # Filter results by distance
+        filtered_results = []
+        for i, dist in enumerate(results['distances'][0]):
+            if dist < 1.0:
+                filtered_results.append(
+                    f"- {results['metadatas'][0][i]['key']}: {results['documents'][0][i]}"
+                )
+
+        if not filtered_results:
+            return "No memories found matching the query."
+
+        return "Found memories:\n" + "\n".join(filtered_results)
     except Exception as e:
         return f"Error searching memories: {e}"
 
 
 def delete_memory(key: str, user_id=None, **kwargs):
     """Deletes a memory from the user's long-term memory."""
+    chroma_client = get_chroma_client()
+    if not all([chroma_client, model]):
+        return "Error: Memory system not initialized."
     if not user_id:
         return "Error: User not found."
+
     try:
-        memory = Memory.query.filter_by(user_id=user_id, key=key).first()
-        if memory:
-            db.session.delete(memory)
-            db.session.commit()
-            return f"Memory '{key}' deleted."
-        return f"No memory found for key '{key}'."
+        collection = chroma_client.get_or_create_collection(name=f"user_{user_id}")
+        # Check if the memory exists before deleting
+        if not collection.get(ids=[key])['documents']:
+            return f"No memory found for key '{key}'."
+        collection.delete(ids=[key])
+        return f"Memory '{key}' deleted."
     except Exception as e:
-        db.session.rollback()
         return f"Error deleting memory: {e}"
+
+
+def summarize_and_save_memory(text: str, user_id=None, **kwargs):
+    """Summarizes a chunk of text and saves it to the user's long-term memory."""
+    if not user_id:
+        return "Error: User not found."
+    if not requests:
+        return "Error: Missing required library: 'requests'."
+
+    summarization_prompt = (
+        "Summarize the following text in a single sentence. "
+        "This summary will be used as a key for a memory. "
+        "The key should be a concise and descriptive title for the memory."
+        f"Text:\n{text}\n\nSummary:"
+    )
+    try:
+        current_model = kwargs.get('user').selected_model if kwargs.get('user') else 'default_model_name'
+        response = requests.post(
+            f"{current_app.config['OLLAMA_HOST']}/api/chat",
+            json={
+                "model": current_model,
+                "messages": [{"role": "user", "content": summarization_prompt}],
+                "stream": False
+            },
+            timeout=30
+        )
+        response.raise_for_status()
+        summary = response.json().get("message", {}).get("content", "").strip()
+        if summary:
+            return save_memory(summary, text, user_id=user_id)
+        return "Error: Could not generate summary."
+    except Exception as e:
+        return f"Error summarizing and saving memory: {e}"

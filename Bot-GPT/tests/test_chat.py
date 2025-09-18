@@ -39,6 +39,7 @@ def test_full_chat_with_tool_call(app, test_user, mocker):
         MagicMock(iter_content=lambda chunk_size: [
             (json.dumps(final_answer_response) + '\n').encode("utf-8")
         ]),
+        MagicMock(json=lambda: {"message": {"content": "summary"}}),
         MagicMock(json=lambda: title_generation_response)
     ]
 

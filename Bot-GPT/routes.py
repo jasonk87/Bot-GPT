@@ -14,10 +14,14 @@ from flask_socketio import join_room, leave_room, emit
 
 from extensions import db, socketio
 from models import Conversation, ConversationParticipant, User
-from tools import (ask_coder, ask_debugger, create_and_open_canvas,
-                   execute_python, get_file_tree, get_workspace_path,
-                   list_files, pip, read_file, set_current_plan_step,
-                   web_search, write_file, request_human_input, query_database)
+from tools import (
+    ask_coder, ask_debugger, create_and_open_canvas,
+    execute_python, get_file_tree, get_workspace_path,
+    list_files, pip, read_file, set_current_plan_step,
+    web_search, write_file, request_human_input, query_database,
+    save_memory, recall_memory, search_memories, delete_memory,
+    summarize_and_save_memory
+)
 
 # --- System Prompt ---
 DEFAULT_SYSTEM_PROMPT = """
@@ -141,6 +145,13 @@ not make up parameters.
 - `search_memories(query: str)`: Searches your long-term memories and
   returns a list of memories that match the query.
 - `delete_memory(key: str)`: Deletes a memory from your long-term memory.
+
+**Memory:**
+
+You have a long-term memory. Use the `save_memory` tool to remember important
+information, user preferences, and key facts from conversations. Before you
+start a new task, you can use `search_memories` to see if you have any
+relevant information from past conversations.
 """
 
 
@@ -392,6 +403,11 @@ def handle_ai_response(data):
                 "set_current_plan_step": set_current_plan_step,
                 "request_human_input": request_human_input,
                 "query_database": query_database,
+                "save_memory": save_memory,
+                "recall_memory": recall_memory,
+                "search_memories": search_memories,
+                "delete_memory": delete_memory,
+                "summarize_and_save_memory": summarize_and_save_memory,
             }
 
             if tool_name in tool_map:
@@ -499,6 +515,19 @@ Params: {tool_params}
             yield {"type": "tool_error", "error": error_message}
 
     if final_answer_provided:
+        # Automatically save a summary of the conversation to long-term memory
+        if len(messages) > 1:
+            # Create a summary of the last user message and AI response
+            conversation_summary = (
+                f"User: {messages[-2]['content']}\n"
+                f"AI: {messages[-1]['content']}"
+            )
+            summarize_and_save_memory(
+                conversation_summary,
+                user_id=user_id,
+                user=current_user
+            )
+
         final_answer_content = messages[-1]['content']
         if canvas_mode and not file_creation_tool_used:
             # --- New Canvas Saving Logic ---
