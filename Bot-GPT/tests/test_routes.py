@@ -81,3 +81,49 @@ def test_register_new_user(client, db):
     user = db.session.query(User).filter_by(username='newtestuser').first()
     assert user is not None
     assert user.username == 'newtestuser'
+
+
+def test_summarize_conversation(logged_in_client, db, test_user, mocker, tmp_path):
+    """
+    Tests the conversation summarization API endpoint.
+    """
+    # 1. Setup: Create a conversation and a mock conversation file.
+    convo_id = "summary_test_123"
+    convo = Conversation(id=convo_id, title="Test Convo", owner_id=test_user.id)
+    participant = ConversationParticipant(
+        user_id=test_user.id, conversation_id=convo.id, role='owner'
+    )
+    db.session.add(convo)
+    db.session.add(participant)
+    db.session.commit()
+
+    # Create a mock conversation history file
+    user_data_dir = tmp_path / str(test_user.id)
+    convo_dir = user_data_dir / 'conversations'
+    convo_dir.mkdir(parents=True)
+    convo_file = convo_dir / f"{convo_id}.json"
+    convo_file.write_text(json.dumps({
+        "messages": [
+            {"role": "user", "content": "Hello there."},
+            {"role": "assistant", "content": "General Kenobi!"}
+        ]
+    }))
+    mocker.patch.dict(
+        'routes.current_app.config',
+        {'USER_DATA_DIR': tmp_path}
+    )
+
+    # 2. Mock the call to the AI model.
+    def mock_stream(*args, **kwargs):
+        yield json.dumps({"message": {"content": "This is "}})
+        yield json.dumps({"message": {"content": "a summary."}})
+
+    mocker.patch('routes.call_ollama_chat_stream', side_effect=mock_stream)
+
+    # 3. Make the request.
+    response = logged_in_client.get(f'/api/conversation/{convo_id}/summarize')
+
+    # 4. Assert the response is correct.
+    assert response.status_code == 200
+    assert response.mimetype == 'text/plain'
+    assert response.data == b'This is a summary.'

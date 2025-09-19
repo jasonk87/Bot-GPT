@@ -816,6 +816,60 @@ def get_conversation(session_id):
     return jsonify({"error": "Conversation data file not found"}), 404
 
 
+@main.route('/api/conversation/<session_id>/summarize', methods=['GET'])
+@login_required
+def summarize_conversation(session_id):
+    """Streams a summary of a conversation."""
+    conversation = Conversation.query.get(session_id)
+    if not conversation:
+        return Response("Conversation not found", status=404)
+
+    is_participant = any(p.user_id == current_user.id for p in conversation.participants)
+    if not is_participant:
+        return Response("Access denied", status=403)
+
+    owner_id = conversation.owner_id
+    convo_path = os.path.join(
+        current_app.config['USER_DATA_DIR'], str(owner_id),
+        'conversations', f"{session_id}.json"
+    )
+
+    if not os.path.exists(convo_path):
+        return Response("Conversation data not found", status=404)
+
+    with open(convo_path, 'r', encoding='utf-8') as f:
+        convo_data = json.load(f)
+
+    messages = convo_data.get("messages", [])
+
+    # We don't need to send the whole history, just the user and assistant messages
+    summary_prompt_messages = [
+        {"role": msg["role"], "content": msg["content"]}
+        for msg in messages if msg["role"] in ["user", "assistant"]
+    ]
+
+    # Use a dedicated, lightweight model for summarization if available
+    summary_model = "llama3.2:latest"
+    system_prompt = "You are a summarization expert. Based on the following conversation, provide a concise summary in a few paragraphs. Use markdown for formatting."
+
+    def event_stream():
+        try:
+            stream = call_ollama_chat_stream(summary_model, summary_prompt_messages, system_prompt)
+            for line in stream:
+                try:
+                    parsed_data = json.loads(line)
+                    chunk = parsed_data.get("message", {}).get("content", "")
+                    yield chunk
+                except json.JSONDecodeError:
+                    continue
+        except Exception as e:
+            # Log the error and yield a user-friendly message
+            print(f"Error during summarization stream: {e}")
+            yield "Sorry, an error occurred while generating the summary."
+
+    return Response(event_stream(), mimetype='text/plain')
+
+
 @main.route('/api/users', methods=['GET'])
 @login_required
 def get_users():

@@ -15,7 +15,8 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     settingsBtn, settingsModal, settingsForm, cancelSettingsBtn, personaSelect, currentModelDisplay,
     shareModal, cancelShareBtn, shareUserList,
     copyFileBtn, saveFileBtn, canvasToggleBtn,
-    participantList;
+    participantList,
+    summarizeBtn, summaryModal, summaryContent, closeSummaryBtn;
 
 const API_BASE = '/api';
 let conversationHistory = [];
@@ -137,6 +138,10 @@ async function initializeApp(username) {
     saveFileBtn = document.getElementById('save-file-btn');
     canvasToggleBtn = document.getElementById('canvas-toggle-btn');
     participantList = document.getElementById('participant-list');
+    summarizeBtn = document.getElementById('summarize-btn');
+    summaryModal = document.getElementById('summary-modal');
+    summaryContent = document.getElementById('summary-content');
+    closeSummaryBtn = document.getElementById('close-summary-btn');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
 
@@ -275,6 +280,48 @@ async function initializeApp(username) {
     overlay.addEventListener('click', () => {
          sidePanel.classList.add('-translate-x-full');
          overlay.classList.add('hidden');
+    });
+
+    // --- Summary Modal Logic ---
+    summarizeBtn.addEventListener('click', async () => {
+        if (!currentConversationId) {
+            alert("Please start or select a conversation first.");
+            return;
+        }
+
+        summaryModal.classList.remove('hidden');
+        summaryContent.innerHTML = '<p>Generating summary...</p>';
+
+        try {
+            const response = await fetch(`${window.location.origin}${API_BASE}/conversation/${currentConversationId}/summarize`);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let fullSummary = '';
+
+            reader.read().then(function processText({ done, value }) {
+                if (done) {
+                    summaryContent.innerHTML = marked.parse(fullSummary);
+                    return;
+                }
+
+                fullSummary += decoder.decode(value, { stream: true });
+                summaryContent.innerHTML = marked.parse(fullSummary);
+
+                // Keep reading
+                reader.read().then(processText);
+            });
+
+        } catch (error) {
+            summaryContent.innerHTML = `<p class="text-red-400">Error generating summary: ${error.message}</p>`;
+        }
+    });
+
+    closeSummaryBtn.addEventListener('click', () => {
+        summaryModal.classList.add('hidden');
     });
 
     // --- Upload Modal Logic ---

@@ -23,6 +23,7 @@ def app(tmp_path):
         "SQLALCHEMY_DATABASE_URI": f"sqlite:///{db_path}",
         "WTF_CSRF_ENABLED": False,
         "SECRET_KEY": "test-secret-key",
+        "APPLICATION_ROOT": "/",
     })
 
     with app.app_context():
