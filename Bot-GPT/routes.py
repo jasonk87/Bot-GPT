@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 
 import requests
@@ -14,14 +15,10 @@ from flask_socketio import join_room, leave_room, emit
 
 from extensions import db, socketio
 from models import Conversation, ConversationParticipant, User
-from tools import (
-    ask_coder, ask_debugger, create_and_open_canvas,
-    execute_python, get_file_tree, get_workspace_path,
-    list_files, pip, read_file, set_current_plan_step,
-    web_search, write_file, request_human_input, query_database,
-    save_memory, recall_memory, search_memories, delete_memory,
-    summarize_and_save_memory
-)
+from tools import (ask_coder, ask_debugger, create_and_open_canvas,
+                   execute_python, get_file_tree, get_workspace_path,
+                   list_files, pip, read_file, set_current_plan_step,
+                   web_search, write_file)
 
 # --- System Prompt ---
 DEFAULT_SYSTEM_PROMPT = """
@@ -134,24 +131,6 @@ not make up parameters.
   piece of code.
 - `ask_debugger(failed_command: str, error_message: str)`: Asks a specialist
   agent for help with a failed tool call.
-- `request_human_input(prompt: str)`: Asks the user for input. Use this
-  when you are stuck or need clarification.
-- `query_database(query: str)`: Executes a SQL query against the workspace
-  database. The database is a SQLite database located at `workspace.db`.
-- `save_memory(key: str, value: str)`: Saves a key-value pair to your
-  long-term memory. Use this to remember user preferences, facts, or
-  anything else that might be useful in future conversations.
-- `recall_memory(key: str)`: Recalls a value from your long-term memory.
-- `search_memories(query: str)`: Searches your long-term memories and
-  returns a list of memories that match the query.
-- `delete_memory(key: str)`: Deletes a memory from your long-term memory.
-
-**Memory:**
-
-You have a long-term memory. Use the `save_memory` tool to remember important
-information, user preferences, and key facts from conversations. Before you
-start a new task, you can use `search_memories` to see if you have any
-relevant information from past conversations.
 """
 
 
@@ -206,13 +185,14 @@ def index():
 @login_required
 def profile():
     """Renders the user profile page."""
-    return render_template('profile.html', user=current_user)
+    conversations = Conversation.query.filter_by(owner_id=current_user.id).all()
+    return render_template('profile.html', user=current_user, conversations=conversations)
 
 
 @main.route('/register', methods=['POST'])
 def register():
     """Handles user registration."""
-    data = request.get_json(silent=True) or request.form
+    data = request.get_json()
     username = data.get('username')
     password = data.get('password')
     if User.query.filter_by(username=username).first():
@@ -231,7 +211,7 @@ def register():
 @main.route('/login', methods=['POST'])
 def login():
     """Handles user login."""
-    data = request.get_json(silent=True) or request.form
+    data = request.get_json()
     user = User.query.filter_by(username=data.get('username')).first()
     if user and user.check_password(data.get('password')):
         login_user(user, remember=True)
@@ -277,8 +257,7 @@ def call_ollama_chat_stream(model, messages, system_prompt):
         f"{ollama_host}/api/chat",
         json={
             "model": model,
-            "messages": [{"role": "system", "content": system_prompt}]
-            + messages,
+            "messages": [{"role": "system", "content": system_prompt}] + messages,
             "stream": True
         },
         stream=True,
@@ -324,7 +303,7 @@ def handle_ai_response(data):
 
     conversation_id = conversation_id_arg or str(int(time.time() * 1000))
 
-    conversation = db.session.get(Conversation, conversation_id)
+    conversation = Conversation.query.get(conversation_id)
     if not conversation:
         new_convo = Conversation(
             id=conversation_id, title="New Chat", owner_id=user_id
@@ -345,9 +324,7 @@ def handle_ai_response(data):
         )
         os.makedirs(os.path.dirname(convo_path), exist_ok=True)
         with open(convo_path, 'w', encoding='utf-8') as f:
-            json.dump(
-                {"messages": messages, "title": "New Chat"}, f, indent=2
-            )
+            json.dump({"messages": messages, "title": "New Chat"}, f, indent=2)
 
     yield {"type": "conversation_id", "id": conversation_id}
 
@@ -374,9 +351,9 @@ def handle_ai_response(data):
         messages.append(assistant_message)
         yield {"type": "assistant_end"}
 
-        current_app.logger.info("--- AI RESPONSE ---")
-        current_app.logger.info(full_response_content)
-        current_app.logger.info("--- END AI RESPONSE ---")
+        print("--- AI RESPONSE ---")
+        print(full_response_content)
+        print("--- END AI RESPONSE ---")
 
         tool_match = re.search(
             r'```json\s*(\{[\s\S]*?\})\s*```', full_response_content
@@ -401,13 +378,6 @@ def handle_ai_response(data):
                 "ask_coder": ask_coder,
                 "create_and_open_canvas": create_and_open_canvas,
                 "set_current_plan_step": set_current_plan_step,
-                "request_human_input": request_human_input,
-                "query_database": query_database,
-                "save_memory": save_memory,
-                "recall_memory": recall_memory,
-                "search_memories": search_memories,
-                "delete_memory": delete_memory,
-                "summarize_and_save_memory": summarize_and_save_memory,
             }
 
             if tool_name in tool_map:
@@ -433,107 +403,57 @@ def handle_ai_response(data):
                     elif param_name in context_params:
                         tool_params[param_name] = context_params[param_name]
 
-                current_app.logger.info(f'''--- TOOL CALL ---
+                print(f'''--- TOOL CALL ---
 Tool: {tool_name}
 Params: {tool_params}
 --- END TOOL CALL ---''')
                 tool_result = tool_func(**tool_params)
-                current_app.logger.info(f'''--- TOOL RESULT ---
+                print(f'''--- TOOL RESULT ---
 {tool_result}
 --- END TOOL RESULT ---''')
 
                 if isinstance(tool_result, dict):
                     status = tool_result.get('status')
                     if status == 'canvas_created':
-                        yield {
-                            "type": "open_canvas",
-                            "filename": tool_result.get('filename')
-                        }
-                        tool_response_message = (
-                            "TOOL RESPONSE:\n---\n"
-                            f"{tool_result.get('message')}\n---"
-                        )
+                        yield {"type": "open_canvas", "filename": tool_result.get('filename')}
+                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
                     elif status == 'file_written':
                         yield {
                             "type": "file_updated",
                             "path": tool_result.get('path'),
                             "content": tool_result.get('content')
                         }
-                        tool_response_message = (
-                            "TOOL RESPONSE:\n---\n"
-                            f"{tool_result.get('message')}\n---"
-                        )
+                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
                     elif status == 'plan_step_update':
-                        yield {
-                            "type": "plan_step_update",
-                            "step_number": tool_result.get('step_number'),
-                            "step_description": tool_result.get(
-                                'step_description'
-                            )
-                        }
+                        yield {"type": "plan_step_update", "step_number": tool_result.get('step_number'), "step_description": tool_result.get('step_description')}
                         continue
-                    elif status == 'human_input_required':
-                        yield {
-                            "type": "human_input_required",
-                            "prompt": tool_result.get("prompt")
-                        }
-                        return  # Stop the loop and wait for human response
                     else:
-                        # Handle other dict-based results, like errors
-                        tool_response_message = (
-                            "TOOL RESPONSE:\n---\n"
-                            f"{tool_result.get('message', str(tool_result))}"
-                            "\n---"
-                        )
+                        # Handle other dict-based results, like errors from write_file
+                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message', str(tool_result))}\n---"
                 else:
                     # Handle string-based results from other tools
-                    tool_response_message = (
-                        "TOOL RESPONSE:\n---\n"
-                        f"{tool_result}\n---"
-                    )
+                    tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
 
-                messages.append(
-                    {"role": "user", "content": tool_response_message}
-                )
+                messages.append({"role": "user", "content": tool_response_message})
                 yield {"type": "tool_result", "result": tool_result}
             else:
                 error_message = f"Error: Tool '{tool_name}' not found."
-                messages.append({
-                    "role": "user",
-                    "content": f"TOOL RESPONSE: {error_message}"
-                })
+                messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
                 yield {"type": "tool_error", "error": error_message}
         except Exception as e:
-            current_app.logger.error("--- FAILED TOOL CALL ---")
-            current_app.logger.error(f"AI's full response:\n{full_response_content}")
-            current_app.logger.error(f"Error: {e}")
-            current_app.logger.error("--- END FAILED TOOL CALL ---")
+            print(f"--- FAILED TOOL CALL ---")
+            print(f"AI's full response:\n{full_response_content}")
+            print(f"Error: {e}")
+            print(f"--- END FAILED TOOL CALL ---")
             error_message = f"Error processing tool: {e}"
-            messages.append(
-                {"role": "user", "content": f"TOOL RESPONSE: {error_message}"}
-            )
+            messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
             yield {"type": "tool_error", "error": error_message}
 
     if final_answer_provided:
-        # Automatically save a summary of the conversation to long-term memory
-        if len(messages) > 1:
-            # Create a summary of the last user message and AI response
-            conversation_summary = (
-                f"User: {messages[-2]['content']}\n"
-                f"AI: {messages[-1]['content']}"
-            )
-            summarize_and_save_memory(
-                conversation_summary,
-                user_id=user_id,
-                user=current_user
-            )
-
         final_answer_content = messages[-1]['content']
         if canvas_mode and not file_creation_tool_used:
             # --- New Canvas Saving Logic ---
-            code_block_match = re.search(
-                r'```(\w*)\n([\s\S]+?)```', final_answer_content
-            )
+            code_block_match = re.search(r'```(\w*)\n([\s\S]+?)```', final_answer_content)
 
             content_to_save = ""
             file_extension = ""
@@ -556,9 +476,7 @@ Params: {tool_params}
                 file_extension = lang_to_ext.get(language, 'txt')
             else:
                 # Fallback for non-code content
-                content_to_save = re.sub(
-                    r'<think>[\s\S]*?<\/think>', '', final_answer_content
-                ).strip()
+                content_to_save = re.sub(r'<think>[\s\S]*?<\/think>', '', final_answer_content).strip()
                 file_extension = 'md'
 
             timestamp = int(time.time())
@@ -575,16 +493,13 @@ Params: {tool_params}
                 yield {"type": "open_canvas", "filename": filename}
                 yield {"type": "refresh_files"}
             else:
-                yield {
-                    "type": "agent_error",
-                    "error": f"Failed to save to canvas: {write_result}"
-                }
+                yield {"type": "agent_error", "error": f"Failed to save to canvas: {write_result}"}
 
             yield {"type": "final_answer", "content": final_answer_content}
         else:
             yield {"type": "final_answer", "content": final_answer_content}
 
-    convo = db.session.get(Conversation, conversation_id)
+    convo = Conversation.query.get(conversation_id)
     if not convo:
         return
 
@@ -600,7 +515,7 @@ Params: {tool_params}
             ).strip()
             title_prompt = (
                 "Based on the following exchange, create a very "
-                "short, concise title (5 words or less).\n\n"
+                f"short, concise title (5 words or less).\n\n"
                 f"User: {messages[0]['content']}\n"
                 f"Assistant: {cleaned_content}\n\nTitle:"
             )
@@ -615,9 +530,7 @@ Params: {tool_params}
                 timeout=180
             )
             title_response.raise_for_status()
-            raw_title = title_response.json().get(
-                "message", {}
-            ).get("content", "").strip()
+            raw_title = title_response.json().get("message", {}).get("content", "").strip()
             cleaned_title = re.sub(
                 r'<think>[\s\S]*?</think>', '', raw_title
             ).strip().replace('"', '')
@@ -625,7 +538,7 @@ Params: {tool_params}
                 title = cleaned_title
                 convo.title = title
         except requests.exceptions.RequestException as e:
-            current_app.logger.warning(f"Could not auto-generate title: {e}")
+            print(f"Could not auto-generate title: {e}")
 
     db.session.commit()
 
@@ -648,66 +561,12 @@ def handle_chat_message(data):
     room = data.get('conversation_id') or request.sid
 
     # Parse the messages string into a list
-    try:
-        messages = json.loads(data['messages'])
-    except (json.JSONDecodeError, TypeError):
-        emit(
-            'ai_response',
-            {"type": "agent_error",
-             "error": "Invalid message format: Not valid JSON."}
-        )
-        return
+    messages = json.loads(data['messages'])
 
     # Broadcast user's message to the room
-    if messages:
-        emit(
-            'ai_response',
-            {"type": "user_message", "content": messages[-1]['content']},
-            room=room,
-            include_self=False
-        )
+    emit('ai_response', {"type": "user_message", "content": messages[-1]['content']}, room=room, include_self=False)
 
     for event in handle_ai_response(data):
-        emit('ai_response', event, room=room)
-
-
-@socketio.on('human_response')
-@login_required
-def handle_human_response(data):
-    response = data.get('response')
-    conversation_id = data.get('conversation_id')
-
-    if not conversation_id:
-        return
-
-    # Load conversation from file
-    user_id = current_user.id
-    convo_path = os.path.join(
-        current_app.config['USER_DATA_DIR'], str(user_id),
-        'conversations', f"{conversation_id}.json"
-    )
-    if os.path.exists(convo_path):
-        with open(convo_path, 'r', encoding='utf-8') as f:
-            convo_data = json.load(f)
-        messages = convo_data.get('messages', [])
-    else:
-        # Should not happen if the conversation exists
-        messages = []
-
-    # Append the human response to the messages
-    messages.append(
-        {"role": "user", "content": f"USER INPUT:\n---\n{response}\n---"}
-    )
-
-    # Resume the agent loop
-    model = current_user.selected_model
-    new_data = {
-        "messages": json.dumps(messages),
-        "model": model,
-        "conversation_id": conversation_id
-    }
-    room = conversation_id or request.sid
-    for event in handle_ai_response(new_data):
         emit('ai_response', event, room=room)
 
 
@@ -736,7 +595,7 @@ def chat_proxy():
 @main.route('/api/workspace/files/<conversation_id>', methods=['GET'])
 @login_required
 def get_workspace_files(conversation_id):
-    conversation = db.session.get(Conversation, conversation_id)
+    conversation = Conversation.query.get(conversation_id)
     if not conversation:
         return jsonify([])
 
@@ -763,7 +622,7 @@ def get_workspace_file_content():
     if not path or not conversation_id:
         return jsonify({"error": "Path and conversation_id are required"}), 400
 
-    conversation = db.session.get(Conversation, conversation_id)
+    conversation = Conversation.query.get(conversation_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -806,7 +665,7 @@ def save_workspace_file():
             "error": "Path, content, and conversation_id are required"
         }), 400
 
-    conversation = db.session.get(Conversation, conversation_id)
+    conversation = Conversation.query.get(conversation_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -847,7 +706,7 @@ def delete_workspace_file():
     if not path or not conversation_id:
         return jsonify({"error": "Path and conversation_id are required"}), 400
 
-    conversation = db.session.get(Conversation, conversation_id)
+    conversation = Conversation.query.get(conversation_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -926,7 +785,7 @@ def get_conversations():
 @main.route('/api/conversation/<session_id>', methods=['GET'])
 @login_required
 def get_conversation(session_id):
-    conversation = db.session.get(Conversation, session_id)
+    conversation = Conversation.query.get(session_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -973,7 +832,7 @@ def get_users():
 @login_required
 def share_conversation(session_id):
     """Shares a conversation with another user."""
-    conversation = db.session.get(Conversation, session_id)
+    conversation = Conversation.query.get(session_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -987,7 +846,7 @@ def share_conversation(session_id):
     if not user_id_to_share_with:
         return jsonify({"error": "user_id is required"}), 400
 
-    user_to_share_with = db.session.get(User, user_id_to_share_with)
+    user_to_share_with = User.query.get(user_id_to_share_with)
     if not user_to_share_with:
         return jsonify({"error": "User to share with not found"}), 404
 
@@ -1012,7 +871,7 @@ def share_conversation(session_id):
 @login_required
 def delete_conversation(session_id):
     """Deletes a conversation and its associated workspace."""
-    conversation = db.session.get(Conversation, session_id)
+    conversation = Conversation.query.get(session_id)
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
@@ -1083,42 +942,34 @@ def upload_file():
         message=message_to_ai, conversation_id=conversation_id
     ), 200
 
-
 @socketio.on('connect')
 def handle_connect():
-    current_app.logger.info('Client connected')
-
+    print('Client connected')
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    current_app.logger.info('Client disconnected')
-
+    print('Client disconnected')
 
 @socketio.on('join')
 def handle_join(data):
     room = data['room']
     join_room(room)
-    current_app.logger.info(f'Client {request.sid} joined room: {room}')
+    print(f'Client {request.sid} joined room: {room}')
 
     # Broadcast the updated participant list
-    conversation = db.session.get(Conversation, room)
+    conversation = Conversation.query.get(room)
     if conversation:
-        participants = [
-            {'username': p.user.username} for p in conversation.participants
-        ]
+        participants = [{'username': p.user.username} for p in conversation.participants]
         emit('participant_update', {'participants': participants}, room=room)
-
 
 @socketio.on('leave')
 def handle_leave(data):
     room = data['room']
     leave_room(room)
-    current_app.logger.info(f'Client {request.sid} left room: {room}')
+    print(f'Client {request.sid} left room: {room}')
 
     # Broadcast the updated participant list
-    conversation = db.session.get(Conversation, room)
+    conversation = Conversation.query.get(room)
     if conversation:
-        participants = [
-            {'username': p.user.username} for p in conversation.participants
-        ]
+        participants = [{'username': p.user.username} for p in conversation.participants]
         emit('participant_update', {'participants': participants}, room=room)

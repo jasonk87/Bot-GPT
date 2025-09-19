@@ -21,8 +21,12 @@
             <p class="text-lg">Username: <span class="font-mono">{{ user.username }}</span></p>
         </div>
         <div class="bg-gray-700 p-6 rounded-lg mb-6">
-            <h2 class="text-xl font-bold mb-4">Usage Statistics</h2>
-            <p class="text-gray-400">Usage statistics will be available here in a future update.</p>
+            <h2 class="text-xl font-bold mb-4">Conversation History</h2>
+            <ul>
+                {% for conv in conversations %}
+                <li><a href="/?conversation_id={{ conv.id }}" class="text-blue-400 hover:text-blue-300">{{ conv.title }}</a></li>
+                {% endfor %}
+            </ul>
         </div>
         <div class="bg-gray-700 p-6 rounded-lg">
             <h2 class="text-xl font-bold mb-4">API Key Management</h2>

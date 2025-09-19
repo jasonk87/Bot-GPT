@@ -61,15 +61,3 @@ class Conversation(db.Model):
         back_populates='conversation',
         cascade="all, delete-orphan"
     )
-
-
-class Memory(db.Model):
-    """Model for storing agent's long-term memories."""
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    key = db.Column(db.String(255), nullable=False)
-    value = db.Column(db.Text, nullable=False)
-
-    user = db.relationship('User', backref=db.backref('memories', lazy=True))
-
-    __table_args__ = (db.UniqueConstraint('user_id', 'key'),)

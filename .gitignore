@@ -8,8 +8,5 @@ instance/
 # Log files
 *.log
 
-# User-generated data
+# User-specific data
 user_data/
-
-# Credentials
-credentials.json

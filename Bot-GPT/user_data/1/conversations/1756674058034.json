@@ -1,9 +1,0 @@
-{
-  "messages": [
-    {
-      "role": "user",
-      "content": "list the files"
-    }
-  ],
-  "title": "New Chat"
-}
