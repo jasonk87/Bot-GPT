@@ -2,6 +2,8 @@ import os
 import subprocess
 import re
 from flask import current_app
+from flask_socketio import emit
+from extensions import socketio
 from models import Conversation
 
 # --- Dependencies for Web Browsing ---
@@ -188,6 +190,31 @@ def set_current_plan_step(step_number, step_description):
         "step_number": step_number,
         "step_description": step_description
     }
+
+
+def set_plan(steps: list, conversation_id: str, **kwargs):
+    """
+    Sets the agent's plan and sends it to the UI.
+    The plan should be a list of strings.
+    """
+    if not conversation_id:
+        return "Error: conversation_id is required to set a plan."
+
+    socketio.emit('plan_updated', {'steps': steps}, room=conversation_id)
+    return f"Plan with {len(steps)} steps has been set and sent to the user."
+
+
+def update_task_status(step_index: int, status: str, message: str = None, conversation_id: str = None, **kwargs):
+    """
+    Updates the status of a single task in the plan.
+    Status can be one of: 'in_progress', 'completed', 'failed'.
+    """
+    if not conversation_id:
+        return "Error: conversation_id is required to update a task status."
+
+    payload = {'step_index': step_index, 'status': status, 'message': message}
+    socketio.emit('task_updated', payload, room=conversation_id)
+    return f"Status of step {step_index} updated to {status}."
 
 
 def execute_python(path, conversation_id=None, user_id=None):

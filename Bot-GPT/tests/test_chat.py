@@ -107,17 +107,58 @@ def test_agent_mode_with_stop(app, db, test_user, socketio, mocker):
         assert convo_id in AGENT_SESSIONS
 
         client.emit("stop_agent", {"conversation_id": convo_id})
-        socketio.sleep(0.1) # Give handler time to process
+        socketio.sleep(0.1)
 
         assert AGENT_SESSIONS.get(convo_id, {}).get("stop_requested") is True
 
     finally:
-        assertion_complete_event.set() # Signal mock to clean up
+        assertion_complete_event.set()
         chat_thread.join(timeout=5)
         assert not chat_thread.is_alive(), "Chat thread did not terminate."
 
         if client.is_connected():
             client.disconnect()
 
-        # Final check to ensure cleanup happened
         assert convo_id not in AGENT_SESSIONS
+
+
+def test_plan_visualization_events(app, socketio, test_user):
+    """
+    Tests that the plan visualization tools emit the correct Socket.IO events.
+    """
+    from tools import set_plan, update_task_status
+    convo_id = "plan_test_convo"
+
+    with app.test_client() as http_client:
+        http_client.post('/login', json={'username': 'testuser', 'password': 'password'})
+        client = socketio.test_client(app, flask_test_client=http_client)
+
+    client.emit('join', {'room': convo_id})
+    client.get_received()
+
+    try:
+        plan_steps = ["Step 1", "Step 2"]
+        with app.app_context():
+            result = set_plan(steps=plan_steps, conversation_id=convo_id)
+
+        assert "Plan with 2 steps has been set" in result
+        received = client.get_received()
+        assert received[0]['name'] == 'plan_updated'
+        assert received[0]['args'][0]['steps'] == plan_steps
+
+        with app.app_context():
+            result = update_task_status(
+                step_index=0,
+                status='in_progress',
+                conversation_id=convo_id
+            )
+
+        assert "Status of step 0 updated to in_progress" in result
+        received = client.get_received()
+        assert received[0]['name'] == 'task_updated'
+        assert received[0]['args'][0]['step_index'] == 0
+        assert received[0]['args'][0]['status'] == 'in_progress'
+
+    finally:
+        if client.is_connected():
+            client.disconnect()

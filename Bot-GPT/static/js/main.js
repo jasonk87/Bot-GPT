@@ -16,7 +16,8 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     shareModal, cancelShareBtn, shareUserList,
     copyFileBtn, saveFileBtn, canvasToggleBtn,
     participantList,
-    summarizeBtn, summaryModal, summaryContent, closeSummaryBtn;
+    summarizeBtn, summaryModal, summaryContent, closeSummaryBtn,
+    planToggleBtn, planPanel, planContent;
 
 const API_BASE = '/api';
 let conversationHistory = [];
@@ -144,6 +145,9 @@ async function initializeApp(username) {
     summaryContent = document.getElementById('summary-content');
     closeSummaryBtn = document.getElementById('close-summary-btn');
     agentModeToggle = document.getElementById('agent-mode-toggle');
+    planToggleBtn = document.getElementById('plan-toggle-btn');
+    planPanel = document.getElementById('plan-panel');
+    planContent = document.getElementById('plan-content');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
 
@@ -239,6 +243,60 @@ async function initializeApp(username) {
             smartScroll(chatContainer);
         } catch (e) {
             console.error("Error parsing socket event data:", e);
+        }
+    });
+
+    socket.on('plan_updated', (data) => {
+        planPanel.classList.remove('hidden');
+        planPanel.classList.add('flex');
+        planContent.innerHTML = '';
+        const ul = document.createElement('ul');
+        ul.className = 'space-y-2';
+        data.steps.forEach((step, index) => {
+            const li = document.createElement('li');
+            li.id = `task-item-${index}`;
+            li.className = 'flex items-center text-gray-400';
+            li.innerHTML = `<span class="task-status mr-2">▫️</span><span class="flex-1">${step}</span>`;
+            ul.appendChild(li);
+        });
+        planContent.appendChild(ul);
+    });
+
+    socket.on('task_updated', (data) => {
+        const taskItem = document.getElementById(`task-item-${data.step_index}`);
+        if (taskItem) {
+            const statusSpan = taskItem.querySelector('.task-status');
+            taskItem.classList.remove('text-gray-400', 'text-yellow-400', 'text-green-400', 'text-red-400');
+            let statusIcon = '▫️';
+            let statusColor = 'text-gray-400';
+
+            switch(data.status) {
+                case 'in_progress':
+                    statusIcon = '⏳';
+                    statusColor = 'text-yellow-400';
+                    break;
+                case 'completed':
+                    statusIcon = '✅';
+                    statusColor = 'text-green-400';
+                    break;
+                case 'failed':
+                    statusIcon = '❌';
+                    statusColor = 'text-red-400';
+                    break;
+            }
+            statusSpan.textContent = statusIcon;
+            taskItem.classList.add(statusColor);
+
+            // Add error message if present
+            if (data.status === 'failed' && data.message) {
+                let errorMsg = taskItem.querySelector('.error-message');
+                if (!errorMsg) {
+                    errorMsg = document.createElement('div');
+                    errorMsg.className = 'error-message text-xs text-red-500 pl-6';
+                    taskItem.appendChild(errorMsg);
+                }
+                errorMsg.textContent = data.message;
+            }
         }
     });
 
@@ -363,6 +421,11 @@ async function initializeApp(username) {
 
             // The old copy/save listeners are removed as their functionality
             // is now part of the dynamically created canvas header in showCanvasPanel.
+
+    planToggleBtn.addEventListener('click', () => {
+        planPanel.classList.toggle('hidden');
+        planPanel.classList.toggle('flex');
+    });
 
     function handleSendButtonClick() {
         if (isAgentRunning && agentModeToggle.checked) {
@@ -1158,6 +1221,9 @@ function startNewChat() {
     conversationHistory = [];
     chatContainer.innerHTML = '';
     welcomeMessage.style.display = 'flex';
+    planContent.innerHTML = '';
+    planPanel.classList.add('hidden');
+    planPanel.classList.remove('flex');
     populateFileExplorer();
     populateConversations();
 }

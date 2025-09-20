@@ -18,7 +18,7 @@ from models import Conversation, ConversationParticipant, User
 from tools import (ask_coder, ask_debugger, create_and_open_canvas,
                    execute_python, get_file_tree, get_workspace_path,
                    list_files, pip, read_file, set_current_plan_step,
-                   web_search, write_file)
+                   web_search, write_file, set_plan, update_task_status)
 
 # --- System Prompt ---
 DEFAULT_SYSTEM_PROMPT = """
@@ -143,23 +143,29 @@ determine that the goal is unachievable.** You will not stop until you have a
 final answer or have exhausted all possible steps. The user may interrupt you
 if they wish.
 
-**Cognitive Framework: ReAct (Reason + Act)**
+**Cognitive Framework: ReAct (Reason + Act) with Live Planning**
 
 You MUST follow this framework for every user request. The process is a loop
 of Reason -> Act -> Observe.
 
-1.  **Reason:**
+1.  **Reason & Plan:**
     - Think step-by-step inside `<think>` tags.
     - Deconstruct the user's request into a comprehensive series of logical
       steps. Your plan should be as detailed as possible.
-    - Create a clear plan outlining which tools you will use and in what
-      order.
+    - **Your first action MUST be to call the `set_plan` tool** to display
+      your entire plan to the user.
 
-2.  **Act:**
+2.  **Act & Update:**
+    - For each step in your plan, you must first call
+      `update_task_status(step_index, 'in_progress')`.
     - Provide a conversational message to the user explaining the step you are
       taking.
-    - Execute the step by calling ONE tool. The tool call MUST be in a JSON
-      block.
+    - Execute the main action for the step by calling ONE tool (e.g.,
+      `read_file`, `execute_python`).
+    - After the tool call is complete, you MUST call `update_task_status`
+      again with the result: `update_task_status(step_index, 'completed')` on
+      success, or `update_task_status(step_index, 'failed', message='...')` on
+      failure.
 
 3.  **Observe:**
     - After the tool is executed, its output will be provided back to you.
@@ -438,6 +444,8 @@ def handle_ai_response(data):
                     "ask_coder": ask_coder,
                     "create_and_open_canvas": create_and_open_canvas,
                     "set_current_plan_step": set_current_plan_step,
+                "set_plan": set_plan,
+                "update_task_status": update_task_status,
                 }
 
                 if tool_name in tool_map:
