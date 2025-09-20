@@ -133,6 +133,50 @@ not make up parameters.
   agent for help with a failed tool call.
 """
 
+AGENT_SYSTEM_PROMPT = """
+You are an autonomous AI agent. Your primary role is to achieve a high-level
+goal set by the user. You will do this by creating a detailed, step-by-step
+plan, and then executing that plan by calling the provided tools.
+
+**You must continue to reason and act until the plan is complete or you
+determine that the goal is unachievable.** You will not stop until you have a
+final answer or have exhausted all possible steps. The user may interrupt you
+if they wish.
+
+**Cognitive Framework: ReAct (Reason + Act)**
+
+You MUST follow this framework for every user request. The process is a loop
+of Reason -> Act -> Observe.
+
+1.  **Reason:**
+    - Think step-by-step inside `<think>` tags.
+    - Deconstruct the user's request into a comprehensive series of logical
+      steps. Your plan should be as detailed as possible.
+    - Create a clear plan outlining which tools you will use and in what
+      order.
+
+2.  **Act:**
+    - Provide a conversational message to the user explaining the step you are
+      taking.
+    - Execute the step by calling ONE tool. The tool call MUST be in a JSON
+      block.
+
+3.  **Observe:**
+    - After the tool is executed, its output will be provided back to you.
+    - You MUST observe this output and then go back to the **Reason** step to
+      re-evaluate your plan.
+    - Think about whether the result was expected, and decide on the next
+      step. Continue this loop until your plan is complete.
+
+**Self-Correction and Persistence:**
+
+- If a tool fails, OBSERVE the error, REASON about the cause, and try to fix
+  it. Do not give up easily.
+- If you get stuck, re-evaluate your plan and try a different approach.
+- Your goal is to complete the task autonomously. Do not ask the user for
+  help unless you are completely stuck.
+"""
+
 
 PERSONAS = {
     "default": {
@@ -173,6 +217,9 @@ PERSONAS = {
 
 
 main = Blueprint('main', __name__)
+
+# A simple in-memory store for agent state
+AGENT_SESSIONS = {}
 
 
 @main.route('/')
@@ -281,6 +328,7 @@ def handle_ai_response(data):
     model = data.get('model')
     conversation_id_arg = data.get('conversation_id')
     canvas_mode = data.get('canvas_mode', False)
+    agent_mode = data.get('agent_mode', False)
 
     try:
         messages = json.loads(messages_str)
@@ -292,9 +340,13 @@ def handle_ai_response(data):
         model = current_user.selected_model
 
     persona_key = current_user.selected_persona or 'default'
+    # Default to the persona prompt, but override with agent prompt if agent_mode is on
     system_prompt = PERSONAS.get(
         persona_key, {}
     ).get('prompt', DEFAULT_SYSTEM_PROMPT)
+    if agent_mode:
+        system_prompt = AGENT_SYSTEM_PROMPT
+
     user_id = current_user.id
 
     if not messages:
@@ -328,126 +380,139 @@ def handle_ai_response(data):
 
     yield {"type": "conversation_id", "id": conversation_id}
 
+    # --- Agent Mode Setup ---
+    AGENT_SESSIONS[conversation_id] = {"stop_requested": False}
     final_answer_provided = False
     file_creation_tool_used = False
-    max_iterations = 15
-    for i in range(max_iterations):
-        full_response_content = ""
-        assistant_message = {"role": "assistant", "content": ""}
+    max_iterations = 100 if agent_mode else 15
 
-        stream = call_ollama_chat_stream(
-            model, messages, system_prompt
-        )
-        for line in stream:
+    try:
+        for i in range(max_iterations):
+            if AGENT_SESSIONS.get(conversation_id, {}).get("stop_requested"):
+                yield {"type": "agent_error", "error": "Agent run stopped by user."}
+                break
+
+            full_response_content = ""
+            assistant_message = {"role": "assistant", "content": ""}
+
+            stream = call_ollama_chat_stream(
+                model, messages, system_prompt
+            )
+            for line in stream:
+                try:
+                    parsed_data = json.loads(line)
+                    chunk = parsed_data.get("message", {}).get("content", "")
+                    full_response_content += chunk
+                    yield {"type": "assistant_chunk", "content": chunk}
+                except json.JSONDecodeError:
+                    continue
+
+            assistant_message['content'] = full_response_content
+            messages.append(assistant_message)
+            yield {"type": "assistant_end"}
+
+            print("--- AI RESPONSE ---")
+            print(full_response_content)
+            print("--- END AI RESPONSE ---")
+
+            tool_match = re.search(
+                r'```json\s*(\{[\s\S]*?\})\s*```', full_response_content
+            )
+            if not tool_match:
+                final_answer_provided = True
+                break
+
             try:
-                parsed_data = json.loads(line)
-                chunk = parsed_data.get("message", {}).get("content", "")
-                full_response_content += chunk
-                yield {"type": "assistant_chunk", "content": chunk}
-            except json.JSONDecodeError:
-                continue
+                tool_call = json.loads(tool_match.group(1))
+                tool_name = tool_call.get('tool')
+                raw_params = tool_call.get('parameters', {})
 
-        assistant_message['content'] = full_response_content
-        messages.append(assistant_message)
-        yield {"type": "assistant_end"}
-
-        print("--- AI RESPONSE ---")
-        print(full_response_content)
-        print("--- END AI RESPONSE ---")
-
-        tool_match = re.search(
-            r'```json\s*(\{[\s\S]*?\})\s*```', full_response_content
-        )
-        if not tool_match:
-            final_answer_provided = True
-            break
-
-        try:
-            tool_call = json.loads(tool_match.group(1))
-            tool_name = tool_call.get('tool')
-            raw_params = tool_call.get('parameters', {})
-
-            tool_map = {
-                "web_search": web_search,
-                "list_files": list_files,
-                "read_file": read_file,
-                "write_file": write_file,
-                "execute_python": execute_python,
-                "pip": pip,
-                "ask_debugger": ask_debugger,
-                "ask_coder": ask_coder,
-                "create_and_open_canvas": create_and_open_canvas,
-                "set_current_plan_step": set_current_plan_step,
-            }
-
-            if tool_name in tool_map:
-                if tool_name in ['create_and_open_canvas', 'write_file']:
-                    file_creation_tool_used = True
-                tool_func = tool_map[tool_name]
-                context_params = {
-                    "conversation_id": conversation_id,
-                    "owner_id": conversation.owner_id,
-                    "user_id": user_id,
-                    "user_data_dir": current_app.config['USER_DATA_DIR'],
-                    "ollama_host": current_app.config['OLLAMA_HOST'],
-                    "user": current_user,
-                    "api_key": current_app.config['GOOGLE_API_KEY'],
-                    "cse_id": current_app.config['GOOGLE_CSE_ID']
+                tool_map = {
+                    "web_search": web_search,
+                    "list_files": list_files,
+                    "read_file": read_file,
+                    "write_file": write_file,
+                    "execute_python": execute_python,
+                    "pip": pip,
+                    "ask_debugger": ask_debugger,
+                    "ask_coder": ask_coder,
+                    "create_and_open_canvas": create_and_open_canvas,
+                    "set_current_plan_step": set_current_plan_step,
                 }
 
-                tool_params = {}
-                sig = inspect.signature(tool_func)
-                for param_name in sig.parameters:
-                    if param_name in raw_params:
-                        tool_params[param_name] = raw_params[param_name]
-                    elif param_name in context_params:
-                        tool_params[param_name] = context_params[param_name]
+                if tool_name in tool_map:
+                    if tool_name in ['create_and_open_canvas', 'write_file']:
+                        file_creation_tool_used = True
+                    tool_func = tool_map[tool_name]
+                    context_params = {
+                        "conversation_id": conversation_id,
+                        "owner_id": conversation.owner_id,
+                        "user_id": user_id,
+                        "user_data_dir": current_app.config['USER_DATA_DIR'],
+                        "ollama_host": current_app.config['OLLAMA_HOST'],
+                        "user": current_user,
+                        "api_key": current_app.config['GOOGLE_API_KEY'],
+                        "cse_id": current_app.config['GOOGLE_CSE_ID']
+                    }
 
-                print(f'''--- TOOL CALL ---
-Tool: {tool_name}
-Params: {tool_params}
---- END TOOL CALL ---''')
-                tool_result = tool_func(**tool_params)
-                print(f'''--- TOOL RESULT ---
-{tool_result}
---- END TOOL RESULT ---''')
+                    tool_params = {}
+                    sig = inspect.signature(tool_func)
+                    for param_name in sig.parameters:
+                        if param_name in raw_params:
+                            tool_params[param_name] = raw_params[param_name]
+                        elif param_name in context_params:
+                            tool_params[param_name] = context_params[param_name]
 
-                if isinstance(tool_result, dict):
-                    status = tool_result.get('status')
-                    if status == 'canvas_created':
-                        yield {"type": "open_canvas", "filename": tool_result.get('filename')}
-                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
-                    elif status == 'file_written':
-                        yield {
-                            "type": "file_updated",
-                            "path": tool_result.get('path'),
-                            "content": tool_result.get('content')
-                        }
-                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
-                    elif status == 'plan_step_update':
-                        yield {"type": "plan_step_update", "step_number": tool_result.get('step_number'), "step_description": tool_result.get('step_description')}
-                        continue
+                    print(f'''--- TOOL CALL ---
+    Tool: {tool_name}
+    Params: {tool_params}
+    --- END TOOL CALL ---''')
+                    tool_result = tool_func(**tool_params)
+                    print(f'''--- TOOL RESULT ---
+    {tool_result}
+    --- END TOOL RESULT ---''')
+
+                    if isinstance(tool_result, dict):
+                        status = tool_result.get('status')
+                        if status == 'canvas_created':
+                            yield {"type": "open_canvas", "filename": tool_result.get('filename')}
+                            tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
+                        elif status == 'file_written':
+                            yield {
+                                "type": "file_updated",
+                                "path": tool_result.get('path'),
+                                "content": tool_result.get('content')
+                            }
+                            tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message')}\n---"
+                        elif status == 'plan_step_update':
+                            yield {"type": "plan_step_update", "step_number": tool_result.get('step_number'), "step_description": tool_result.get('step_description')}
+                            continue
+                        else:
+                            # Handle other dict-based results, like errors from write_file
+                            tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message', str(tool_result))}\n---"
                     else:
-                        # Handle other dict-based results, like errors from write_file
-                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result.get('message', str(tool_result))}\n---"
-                else:
-                    # Handle string-based results from other tools
-                    tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
+                        # Handle string-based results from other tools
+                        tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
 
-                messages.append({"role": "user", "content": tool_response_message})
-                yield {"type": "tool_result", "result": tool_result}
-            else:
-                error_message = f"Error: Tool '{tool_name}' not found."
+                    messages.append({"role": "user", "content": tool_response_message})
+                    yield {"type": "tool_result", "result": tool_result}
+                else:
+                    error_message = f"Error: Tool '{tool_name}' not found."
+                    messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
+                    yield {"type": "tool_error", "error": error_message}
+            except Exception as e:
+                print(f"--- FAILED TOOL CALL ---")
+                print(f"AI's full response:\n{full_response_content}")
+                print(f"Error: {e}")
+                print(f"--- END FAILED TOOL CALL ---")
+                error_message = f"Error processing tool: {e}"
                 messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
                 yield {"type": "tool_error", "error": error_message}
-        except Exception as e:
-            print(f"--- FAILED TOOL CALL ---")
-            print(f"AI's full response:\n{full_response_content}")
-            print(f"Error: {e}")
-            print(f"--- END FAILED TOOL CALL ---")
-            error_message = f"Error processing tool: {e}"
-            messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
-            yield {"type": "tool_error", "error": error_message}
+    finally:
+        # --- Agent Mode Teardown ---
+        if conversation_id in AGENT_SESSIONS:
+            del AGENT_SESSIONS[conversation_id]
+            print(f"Cleaned up agent session for {conversation_id}")
 
     if final_answer_provided:
         final_answer_content = messages[-1]['content']
@@ -552,6 +617,18 @@ Params: {tool_params}
         )
 
     yield {"type": "done", "title": title}
+
+
+@socketio.on('stop_agent')
+@login_required
+def handle_stop_agent(data):
+    """Handles a request to stop a running agent."""
+    conversation_id = data.get('conversation_id')
+    if conversation_id and conversation_id in AGENT_SESSIONS:
+        AGENT_SESSIONS[conversation_id]["stop_requested"] = True
+        print(f"Stop request received for conversation {conversation_id}")
+        # Optionally, you can emit a confirmation back to the client
+        emit('ai_response', {"type": "agent_error", "error": "Stop signal received. Attempting to halt..."})
 
 
 @socketio.on('chat_message')

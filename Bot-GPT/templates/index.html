@@ -373,6 +373,20 @@
                             <button id="canvas-toggle-btn" class="p-2 text-gray-400 hover:text-white" title="Canvas Mode">
                                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
                             </button>
+
+                            <!-- Agent Mode Toggle -->
+                            <div class="flex items-center" title="Toggle autonomous agent mode">
+                                <label for="agent-mode-toggle" class="text-sm text-gray-400 mr-2">Agent Mode</label>
+                                <div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+                                    <input type="checkbox" name="agent-mode-toggle" id="agent-mode-toggle" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                    <label for="agent-mode-toggle" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-600 cursor-pointer"></label>
+                                </div>
+                            </div>
+                            <style>
+                                .toggle-checkbox:checked { right: 0; border-color: #48bb78; }
+                                .toggle-checkbox:checked + .toggle-label { background-color: #48bb78; }
+                            </style>
+
                             <textarea id="chat-input" rows="1" class="flex-1 bg-transparent border-none focus:ring-0 text-gray-200 resize-none" placeholder="Type your message here..."></textarea>
                             <button id="send-button" class="ml-3 bg-blue-600 hover:bg-blue-700 text-white font-bold p-2 rounded-lg flex items-center justify-center w-10 h-10">
                                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"></path></svg>

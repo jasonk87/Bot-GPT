@@ -1,4 +1,5 @@
 import json
+import threading
 from unittest.mock import MagicMock, patch
 from flask_login import login_user
 from models import User
@@ -61,3 +62,62 @@ def test_full_chat_with_tool_call(app, test_user, mocker):
         assert events[6]["type"] == "final_answer"
         assert events[7]["type"] == "done"
         assert events[7]["title"] == "List Files"
+
+
+def test_agent_mode_with_stop(app, db, test_user, socketio, mocker):
+    """
+    Tests that the stop_agent event correctly updates the agent's state.
+    """
+    from routes import AGENT_SESSIONS
+    convo_id = "stop_test_convo"
+
+    is_running_event = threading.Event()
+    assertion_complete_event = threading.Event()
+
+    def mock_handle_ai_response(*args, **kwargs):
+        AGENT_SESSIONS[convo_id] = {"stop_requested": False}
+        is_running_event.set()
+
+        # Wait for the stop signal from the main thread
+        while not AGENT_SESSIONS[convo_id]["stop_requested"]:
+            socketio.sleep(0.01)
+
+        # Now wait for the main thread to finish its assertion
+        assertion_complete_event.wait(timeout=2)
+
+        # Clean up
+        if convo_id in AGENT_SESSIONS:
+            del AGENT_SESSIONS[convo_id]
+        yield {"type": "done", "title": "Stopped Task"}
+
+    mocker.patch("routes.handle_ai_response", side_effect=mock_handle_ai_response)
+
+    with app.test_client() as http_client:
+        http_client.post('/login', json={'username': 'testuser', 'password': 'password'})
+        client = socketio.test_client(app, flask_test_client=http_client)
+
+    chat_thread = threading.Thread(target=client.emit, args=("chat_message", {
+        "messages": json.dumps([{"role": "user", "content": "do a long task"}]),
+        "model": "test-model", "agent_mode": True, "conversation_id": convo_id
+    }))
+    chat_thread.start()
+
+    try:
+        assert is_running_event.wait(timeout=5), "Agent did not start."
+        assert convo_id in AGENT_SESSIONS
+
+        client.emit("stop_agent", {"conversation_id": convo_id})
+        socketio.sleep(0.1) # Give handler time to process
+
+        assert AGENT_SESSIONS.get(convo_id, {}).get("stop_requested") is True
+
+    finally:
+        assertion_complete_event.set() # Signal mock to clean up
+        chat_thread.join(timeout=5)
+        assert not chat_thread.is_alive(), "Chat thread did not terminate."
+
+        if client.is_connected():
+            client.disconnect()
+
+        # Final check to ensure cleanup happened
+        assert convo_id not in AGENT_SESSIONS

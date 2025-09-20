@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import pytest
 
 from app import create_app
-from extensions import db as _db
+from extensions import db as _db, socketio as _socketio
 from models import User
 
 
@@ -31,6 +31,12 @@ def app(tmp_path):
         yield app
         _db.session.remove()
         _db.drop_all()
+
+
+@pytest.fixture
+def socketio(app):
+    """A fixture to provide the socketio instance for tests."""
+    return _socketio
 
 
 @pytest.fixture

@@ -30,6 +30,7 @@ let debounceTimer = null;
 
 // --- Agent State ---
 let isAgentRunning = false;
+let stopBtnListener = null;
 let isCanvasMode = false;
 let currentAgentBubble = null;
 let fullAgentResponse = "";
@@ -142,6 +143,7 @@ async function initializeApp(username) {
     summaryModal = document.getElementById('summary-modal');
     summaryContent = document.getElementById('summary-content');
     closeSummaryBtn = document.getElementById('close-summary-btn');
+    agentModeToggle = document.getElementById('agent-mode-toggle');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
 
@@ -362,7 +364,17 @@ async function initializeApp(username) {
             // The old copy/save listeners are removed as their functionality
             // is now part of the dynamically created canvas header in showCanvasPanel.
 
-    sendButton.addEventListener('click', () => sendMessage());
+    function handleSendButtonClick() {
+        if (isAgentRunning && agentModeToggle.checked) {
+            // If the agent is running in agent mode, this is a "Stop" button
+            socket.emit('stop_agent', { conversation_id: currentConversationId });
+        } else {
+            // Otherwise, it's a "Send" button
+            sendMessage();
+        }
+    }
+
+    sendButton.addEventListener('click', handleSendButtonClick);
     chatInput.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
             event.preventDefault();
@@ -764,16 +776,28 @@ async function handleFileUpload(event) {
     }
 }
 
-function setAgentRunning(isRunning) {
+function setAgentRunning(isRunning, agentMode = false) {
     isAgentRunning = isRunning;
     chatInput.disabled = isRunning;
-    sendButton.disabled = isRunning;
+
     if (isRunning) {
-        sendButton.classList.add('bg-gray-500', 'cursor-not-allowed');
-        sendButton.classList.remove('bg-blue-600', 'hover:bg-blue-700');
-        sendButton.innerHTML = `<svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
+        if (agentMode) {
+            // Transform to a Stop button
+            sendButton.innerHTML = `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3A.5.5 0 018 7zm2 4a.5.5 0 01.5.5v3a.5.5 0 01-1 0v-3a.5.5 0 01.5-.5z" clip-rule="evenodd"></path></svg>`;
+            sendButton.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+            sendButton.classList.add('bg-red-600', 'hover:bg-red-700');
+            sendButton.disabled = false; // Keep it enabled to be clickable
+        } else {
+            // Standard thinking spinner
+            sendButton.disabled = true;
+            sendButton.classList.add('bg-gray-500', 'cursor-not-allowed');
+            sendButton.classList.remove('bg-blue-600', 'hover:bg-blue-700', 'bg-red-600', 'hover:bg-red-700');
+            sendButton.innerHTML = `<svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
+        }
     } else {
-        sendButton.classList.remove('bg-gray-500', 'cursor-not-allowed');
+        // Revert to Send button
+        sendButton.disabled = false;
+        sendButton.classList.remove('bg-gray-500', 'cursor-not-allowed', 'bg-red-600', 'hover:bg-red-700');
         sendButton.classList.add('bg-blue-600', 'hover:bg-blue-700');
         sendButton.innerHTML = `<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"></path></svg>`;
     }
@@ -783,7 +807,8 @@ function sendMessage() {
     const text = chatInput.value.trim();
     if (!text || isAgentRunning) return;
 
-    setAgentRunning(true);
+    const agentMode = agentModeToggle.checked;
+    setAgentRunning(true, agentMode);
 
     welcomeMessage.style.display = 'none';
     appendMessage(text, 'user');
@@ -794,16 +819,13 @@ function sendMessage() {
 
     currentAgentBubble = createBotMessageContainer();
     currentResponseContent = ""; // Reset the content for the new message
-    let thinkContent = "";
-    let inThinkBlock = true;
-
-    const isNewConversation = !currentConversationId;
 
     const params = {
         messages: JSON.stringify(conversationHistory),
         model: userModel,
         conversation_id: currentConversationId || '',
         canvas_mode: isCanvasMode,
+        agent_mode: agentMode
     };
     socket.emit('chat_message', params);
 }
