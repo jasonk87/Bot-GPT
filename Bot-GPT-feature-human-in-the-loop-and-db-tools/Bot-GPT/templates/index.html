@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Ollama Agent</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/theme/dracula.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/python/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .scrollable-content { overscroll-behavior: contain; }
+        .scrollable-content::-webkit-scrollbar { width: 6px; }
+        .scrollable-content::-webkit-scrollbar-track { background: #171717; }
+        .scrollable-content::-webkit-scrollbar-thumb { background-color: #4b5563; border-radius: 20px; }
+        .item-hover:hover .delete-btn { opacity: 1; }
+        .delete-btn { opacity: 0; transition: opacity 0.2s; }
+        .prose {
+            overflow-wrap: break-word;
+            word-break: break-word; /* For broader compatibility */
+        }
+        .prose table { width: 100%; border-collapse: collapse; margin-top: 1.5rem; margin-bottom: 1.5rem; }
+        .prose th, .prose td { border: 1px solid #4b5563; padding: 8px; }
+        .prose th { background-color: #374151; }
+        .prose pre { background-color: #111827; padding: 0; border-radius: 0.5rem; position: relative; margin-top: 1.5rem; margin-bottom: 1.5rem; overflow-x: auto; max-width: 100%; }
+        .prose pre code { display: block; padding: 1rem; }
+
+        /* Improved Prose/Markdown Formatting */
+        .prose p { margin-bottom: 1rem; }
+        .prose strong { font-weight: 600; color: #d1d5db; }
+        .prose ul, .prose ol { margin-top: 1rem; margin-bottom: 1rem; padding-left: 1.75rem; }
+        .prose ul { list-style-type: disc; }
+        .prose ol { list-style-type: decimal; }
+        .prose li { margin-top: 0.5rem; }
+        .prose a { color: #60a5fa; text-decoration: underline; }
+        .prose a:hover { color: #93c5fd; }
+        .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 { font-weight: 700; margin-top: 1.5rem; margin-bottom: 1rem; }
+        .prose h1 { font-size: 1.875rem; }
+        .prose h2 { font-size: 1.5rem; }
+        .prose h3 { font-size: 1.25rem; }
+        .prose blockquote { border-left: 4px solid #4b5563; padding-left: 1rem; margin-left: 0; font-style: italic; color: #9ca3af; }
+
+        .side-panel-tab.active { border-color: #3b82f6; color: #eff6ff; }
+        .conversation-item.active { background-color: #2563eb; }
+        .copy-btn { position: absolute; top: 0.5rem; right: 0.5rem; background-color: #374151; color: white; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; opacity: 0; transition: opacity 0.2s; }
+        .prose pre:hover .copy-btn { opacity: 1; }
+        
+        .agent-status {
+            font-style: italic;
+            color: #9ca3af;
+            font-size: 0.875rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .tool-activity {
+            border: 1px solid #4a5568;
+            border-radius: 0.5rem;
+            margin-top: 1rem;
+            background-color: #2d3748;
+        }
+        .tool-activity-header {
+            display: flex;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid #4a5568;
+            font-weight: 600;
+        }
+        .tool-activity-body {
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.875rem;
+        }
+        .tool-activity-body pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .thinking-process-container {
+            background-color: #2d3748;
+            border: 1px solid #4a5568;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .thinking-header {
+            display: flex;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid #4a5568;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .thinking-content {
+            padding: 1rem;
+            font-size: 0.875rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .CodeMirror {
+            height: 100%;
+            font-family: monospace;
+        }
+        .plan-step-container {
+            background-color: #2d3748;
+            border: 1px solid #4a5568;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        .plan-step-header {
+            display: flex;
+            align-items: center;
+            padding: 0.5rem 1rem;
+            border-bottom: 1px solid #4a5568;
+            font-weight: 600;
+        }
+        .plan-step-content {
+            padding: 1rem;
+            font-size: 0.875rem;
+        }
+        .tool-activity-body .status-running { color: #facc15; }
+        .tool-activity-body .status-success { color: #4ade80; }
+        .tool-activity-body .status-error { color: #f87171; }
+
+        .user-bubble, .bot-bubble {
+            overflow-wrap: break-word;
+        }
+        .user-bubble {
+            background-color: #1e3a8a; /* A shade of blue */
+            padding: 0.75rem;
+            border-radius: 0.75rem;
+        }
+        .bot-bubble {
+            background-color: #374151; /* A darker grey */
+            padding: 0.75rem;
+            border-radius: 0.75rem;
+        }
+        #drop-zone {
+            border: 2px dashed #4b5563;
+            border-radius: 0.5rem;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        #drop-zone.drag-over {
+            background-color: #374151;
+        }
+        select {
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 0.5rem center;
+            background-size: 1.5em 1.5em;
+            padding-right: 2.5rem;
+        }
+
+        /* Animation for chat bubbles */
+        @keyframes slideInFade {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .newly-added {
+            animation: slideInFade 0.3s ease-out forwards;
+        }
+
+        /* Thinking Indicator Animation */
+        .thinking-indicator {
+            display: flex;
+            align-items: center;
+            padding: 0.5rem;
+        }
+        .thinking-indicator span {
+            animation: pulse 1.4s infinite ease-in-out both;
+            display: inline-block;
+            margin: 0 2px;
+            width: 8px;
+            height: 8px;
+            background-color: #9ca3af;
+            border-radius: 50%;
+        }
+        .thinking-indicator span:nth-child(1) { animation-delay: -0.32s; }
+        .thinking-indicator span:nth-child(2) { animation-delay: -0.16s; }
+        .thinking-indicator span:nth-child(3) { animation-delay: 0; }
+
+        @keyframes pulse {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1.0); }
+        }
+
+        /* Button UI Fixes */
+        #upload-btn.toggled, #canvas-toggle-btn.toggled {
+            background-color: #ffffff;
+            border-radius: 50%;
+        }
+        #upload-btn.toggled svg, #canvas-toggle-btn.toggled svg, #upload-btn.toggled:hover svg, #canvas-toggle-btn.toggled:hover svg {
+            stroke: #1f2937;
+        }
+        #upload-btn.toggled:hover, #canvas-toggle-btn.toggled:hover {
+            background-color: #e5e7eb;
+        }
+
+        /* Styles for Side-by-Side Canvas Layout */
+        #resizer {
+            background-color: #1f2937;
+            cursor: col-resize;
+            width: 4px;
+            flex-shrink: 0;
+            transition: background-color 0.2s;
+        }
+        #resizer:hover {
+            background-color: #3b82f6;
+        }
+        #canvas-panel {
+            border-left: 1px solid #1f2937;
+        }
+        body.overlay-lock {
+            overflow: hidden;
+            touch-action: none;
+        }
+        @media (max-width: 1023px) {
+            #canvas-panel.mobile-visible,
+            #plan-panel.mobile-visible {
+                position: fixed;
+                inset: 0;
+                z-index: 50;
+                width: 100%;
+                height: 100%;
+                border: none;
+            }
+            #canvas-panel.mobile-visible {
+                border-left: none;
+            }
+            #plan-panel.mobile-visible {
+                border: none;
+            }
+            #plan-panel.mobile-visible .canvas-header,
+            #canvas-panel.mobile-visible .canvas-header {
+                padding-top: max(env(safe-area-inset-top), 0.75rem);
+            }
+            #plan-panel.mobile-visible #plan-content,
+            #canvas-panel.mobile-visible #file-viewer {
+                overflow-y: auto;
+            }
+            #resizer {
+                display: none !important;
+            }
+        }
+        .canvas-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid #1f2937;
+            flex-shrink: 0;
+        }
+        .canvas-header-title {
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .canvas-header-buttons button {
+            background-color: #374151;
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            margin-left: 0.5rem;
+        }
+        .canvas-header-buttons button:hover {
+            background-color: #4b5563;
+        }
+        #file-viewer {
+            flex-grow: 1;
+            overflow: hidden;
+        }
+        .resizing {
+            user-select: none;
+        }
+    </style>
+</head>
+<body class="bg-gray-800 text-gray-200">
+
+    <!-- Auth Screen -->
+    <div id="auth-screen" class="flex items-center justify-center h-screen">
+        <div class="w-full max-w-md">
+            <div class="bg-gray-700 shadow-md rounded-lg px-8 pt-6 pb-8 mb-4">
+                <div id="auth-tabs" class="flex mb-4 border-b border-gray-600">
+                    <button class="auth-tab-btn flex-1 py-2 text-white border-b-2 border-blue-500" data-tab="login">Login</button>
+                    <button class="auth-tab-btn flex-1 py-2 text-gray-400" data-tab="register">Register</button>
+                </div>
+                <div id="auth-error" class="text-red-400 text-center mb-4 h-6"></div>
+                <form id="login-form">
+                    <div class="mb-4">
+                        <label class="block text-gray-300 text-sm font-bold mb-2" for="login-username">Username</label>
+                        <input class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white leading-tight focus:outline-none focus:shadow-outline" id="login-username" type="text" required>
+                    </div>
+                    <div class="mb-6">
+                        <label class="block text-gray-300 text-sm font-bold mb-2" for="login-password">Password</label>
+                        <input class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white mb-3 leading-tight focus:outline-none focus:shadow-outline" id="login-password" type="password" required>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline" type="submit">Sign In</button>
+                    </div>
+                </form>
+                <form id="register-form" class="hidden">
+                    <div class="mb-4">
+                        <label class="block text-gray-300 text-sm font-bold mb-2" for="register-username">Username</label>
+                        <input class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white leading-tight focus:outline-none focus:shadow-outline" id="register-username" type="text" required>
+                    </div>
+                    <div class="mb-6">
+                        <label class="block text-gray-300 text-sm font-bold mb-2" for="register-password">Password</label>
+                        <input class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white mb-3 leading-tight focus:outline-none focus:shadow-outline" id="register-password" type="password" required>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline" type="submit">Register</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="main-app" class="hidden min-h-screen w-full flex flex-col lg:flex-row">
+        <!-- Side Panel -->
+        <aside id="side-panel" class="bg-gray-900 w-64 flex-shrink-0 flex flex-col transition-transform duration-300 ease-in-out absolute inset-y-0 left-0 z-30 transform -translate-x-full sm:relative sm:translate-x-0">
+            <div class="p-2 flex-shrink-0">
+                <button id="new-chat-btn" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded">New Chat</button>
+            </div>
+            <div class="flex border-b border-t border-gray-700 flex-shrink-0">
+                <button id="chats-tab-btn" class="side-panel-tab flex-1 p-2 text-center font-semibold border-b-2 active">Chats</button>
+                <button id="files-tab-btn" class="side-panel-tab flex-1 p-2 text-center font-semibold border-b-2 border-transparent">Files</button>
+            </div>
+            <div id="conversations-panel" class="flex flex-col flex-1 overflow-hidden">
+                <div id="conversation-list" class="scrollable-content flex-1 p-2 overflow-y-auto"></div>
+            </div>
+            <div id="files-panel" class="hidden flex-col flex-1 overflow-hidden">
+                 <div id="file-explorer" class="scrollable-content flex-1 p-4 overflow-y-auto"></div>
+            </div>
+            <div id="participants-panel" class="flex-col flex-1 overflow-hidden">
+                <div class="p-2 text-center font-semibold border-b border-gray-700">Participants</div>
+                <div id="participant-list" class="scrollable-content flex-1 p-2 overflow-y-auto"></div>
+            </div>
+            <div class="p-2 border-t border-gray-700 flex items-center justify-between">
+                <span id="welcome-user" class="text-sm truncate"></span>
+                <div>
+                    <a href="/profile" id="profile-btn" class="p-2 text-gray-400 hover:text-white inline-block" title="Profile">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                    </a>
+                    <button id="settings-btn" class="p-2 text-gray-400 hover:text-white" title="Settings">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    </button>
+                    <!-- Logout Button -->
+                    <button id="logout-btn" class="p-2 text-gray-400 hover:text-white" title="Logout">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                    </button>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Overlay for mobile -->
+        <div id="overlay" class="fixed inset-0 bg-black bg-opacity-50 z-40 hidden lg:hidden"></div>
+
+        <!-- Main Content -->
+        <div id="main-content-wrapper" class="flex-1 flex flex-col lg:flex-row overflow-hidden">
+            <!-- Chat Column -->
+            <div id="chat-column" class="flex-1 flex flex-col h-full relative">
+                <header class="bg-gray-800 border-b border-gray-700 p-4 flex items-center flex-shrink-0">
+                    <button id="menu-btn" class="sm:hidden mr-4">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                    </button>
+                    <button id="summarize-btn" class="bg-gray-700 hover:bg-gray-600 text-white font-bold py-1 px-3 rounded text-sm">
+                        Summarize
+                    </button>
+                    <div class="flex-1 text-center text-xs text-gray-400">
+                        Model: <span id="current-model-display" class="font-mono text-white"></span>
+                    </div>
+                    <button id="plan-toggle-btn" class="p-2 text-gray-400 hover:text-white" title="Toggle Plan View">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path></svg>
+                    </button>
+                </header>
+                <main id="chat-container" class="scrollable-content flex-1 overflow-y-auto p-4 flex flex-col space-y-4">
+                    <div id="welcome-message" class="text-center text-gray-400 h-full flex flex-col justify-center items-center">
+                        <h1 class="text-4xl font-bold">Ollama Agent</h1>
+                        <p class="mt-2">Start a new conversation to begin.</p>
+                    </div>
+                </main>
+                <footer class="p-4 bg-gray-800 flex-shrink-0">
+                    <div class="max-w-3xl mx-auto">
+                        <div class="relative flex items-center bg-gray-700 rounded-lg p-2 space-x-2">
+                            <button id="upload-btn" class="p-2 text-gray-400 hover:text-white" title="Upload File">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                            </button>
+                            <button id="canvas-toggle-btn" class="p-2 text-gray-400 hover:text-white" title="Canvas Mode">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                            </button>
+
+                            <!-- Agent Mode Toggle -->
+                            <div class="flex items-center" title="Toggle autonomous agent mode">
+                                <label for="agent-mode-toggle" class="text-sm text-gray-400 mr-2">Agent Mode</label>
+                                <div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+                                    <input type="checkbox" name="agent-mode-toggle" id="agent-mode-toggle" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                    <label for="agent-mode-toggle" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-600 cursor-pointer"></label>
+                                </div>
+                            </div>
+                            <style>
+                                .toggle-checkbox:checked { right: 0; border-color: #48bb78; }
+                                .toggle-checkbox:checked + .toggle-label { background-color: #48bb78; }
+                            </style>
+
+                            <textarea id="chat-input" rows="1" class="flex-1 bg-transparent border-none focus:ring-0 text-gray-200 resize-none" placeholder="Type your message here..."></textarea>
+                            <button id="send-button" class="ml-3 bg-blue-600 hover:bg-blue-700 text-white font-bold p-2 rounded-lg flex items-center justify-center w-10 h-10">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"></path></svg>
+                            </button>
+                        </div>
+                    </div>
+                </footer>
+            </div>
+            <!-- Plan Panel -->
+            <div id="plan-panel" class="lg:w-1/3 w-full flex-shrink-0 flex-col h-full bg-gray-900 border-l border-r border-gray-700 hidden">
+                <div class="canvas-header">
+                    <h3 class="canvas-header-title">Current Plan</h3>
+                </div>
+                <div id="plan-content" class="scrollable-content flex-grow p-4 overflow-y-auto">
+                    <!-- Plan steps will be dynamically inserted here -->
+                </div>
+            </div>
+            <!-- Resizer -->
+            <div id="resizer" class="w-2 cursor-col-resize bg-gray-700 hover:bg-gray-600 hidden"></div>
+            <!-- Canvas Panel -->
+            <div id="canvas-panel" class="lg:w-1/2 w-full flex-shrink-0 flex flex-col h-full bg-gray-900 hidden">
+                <!-- Canvas content will be moved here by JS -->
+            </div>
+        </div>
+    </div>
+    
+    <div id="delete-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-30">
+        <div class="bg-gray-800 rounded-lg p-6 shadow-xl">
+            <h3 class="text-lg font-bold mb-4">Confirm Deletion</h3>
+            <p id="delete-modal-text" class="mb-6"></p>
+            <div class="flex justify-end space-x-4">
+                <button id="cancel-delete-btn" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">Cancel</button>
+                <button id="confirm-delete-btn" class="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-4 rounded">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Share Modal -->
+    <div id="share-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-30">
+        <div class="bg-gray-800 rounded-lg p-6 shadow-xl w-full max-w-md">
+            <h3 class="text-lg font-bold mb-4">Share Conversation</h3>
+            <div id="share-user-list" class="scrollable-content max-h-60 overflow-y-auto"></div>
+            <div class="flex justify-end mt-6">
+                <button id="cancel-share-btn" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upload Modal -->
+    <div id="upload-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-30">
+        <div class="bg-gray-800 rounded-lg p-6 shadow-xl w-full max-w-lg">
+            <h3 class="text-lg font-bold mb-4">Upload Files and Folders</h3>
+            <form id="upload-form">
+                <div class="mb-4">
+                    <label for="upload-prompt" class="block text-gray-300 text-sm font-bold mb-2">Prompt (optional)</label>
+                    <textarea id="upload-prompt" rows="3" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white leading-tight focus:outline-none focus:shadow-outline" placeholder="Give the AI instructions for these files..."></textarea>
+                </div>
+                <div class="mb-6">
+                    <div id="drop-zone">
+                        <p>Drag & drop files or folders here, or click to select.</p>
+                        <input type="file" id="file-input" class="hidden" multiple>
+                    </div>
+                    <div id="file-list" class="mt-2 text-sm text-gray-400"></div>
+                </div>
+                <div class="flex justify-end space-x-4">
+                    <button type="button" id="cancel-upload-btn" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">Cancel</button>
+                    <button type="submit" id="confirm-upload-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded">Upload and Send</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-30">
+        <div class="bg-gray-800 rounded-lg p-6 shadow-xl w-full max-w-lg">
+            <h3 class="text-lg font-bold mb-4">Agent Settings</h3>
+            <form id="settings-form">
+                <div class="mb-4">
+                    <label for="model-select" class="block text-gray-300 text-sm font-bold mb-2">Default Model</label>
+                    <select id="model-select" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white leading-tight focus:outline-none focus:shadow-outline"></select>
+                </div>
+                <div class="mb-6">
+                    <label for="persona-select" class="block text-gray-300 text-sm font-bold mb-2">Personality</label>
+                    <select id="persona-select" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white leading-tight focus:outline-none focus:shadow-outline"></select>
+                </div>
+                <div class="flex justify-end space-x-4">
+                    <button type="button" id="cancel-settings-btn" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">Cancel</button>
+                    <button type="submit" id="save-settings-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded">Save Settings</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Summary Modal -->
+    <div id="summary-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-40">
+        <div class="bg-gray-800 rounded-lg p-6 shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+            <h3 class="text-lg font-bold mb-4 flex-shrink-0">Conversation Summary</h3>
+            <div id="summary-content" class="scrollable-content prose prose-invert max-w-none flex-grow overflow-y-auto">
+                <p>Generating summary...</p>
+            </div>
+            <div class="flex justify-end mt-6 flex-shrink-0">
+                <button id="close-summary-btn" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

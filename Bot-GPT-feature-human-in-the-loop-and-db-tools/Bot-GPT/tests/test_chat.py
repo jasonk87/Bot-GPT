@@ -1,0 +1,164 @@
+import json
+import threading
+from unittest.mock import MagicMock, patch
+from flask_login import login_user
+from models import User
+
+def test_full_chat_with_tool_call(app, test_user, mocker):
+    """
+    Tests a full chat conversation with a tool call.
+    """
+    # 1. Mock the `requests.post` call to the Ollama API.
+    mock_post = mocker.patch("requests.post")
+
+    # Canned responses from the mocked Ollama API.
+    tool_call_response = {
+        "message": {
+            "content": """<think>I need to list the files in the workspace.</think>```json
+{
+    "tool": "list_files",
+    "parameters": {}
+}
+```"""
+        }
+    }
+    final_answer_response = {
+        "message": {
+            "content": "I have listed the files for you."
+        }
+    }
+    title_generation_response = {
+        "message": {
+            "content": "List Files"
+        }
+    }
+
+    # Set up the mock to return the responses in order.
+    mock_post.side_effect = [
+        MagicMock(iter_content=lambda chunk_size: [(json.dumps(tool_call_response) + '\n').encode("utf-8")]),
+        MagicMock(iter_content=lambda chunk_size: [(json.dumps(final_answer_response) + '\n').encode("utf-8")]),
+        MagicMock(json=lambda: title_generation_response)
+    ]
+
+    # 2. Call the chat_proxy function directly within a request context.
+    with app.test_request_context('/api/chat?messages=[{"role":"user","content":"list the files"}]&model=test-model'):
+        # Manually log in the test user.
+        login_user(test_user)
+
+        from routes import chat_proxy
+        response = chat_proxy()
+
+        # 3. Assert the response stream contains the expected events.
+        assert response.status_code == 200
+
+        events = [json.loads(line.replace("data: ", "")) for line in response.response if line]
+
+        assert events[0]["type"] == "conversation_id"
+        assert events[1]["type"] == "assistant_chunk"
+        assert events[2]["type"] == "assistant_end"
+        assert events[3]["type"] == "tool_result"
+        assert events[4]["type"] == "assistant_chunk"
+        assert events[5]["type"] == "assistant_end"
+        assert events[6]["type"] == "final_answer"
+        assert events[7]["type"] == "done"
+        assert events[7]["title"] == "List Files"
+
+
+def test_agent_mode_with_stop(app, db, test_user, socketio, mocker):
+    """
+    Tests that the stop_agent event correctly updates the agent's state.
+    """
+    from routes import AGENT_SESSIONS
+    convo_id = "stop_test_convo"
+
+    is_running_event = threading.Event()
+    assertion_complete_event = threading.Event()
+
+    def mock_handle_ai_response(*args, **kwargs):
+        AGENT_SESSIONS[convo_id] = {"stop_requested": False}
+        is_running_event.set()
+
+        # Wait for the stop signal from the main thread
+        while not AGENT_SESSIONS[convo_id]["stop_requested"]:
+            socketio.sleep(0.01)
+
+        # Now wait for the main thread to finish its assertion
+        assertion_complete_event.wait(timeout=2)
+
+        # Clean up
+        if convo_id in AGENT_SESSIONS:
+            del AGENT_SESSIONS[convo_id]
+        yield {"type": "done", "title": "Stopped Task"}
+
+    mocker.patch("routes.handle_ai_response", side_effect=mock_handle_ai_response)
+
+    with app.test_client() as http_client:
+        http_client.post('/login', json={'username': 'testuser', 'password': 'password'})
+        client = socketio.test_client(app, flask_test_client=http_client)
+
+    chat_thread = threading.Thread(target=client.emit, args=("chat_message", {
+        "messages": json.dumps([{"role": "user", "content": "do a long task"}]),
+        "model": "test-model", "agent_mode": True, "conversation_id": convo_id
+    }))
+    chat_thread.start()
+
+    try:
+        assert is_running_event.wait(timeout=5), "Agent did not start."
+        assert convo_id in AGENT_SESSIONS
+
+        client.emit("stop_agent", {"conversation_id": convo_id})
+        socketio.sleep(0.1)
+
+        assert AGENT_SESSIONS.get(convo_id, {}).get("stop_requested") is True
+
+    finally:
+        assertion_complete_event.set()
+        chat_thread.join(timeout=5)
+        assert not chat_thread.is_alive(), "Chat thread did not terminate."
+
+        if client.is_connected():
+            client.disconnect()
+
+        assert convo_id not in AGENT_SESSIONS
+
+
+def test_plan_visualization_events(app, socketio, test_user):
+    """
+    Tests that the plan visualization tools emit the correct Socket.IO events.
+    """
+    from tools import set_plan, update_task_status
+    convo_id = "plan_test_convo"
+
+    with app.test_client() as http_client:
+        http_client.post('/login', json={'username': 'testuser', 'password': 'password'})
+        client = socketio.test_client(app, flask_test_client=http_client)
+
+    client.emit('join', {'room': convo_id})
+    client.get_received()
+
+    try:
+        plan_steps = ["Step 1", "Step 2"]
+        with app.app_context():
+            result = set_plan(steps=plan_steps, conversation_id=convo_id)
+
+        assert "Plan with 2 steps has been set" in result
+        received = client.get_received()
+        assert received[0]['name'] == 'plan_updated'
+        assert received[0]['args'][0]['steps'] == plan_steps
+
+        with app.app_context():
+            result = update_task_status(
+                step_index=0,
+                status='in_progress',
+                conversation_id=convo_id
+            )
+
+        assert "Status of step 0 updated to in_progress" in result
+        received = client.get_received()
+        assert received[0]['name'] == 'task_updated'
+        assert received[0]['args'][0]['step_index'] == 0
+        assert received[0]['args'][0]['status'] == 'in_progress'
+
+    finally:
+        if client.is_connected():
+            client.disconnect()
