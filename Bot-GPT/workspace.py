@@ -188,3 +188,53 @@ def summarize_conversation(session_id):
             yield "Sorry, an error occurred while generating the summary."
 
     return Response(event_stream(), mimetype='text/plain')
+
+@workspace.route('/api/users', methods=['GET'])
+@login_required
+def get_users():
+    """Returns a list of all users, excluding the current user."""
+    users = User.query.all()
+    users_list = [
+        {"id": user.id, "username": user.username}
+        for user in users if user.id != current_user.id
+    ]
+    return jsonify(users_list)
+
+@workspace.route('/api/upload', methods=['POST'])
+@login_required
+def upload_file():
+    """Handles file uploads to a conversation's workspace."""
+    if 'files[]' not in request.files:
+        return jsonify(error='No file part'), 400
+
+    files = request.files.getlist('files[]')
+    prompt = request.form.get('prompt', '')
+    conversation_id = request.form.get('conversation_id')
+
+    if not conversation_id:
+        conversation_id = str(int(time.time() * 1000))
+
+    if not files or files[0].filename == '':
+        return jsonify(error='No selected file'), 400
+
+    filenames = []
+    workspace_path = get_workspace_path(conversation_id, current_user.id)
+    if not workspace_path:
+        return jsonify(error='Could not create workspace'), 500
+
+    for file in files:
+        if file:
+            filename = secure_filename(file.filename)
+            file.save(os.path.join(workspace_path, filename))
+            filenames.append(filename)
+
+    file_list_str = "\n- ".join(filenames)
+    message_to_ai = (
+        "User uploaded the following files to the workspace:\n"
+        f"- {file_list_str}\n\n"
+        f"User's prompt: {prompt}"
+    )
+
+    return jsonify(
+        message=message_to_ai, conversation_id=conversation_id
+    ), 200

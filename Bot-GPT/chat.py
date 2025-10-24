@@ -14,75 +14,53 @@ chat = Blueprint('chat', __name__)
 
 AGENT_SESSIONS = {}
 
+def initialize_chat(data):
+    """Initializes a chat session, loading messages and settings."""
+    messages_str = data.get('messages', '[]')
+    messages = json.loads(messages_str)
+
+    model = data.get('model') or current_user.selected_model
+    persona_key = current_user.selected_persona or 'default'
+    system_prompt = PERSONAS.get(persona_key, {}).get('prompt', DEFAULT_SYSTEM_PROMPT)
+    if data.get('agent_mode', False):
+        system_prompt = AGENT_SYSTEM_PROMPT
+
+    conversation_id = data.get('conversation_id') or str(int(time.time() * 1000))
+    conversation = Conversation.query.get(conversation_id)
+    if not conversation:
+        conversation = Conversation(id=conversation_id, title="New Chat", owner_id=current_user.id)
+        db.session.add(conversation)
+        participant = ConversationParticipant(user_id=current_user.id, conversation_id=conversation_id, role='owner')
+        db.session.add(participant)
+        db.session.commit()
+
+    return messages, model, system_prompt, conversation
+
 def handle_ai_response(data):
     """Handles the AI response loop and yields events."""
-    messages_str = data.get('messages', '[]')
-    model = data.get('model')
-    conversation_id_arg = data.get('conversation_id')
-    canvas_mode = data.get('canvas_mode', False)
-    agent_mode = data.get('agent_mode', False)
-
     try:
-        messages = json.loads(messages_str)
+        messages, model, system_prompt, conversation = initialize_chat(data)
     except json.JSONDecodeError:
         yield {"type": "agent_error", "error": "Invalid 'messages' format"}
         return
 
-    if not model:
-        model = current_user.selected_model
-
-    persona_key = current_user.selected_persona or 'default'
-    system_prompt = PERSONAS.get(persona_key, {}).get('prompt', DEFAULT_SYSTEM_PROMPT)
-    if agent_mode:
-        system_prompt = AGENT_SYSTEM_PROMPT
-
-    user_id = current_user.id
-
-    if not messages:
-        yield {"type": "agent_error", "error": "No messages provided"}
-        return
-
-    conversation_id = conversation_id_arg or str(int(time.time() * 1000))
-
-    conversation = Conversation.query.get(conversation_id)
-    if not conversation:
-        new_convo = Conversation(id=conversation_id, title="New Chat", owner_id=user_id)
-        db.session.add(new_convo)
-        owner_participant = ConversationParticipant(user_id=user_id, conversation_id=conversation_id, role='owner')
-        db.session.add(owner_participant)
-        db.session.commit()
-        conversation = new_convo
-
-        convo_path = os.path.join(current_app.config['USER_DATA_DIR'], str(user_id), 'conversations', f"{conversation_id}.json")
-        os.makedirs(os.path.dirname(convo_path), exist_ok=True)
-        with open(convo_path, 'w', encoding='utf-8') as f:
-            json.dump({"messages": messages, "title": "New Chat"}, f, indent=2)
-
     yield {"type": "conversation_id", "id": conversation_id}
 
-    AGENT_SESSIONS[conversation_id] = {"stop_requested": False}
-    final_answer_provided = False
-    file_creation_tool_used = False
+    agent_mode = data.get('agent_mode', False)
+    AGENT_SESSIONS[conversation.id] = {"stop_requested": False}
     max_iterations = 100 if agent_mode else 15
 
     try:
         for i in range(max_iterations):
-            if AGENT_SESSIONS.get(conversation_id, {}).get("stop_requested"):
+            if AGENT_SESSIONS.get(conversation.id, {}).get("stop_requested"):
                 yield {"type": "agent_error", "error": "Agent run stopped by user."}
                 break
 
-            full_response_content = ""
-            assistant_message = {"role": "assistant", "content": ""}
-
+            full_response_content, assistant_message = "", {"role": "assistant", "content": ""}
             stream = call_ollama_chat_stream(model, messages, system_prompt)
-            for line in stream:
-                try:
-                    parsed_data = json.loads(line)
-                    chunk = parsed_data.get("message", {}).get("content", "")
-                    full_response_content += chunk
-                    yield {"type": "assistant_chunk", "content": chunk}
-                except json.JSONDecodeError:
-                    continue
+            for chunk in stream:
+                full_response_content += chunk
+                yield {"type": "assistant_chunk", "content": chunk}
 
             assistant_message['content'] = full_response_content
             messages.append(assistant_message)
@@ -90,14 +68,11 @@ def handle_ai_response(data):
 
             tool_match = re.search(r'```json\s*(\{[\s\S]*?\})\s*```', full_response_content)
             if not tool_match:
-                final_answer_provided = True
                 break
 
             try:
                 tool_call = json.loads(tool_match.group(1))
-                tool_result, file_created = handle_tool_call(tool_call, conversation, current_user)
-                if file_created:
-                    file_creation_tool_used = True
+                tool_result, _ = handle_tool_call(tool_call, conversation, current_user)
 
                 if isinstance(tool_result, dict):
                     status = tool_result.get('status')
@@ -105,9 +80,6 @@ def handle_ai_response(data):
                         yield {"type": "open_canvas", "filename": tool_result.get('filename')}
                     elif status == 'file_written':
                         yield {"type": "file_updated", "path": tool_result.get('path'), "content": tool_result.get('content')}
-                    elif status == 'plan_step_update':
-                        yield {"type": "plan_step_update", "step_number": tool_result.get('step_number'), "step_description": tool_result.get('step_description')}
-                        continue
 
                 tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
                 messages.append({"role": "user", "content": tool_response_message})
@@ -117,15 +89,15 @@ def handle_ai_response(data):
                 messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
                 yield {"type": "tool_error", "error": error_message}
     finally:
-        if conversation_id in AGENT_SESSIONS:
-            del AGENT_SESSIONS[conversation_id]
+        if conversation.id in AGENT_SESSIONS:
+            del AGENT_SESSIONS[conversation.id]
 
-    if final_answer_provided:
-        # Final answer processing and canvas saving logic here...
-        pass
+    if not tool_match:
+        yield from process_final_answer(messages, conversation, data.get('canvas_mode', False))
 
-    # Conversation title generation and saving logic here...
-    pass
+    update_conversation_title(conversation, messages)
+    save_conversation_history(conversation, messages)
+    yield {"type": "done", "title": conversation.title}
 
 @socketio.on('chat_message')
 @login_required
@@ -136,6 +108,57 @@ def handle_chat_message(data):
     emit('ai_response', {"type": "user_message", "content": messages[-1]['content']}, room=room, include_self=False)
     for event in handle_ai_response(data):
         emit('ai_response', event, room=room)
+
+def process_final_answer(messages, conversation, canvas_mode):
+    """Processes the final answer from the AI, saving to canvas if needed."""
+    final_answer_content = messages[-1]['content']
+    if canvas_mode:
+        code_block_match = re.search(r'```(\w*)\n([\s\S]+?)```', final_answer_content)
+        if code_block_match:
+            language = code_block_match.group(1).lower()
+            content_to_save = code_block_match.group(2).strip()
+            file_extension = {'python': 'py', 'javascript': 'js', 'html': 'html', 'css': 'css', 'json': 'json', 'sql': 'sql', 'shell': 'sh', 'bash': 'sh'}.get(language, 'txt')
+        else:
+            content_to_save = re.sub(r'<think>[\s\S]*?<\/think>', '', final_answer_content).strip()
+            file_extension = 'md'
+
+        timestamp = int(time.time())
+        filename = f"canvas_{timestamp}.{file_extension}"
+
+        from tools import write_file
+        write_result = write_file(path=filename, content=content_to_save, conversation_id=conversation.id, user_id=conversation.owner_id)
+
+        if "successfully" in write_result.get('message', ''):
+            yield {"type": "open_canvas", "filename": filename}
+            yield {"type": "refresh_files"}
+        else:
+            yield {"type": "agent_error", "error": f"Failed to save to canvas: {write_result.get('message', '')}"}
+
+    yield {"type": "final_answer", "content": final_answer_content}
+
+def update_conversation_title(conversation, messages):
+    """Updates the conversation title if it's a new chat."""
+    if conversation.title == "New Chat" and len(messages) >= 2:
+        try:
+            final_ai_message = next((m['content'] for m in reversed(messages) if m['role'] == 'assistant'), "")
+            cleaned_content = re.sub(r'<think>[\s\S]*?</think>', '', final_ai_message).strip()
+            title_prompt = f"Based on the following exchange, create a very short, concise title (5 words or less).\n\nUser: {messages[0]['content']}\nAssistant: {cleaned_content}\n\nTitle:"
+            title_model = "llama3.2:latest"
+            response = requests.post(f"{current_app.config['OLLAMA_HOST']}/api/chat", json={"model": title_model, "messages": [{"role": "user", "content": title_prompt}], "stream": False}, timeout=180)
+            response.raise_for_status()
+            raw_title = response.json().get("message", {}).get("content", "").strip()
+            cleaned_title = re.sub(r'<think>[\s\S]*?</think>', '', raw_title).strip().replace('"', '')
+            if cleaned_title:
+                conversation.title = cleaned_title
+        except requests.exceptions.RequestException as e:
+            print(f"Could not auto-generate title: {e}")
+
+def save_conversation_history(conversation, messages):
+    """Saves the conversation history to a JSON file."""
+    db.session.commit()
+    conversation_path = os.path.join(current_app.config['USER_DATA_DIR'], str(conversation.owner_id), 'conversations', f"{conversation.id}.json")
+    with open(conversation_path, 'w', encoding='utf-8') as f:
+        json.dump({"messages": messages, "title": conversation.title}, f, indent=2)
 
 @socketio.on('stop_agent')
 @login_required
