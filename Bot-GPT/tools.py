@@ -49,6 +49,13 @@ def get_workspace_path(conversation_id, user_id):
     return path
 
 
+def is_safe_path(base, path, follow_symlinks=True):
+    """Checks if a path is safe to access."""
+    if follow_symlinks:
+        return os.path.realpath(path).startswith(base)
+    return os.path.abspath(path).startswith(base)
+
+
 # --- Sandbox Tool Functions ---
 
 
@@ -284,30 +291,18 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
         return f"Error: Missing required libraries: {', '.join(missing)}."
 
     try:
-        # 1. Perform Google Search
-        try:
-            service = build("customsearch", "v1", developerKey=api_key)
-            res = service.cse().list(q=query, cx=cse_id, num=3).execute()
-            search_results = res.get('items', [])
-        except HttpError as e:
-            error_content = e.content.decode('utf-8')
-            return f"Error: Google Search API HTTP error: {error_content}"
-        except Exception as e:
-            return f"An unexpected error occurred during Google search: {e}"
+        service = build("customsearch", "v1", developerKey=api_key)
+        res = service.cse().list(q=query, cx=cse_id, num=3).execute()
+        search_results = res.get('items', [])
 
         if not search_results:
             return f"No results found for '{query}'."
 
-        # 2. Scrape Content from URLs
         consolidated_content = ""
         for result in search_results:
             try:
                 url = result['link']
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                                  'AppleWebKit/537.36 (KHTML, like Gecko) '
-                                  'Chrome/91.0.4472.124 Safari/537.36'
-                }
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
                 response = requests.get(url, headers=headers, timeout=10)
                 response.raise_for_status()
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -315,9 +310,7 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
                     script_or_style.decompose()
                 text = soup.get_text()
                 lines = (line.strip() for line in text.splitlines())
-                chunks = (
-                    phrase.strip() for line in lines for phrase in line.split("  ")
-                )
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
                 content_text = '\n'.join(chunk for chunk in chunks if chunk)
                 consolidated_content += f"--- From {url} ---\n{content_text}\n\n"
             except requests.exceptions.RequestException as e:
@@ -326,7 +319,6 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
         if not consolidated_content.strip():
             return "Could not retrieve any content from the search results."
 
-        # 3. Summarize with Ollama
         max_length = 8000
         if len(consolidated_content) > max_length:
             consolidated_content = consolidated_content[:max_length] + "..."
@@ -334,37 +326,21 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
         current_model = user.selected_model if user else 'default_model_name'
         ollama_host = current_app.config['OLLAMA_HOST']
 
-        summarization_prompt = (
-            f"Based on the following web content, please provide a "
-            f"comprehensive answer to the user's query: '{query}'. "
-            "Synthesize the information from the sources into a single, "
-            "coherent response. Do not just list the content from each "
-            "source. Your answer should be well-structured, easy to "
-            "understand, and directly address the user's question. Format "
-            "the response using Markdown for readability.\n\n"
-            "--- WEB CONTENT ---\n"
-            f"{consolidated_content}"
+        summarization_prompt = f"Based on the following web content, please provide a comprehensive answer to the user's query: '{query}'. Synthesize the information from the sources into a single, coherent response. Do not just list the content from each source. Your answer should be well-structured, easy to understand, and directly address the user's question. Format the response using Markdown for readability.\n\n--- WEB CONTENT ---\n{consolidated_content}"
+
+        response = requests.post(
+            f"{ollama_host}/api/chat",
+            json={"model": current_model, "messages": [{"role": "user", "content": summarization_prompt}], "stream": False},
+            timeout=120
         )
+        response.raise_for_status()
+        summary = response.json().get("message", {}).get("content", "")
+        return f"Based on my web search, here is the answer to your query about '{query}':\n\n{summary}"
 
-        try:
-            response = requests.post(
-                f"{ollama_host}/api/chat",
-                json={
-                    "model": current_model,
-                    "messages": [{"role": "user", "content": summarization_prompt}],
-                    "stream": False
-                },
-                timeout=120
-            )
-            response.raise_for_status()
-            summary = response.json().get("message", {}).get("content", "")
-            return (f"Based on my web search, here is the answer to your "
-                    f"query about '{query}':\n\n{summary}")
-        except requests.exceptions.RequestException:
-            return ("Warning: Could not connect to the AI model to summarize. "
-                    "Returning raw search results.\n\n"
-                    f"--- RAW WEB CONTENT ---\n{consolidated_content}")
-
+    except HttpError as e:
+        return f"Error: Google Search API HTTP error: {e.content.decode('utf-8')}"
+    except requests.exceptions.RequestException as e:
+        return f"Warning: Could not connect to the AI model to summarize. Returning raw search results.\n\n--- RAW WEB CONTENT ---\n{consolidated_content}"
     except Exception as e:
         return f"An unexpected error occurred during web search: {e}"
 
@@ -424,3 +400,76 @@ def ask_coder(task_description, user=None, user_id=None):
         return content.strip()
     except Exception as e:
         return f"Error calling Coder agent: {e}"
+
+def call_ollama_chat_stream(model, messages, system_prompt):
+    """Calls the Ollama chat API and yields response chunks."""
+    ollama_host = current_app.config['OLLAMA_HOST']
+    response = requests.post(
+        f"{ollama_host}/api/chat",
+        json={
+            "model": model,
+            "messages": [{"role": "system", "content": system_prompt}] + messages,
+            "stream": True
+        },
+        stream=True,
+        timeout=120
+    )
+    response.raise_for_status()
+
+    buffer = ""
+    for chunk in response.iter_content(chunk_size=None):
+        if chunk:
+            buffer += chunk.decode('utf-8', errors='ignore')
+            while '\n' in buffer:
+                line, buffer = buffer.split('\n', 1)
+                if line.strip():
+                    yield line
+
+def handle_tool_call(tool_call, conversation, user):
+    """Handles a tool call from the AI."""
+    tool_name = tool_call.get('tool')
+    raw_params = tool_call.get('parameters', {})
+    file_creation_tool_used = False
+
+    tool_map = {
+        "web_search": web_search,
+        "list_files": list_files,
+        "read_file": read_file,
+        "write_file": write_file,
+        "execute_python": execute_python,
+        "pip": pip,
+        "ask_debugger": ask_debugger,
+        "ask_coder": ask_coder,
+        "create_and_open_canvas": create_and_open_canvas,
+        "set_current_plan_step": set_current_plan_step,
+        "set_plan": set_plan,
+        "update_task_status": update_task_status,
+    }
+
+    if tool_name in tool_map:
+        if tool_name in ['create_and_open_canvas', 'write_file']:
+            file_creation_tool_used = True
+        tool_func = tool_map[tool_name]
+        context_params = {
+            "conversation_id": conversation.id,
+            "owner_id": conversation.owner_id,
+            "user_id": user.id,
+            "user_data_dir": current_app.config['USER_DATA_DIR'],
+            "ollama_host": current_app.config['OLLAMA_HOST'],
+            "user": user,
+            "api_key": current_app.config['GOOGLE_API_KEY'],
+            "cse_id": current_app.config['GOOGLE_CSE_ID']
+        }
+
+        tool_params = {}
+        sig = inspect.signature(tool_func)
+        for param_name in sig.parameters:
+            if param_name in raw_params:
+                tool_params[param_name] = raw_params[param_name]
+            elif param_name in context_params:
+                tool_params[param_name] = context_params[param_name]
+
+        tool_result = tool_func(**tool_params)
+        return tool_result, file_creation_tool_used
+    else:
+        raise ValueError(f"Tool '{tool_name}' not found.")

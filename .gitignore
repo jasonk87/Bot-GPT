@@ -5,6 +5,9 @@ __pycache__/
 # Instance folder
 instance/
 
+# Local Keys
+key.py
+
 # Log files
 *.log
 

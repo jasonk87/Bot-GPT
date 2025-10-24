@@ -1,7 +1,9 @@
 Flask
 Flask-Login
 Flask-SQLAlchemy
+Flask-SocketIO
 requests
 beautifulsoup4
 Werkzeug
 google-api-python-client
+python-dotenv
