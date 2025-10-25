@@ -7,6 +7,8 @@ from extensions import socketio
 from models import Conversation
 from database_tool import database_tool
 from data_visualization_tool import data_visualization_tool
+from file_analysis_tool import file_analysis_tool
+from utils import get_workspace_path
 
 # --- Dependencies for Web Browsing ---
 
@@ -29,26 +31,6 @@ except ImportError:
     HttpError = None
 
 # --- Helper function for conversation-specific workspaces ---
-def get_workspace_path(conversation_id, user_id):
-    """Constructs a path to a conversation-specific workspace."""
-    if not user_id or not conversation_id:
-        return None
-
-    conversation = Conversation.query.get(conversation_id)
-    if not conversation:
-        owner_id = user_id
-    else:
-        owner_id = conversation.owner_id
-
-    path = os.path.join(
-        current_app.config['USER_DATA_DIR'],
-        str(owner_id),
-        'workspaces',
-        str(conversation_id)
-    )
-    if not os.path.exists(path):
-        os.makedirs(path)
-    return path
 
 
 def is_safe_path(base, path, follow_symlinks=True):
@@ -465,6 +447,7 @@ def handle_tool_call(tool_call, conversation, user):
         "update_task_status": update_task_status,
         "database_tool": database_tool,
         "data_visualization_tool": data_visualization_tool,
+        "file_analysis_tool": file_analysis_tool,
     }
 
     if tool_name in tool_map:

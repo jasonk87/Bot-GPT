@@ -112,6 +112,9 @@ not make up parameters.
   **IMPORTANT: Before executing a query, you MUST ask the user for confirmation.**
 - `data_visualization_tool(df: pd.DataFrame, chart_type: str, title: str, xlabel: str, ylabel: str)`:
   Generates a data visualization from a pandas DataFrame and saves it as an image.
+- `file_analysis_tool(filename: str, conversation_id: str, user_id: str)`:
+  Reads and analyzes a CSV file from the workspace, returning a summary.
+  **To use this tool, first ask the user to upload a file.**
 """
 
 AGENT_SYSTEM_PROMPT = """
@@ -196,6 +199,9 @@ not make up parameters.
   **IMPORTANT: Before executing a query, you MUST ask the user for confirmation.**
 - `data_visualization_tool(df: pd.DataFrame, chart_type: str, title: str, xlabel: str, ylabel: str)`:
   Generates a data visualization from a pandas DataFrame and saves it as an image.
+- `file_analysis_tool(filename: str, conversation_id: str, user_id: str)`:
+  Reads and analyzes a CSV file from the workspace, returning a summary.
+  **To use this tool, first ask the user to upload a file.**
 """
 
 
