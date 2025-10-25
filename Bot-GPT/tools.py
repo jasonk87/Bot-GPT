@@ -5,6 +5,8 @@ import inspect
 from flask import current_app
 from extensions import socketio
 from models import Conversation
+from database_tool import database_tool
+from data_visualization_tool import data_visualization_tool
 
 # --- Dependencies for Web Browsing ---
 
@@ -461,6 +463,8 @@ def handle_tool_call(tool_call, conversation, user):
         "set_current_plan_step": set_current_plan_step,
         "set_plan": set_plan,
         "update_task_status": update_task_status,
+        "database_tool": database_tool,
+        "data_visualization_tool": data_visualization_tool,
     }
 
     if tool_name in tool_map:
