@@ -5,7 +5,7 @@ import time
 import requests
 from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
-from flask_socketio import emit
+from flask_socketio import emit, join_room, leave_room
 from extensions import db, socketio
 from models import Conversation, ConversationParticipant
 from tools import call_ollama_chat_stream, handle_tool_call
@@ -53,6 +53,8 @@ def handle_ai_response(data):
     agent_mode = data.get('agent_mode', False)
     AGENT_SESSIONS[conversation.id] = {"stop_requested": False}
     max_iterations = 100 if agent_mode else 15
+
+    tool_match = None
 
     try:
         for i in range(max_iterations):
@@ -116,6 +118,24 @@ def handle_chat_message(data):
     emit('ai_response', {"type": "user_message", "content": messages[-1]['content']}, room=room, include_self=False)
     for event in handle_ai_response(data):
         emit('ai_response', event, room=room)
+
+
+@socketio.on('join')
+@login_required
+def handle_join_room(data):
+    """Adds the current user to a Socket.IO room for conversation updates."""
+    room = data.get('room')
+    if room:
+        join_room(room)
+
+
+@socketio.on('leave')
+@login_required
+def handle_leave_room(data):
+    """Removes the current user from a Socket.IO room when they leave a chat."""
+    room = data.get('room')
+    if room:
+        leave_room(room)
 
 def process_final_answer(messages, conversation, canvas_mode):
     """Processes the final answer from the AI, saving to canvas if needed."""

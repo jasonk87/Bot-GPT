@@ -2,6 +2,7 @@ import os
 import subprocess
 import re
 import inspect
+import json
 from flask import current_app
 from extensions import socketio
 from models import Conversation
@@ -425,18 +426,23 @@ def call_ollama_chat_stream(model, messages, system_prompt):
         )
         response.raise_for_status()
 
-        buffer = ""
-        for chunk in response.iter_content(chunk_size=None):
-            if chunk:
-                buffer += chunk.decode('utf-8', errors='ignore')
-                while '\n' in buffer:
-                    line, buffer = buffer.split('\n', 1)
-                    if line.strip():
-                        try:
-                            json.loads(line)
-                            yield line
-                        except json.JSONDecodeError:
-                            print(f"Skipping invalid JSON line: {line}")
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"Skipping invalid JSON line: {line}")
+                continue
+
+            message_payload = payload.get("message", {})
+            content_chunk = message_payload.get("content")
+            if content_chunk:
+                yield content_chunk
+
+            if payload.get("done"):
+                break
     except requests.exceptions.RequestException as e:
         raise ConnectionError(f"Could not connect to Ollama: {e}") from e
     except Exception as e:
