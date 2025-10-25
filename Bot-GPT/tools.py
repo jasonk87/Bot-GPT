@@ -426,8 +426,22 @@ def call_ollama_chat_stream(model, messages, system_prompt):
         )
         response.raise_for_status()
 
-        for line in response.iter_lines(decode_unicode=True):
-            if not line:
+        for raw_line in response.iter_lines(decode_unicode=True):
+            if not raw_line:
+                continue
+
+            # Ollama streams Server Sent Events which are prefixed with
+            # "data:".  Strip the prefix so the remaining content is valid
+            # JSON regardless of whether Ollama is configured for SSE or
+            # plain newline-delimited JSON responses.
+            line = raw_line
+            if line.startswith(':'):
+                # Comment / heartbeat lines can be ignored entirely.
+                continue
+            if line.startswith('data:'):
+                line = line[len('data:'):].strip()
+
+            if not line or line == '[DONE]':
                 continue
 
             try:

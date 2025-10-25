@@ -44,8 +44,8 @@ def handle_ai_response(data):
     """Handles the AI response loop and yields events."""
     try:
         messages, model, system_prompt, conversation = initialize_chat(data)
-    except json.JSONDecodeError:
-        yield {"type": "agent_error", "error": "Invalid 'messages' format"}
+    except ValueError as exc:
+        yield {"type": "agent_error", "error": str(exc)}
         return
 
     yield {"type": "conversation_id", "id": conversation.id}
@@ -114,10 +114,26 @@ def handle_ai_response(data):
 def handle_chat_message(data):
     """Handles a chat message received over WebSocket."""
     room = data.get('conversation_id') or request.sid
-    messages = json.loads(data['messages'])
-    emit('ai_response', {"type": "user_message", "content": messages[-1]['content']}, room=room, include_self=False)
-    for event in handle_ai_response(data):
-        emit('ai_response', event, room=room)
+    try:
+        messages = json.loads(data['messages'])
+        last_user_message = messages[-1]['content'] if messages else ''
+    except (KeyError, TypeError, json.JSONDecodeError):
+        emit('ai_response', {"type": "agent_error", "error": "Invalid message payload"}, room=room)
+        emit('ai_response', {"type": "done"}, room=room)
+        return
+
+    emit('ai_response', {"type": "user_message", "content": last_user_message}, room=room, include_self=False)
+    done_sent = False
+    try:
+        for event in handle_ai_response(data):
+            emit('ai_response', event, room=room)
+            if event.get('type') == 'done':
+                done_sent = True
+    except Exception as exc:
+        emit('ai_response', {"type": "agent_error", "error": str(exc)}, room=room)
+    finally:
+        if not done_sent:
+            emit('ai_response', {"type": "done"}, room=room)
 
 
 @socketio.on('join')
