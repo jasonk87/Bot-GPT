@@ -225,7 +225,15 @@ async function initializeApp(username) {
                     currentResponseContent = "";
                     break;
                 case 'agent_error':
-                    updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);
+                    if (currentAgentBubble) {
+                        const answerContent = currentAgentBubble.querySelector('.answer-content');
+                        const agentStatus = currentAgentBubble.querySelector('.agent-status');
+                        agentStatus.style.display = 'none'; // Hide the thinking indicator
+                        answerContent.style.display = 'block';
+                        // Display a generic, user-friendly error message
+                        answerContent.innerHTML = "<p class='text-red-400'>I'm sorry, but I was unable to generate a response. Please try again.</p>";
+                        console.error("Agent Error:", data.error); // Log the technical error
+                    }
                     setAgentRunning(false);
                     break;
                 case 'refresh_files':
@@ -1007,9 +1015,9 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
         // Hide the main thinking indicator when the turn is truly over
         agentStatus.style.display = 'none';
         if (!conversationalContent && !thinkContent) {
-            // If there's no content at all in the end, don't show an empty bubble.
-            // This can happen if the AI only calls a tool.
-            answerContent.style.display = 'none';
+            // If there's no content at all in the end, show an error message.
+            answerContent.style.display = 'block';
+            answerContent.innerHTML = "<p class='text-red-400'>I'm sorry, but I was unable to generate a response. Please try again.</p>";
         }
 
         bubbleElement.querySelectorAll('pre code').forEach((block) => {
