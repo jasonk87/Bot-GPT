@@ -1002,7 +1002,13 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     if (conversationalContent) {
         agentStatus.style.display = 'none';
         answerContent.style.display = 'block';
-        answerContent.innerHTML = marked.parse(conversationalContent);
+        // Optimize for streaming: only parse markdown when it's the final render
+        if (isFinal) {
+            answerContent.innerHTML = marked.parse(conversationalContent);
+        } else {
+            // During streaming, just update the text content to avoid re-parsing markdown on every chunk
+            answerContent.textContent = conversationalContent;
+        }
     } else {
         answerContent.style.display = 'none';
         // If there's no conversational content yet, and no tool is active, show the "thinking" status
@@ -1015,9 +1021,9 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
         // Hide the main thinking indicator when the turn is truly over
         agentStatus.style.display = 'none';
         if (!conversationalContent && !thinkContent) {
-            // If there's no content at all in the end, show an error message.
-            answerContent.style.display = 'block';
-            answerContent.innerHTML = "<p class='text-red-400'>I'm sorry, but I was unable to generate a response. Please try again.</p>";
+            // If there's no content at all in the end, don't show an empty bubble.
+            // This can happen if the AI only calls a tool.
+            answerContent.style.display = 'none';
         }
 
         bubbleElement.querySelectorAll('pre code').forEach((block) => {
