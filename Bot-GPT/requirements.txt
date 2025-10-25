@@ -7,5 +7,3 @@ beautifulsoup4
 Werkzeug
 google-api-python-client
 python-dotenv
-pandas
-matplotlib

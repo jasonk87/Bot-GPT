@@ -202,17 +202,7 @@ async function initializeApp(username) {
                     showToolCall(currentAgentBubble, data.name, data.params);
                     break;
                 case 'tool_result':
-                    if (data.result && data.result.type === 'visualization') {
-                        const img = document.createElement('img');
-                        img.src = data.result.path;
-                        img.className = 'w-full h-auto rounded-lg mt-2';
-                        const answerContent = currentAgentBubble.querySelector('.answer-content');
-                        answerContent.appendChild(img);
-                        answerContent.style.display = 'block';
-                        updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
-                    } else {
-                        updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
-                    }
+                    updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
                     break;
                 case 'tool_error':
                     updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);
@@ -645,6 +635,11 @@ function attachFileEventListeners() {
         function showCanvasPanel(path, content, mode) {
             const canvasPanel = document.getElementById('canvas-panel');
             const resizer = document.getElementById('resizer');
+            const mainContentWrapper = document.getElementById('main-content-wrapper');
+
+            if (window.innerWidth < 640) {
+                mainContentWrapper.style.display = 'none';
+            }
 
             canvasPanel.innerHTML = `
                 <div class="canvas-header">
@@ -700,6 +695,11 @@ function attachFileEventListeners() {
         function hideCanvasPanel() {
             const canvasPanel = document.getElementById('canvas-panel');
             const resizer = document.getElementById('resizer');
+            const mainContentWrapper = document.getElementById('main-content-wrapper');
+
+            if (window.innerWidth < 640) {
+                mainContentWrapper.style.display = 'flex';
+            }
 
             canvasPanel.classList.add('hidden');
             canvasPanel.classList.remove('flex');
