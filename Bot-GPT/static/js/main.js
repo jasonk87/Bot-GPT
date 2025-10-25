@@ -1002,13 +1002,7 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     if (conversationalContent) {
         agentStatus.style.display = 'none';
         answerContent.style.display = 'block';
-        // Optimize for streaming: only parse markdown when it's the final render
-        if (isFinal) {
-            answerContent.innerHTML = marked.parse(conversationalContent);
-        } else {
-            // During streaming, just update the text content to avoid re-parsing markdown on every chunk
-            answerContent.textContent = conversationalContent;
-        }
+        answerContent.innerHTML = marked.parse(conversationalContent);
     } else {
         answerContent.style.display = 'none';
         // If there's no conversational content yet, and no tool is active, show the "thinking" status
