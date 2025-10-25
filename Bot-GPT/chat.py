@@ -5,7 +5,7 @@ import time
 import requests
 from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
-from flask_socketio import emit
+from flask_socketio import emit, join_room, leave_room
 from extensions import db, socketio
 from models import Conversation, ConversationParticipant
 from tools import call_ollama_chat_stream, handle_tool_call
@@ -44,8 +44,8 @@ def handle_ai_response(data):
     """Handles the AI response loop and yields events."""
     try:
         messages, model, system_prompt, conversation = initialize_chat(data)
-    except json.JSONDecodeError:
-        yield {"type": "agent_error", "error": "Invalid 'messages' format"}
+    except ValueError as exc:
+        yield {"type": "agent_error", "error": str(exc)}
         return
 
     yield {"type": "conversation_id", "id": conversation.id}
@@ -53,6 +53,8 @@ def handle_ai_response(data):
     agent_mode = data.get('agent_mode', False)
     AGENT_SESSIONS[conversation.id] = {"stop_requested": False}
     max_iterations = 100 if agent_mode else 15
+
+    tool_match = None
 
     try:
         for i in range(max_iterations):
@@ -112,10 +114,44 @@ def handle_ai_response(data):
 def handle_chat_message(data):
     """Handles a chat message received over WebSocket."""
     room = data.get('conversation_id') or request.sid
-    messages = json.loads(data['messages'])
-    emit('ai_response', {"type": "user_message", "content": messages[-1]['content']}, room=room, include_self=False)
-    for event in handle_ai_response(data):
-        emit('ai_response', event, room=room)
+    try:
+        messages = json.loads(data['messages'])
+        last_user_message = messages[-1]['content'] if messages else ''
+    except (KeyError, TypeError, json.JSONDecodeError):
+        emit('ai_response', {"type": "agent_error", "error": "Invalid message payload"}, room=room)
+        emit('ai_response', {"type": "done"}, room=room)
+        return
+
+    emit('ai_response', {"type": "user_message", "content": last_user_message}, room=room, include_self=False)
+    done_sent = False
+    try:
+        for event in handle_ai_response(data):
+            emit('ai_response', event, room=room)
+            if event.get('type') == 'done':
+                done_sent = True
+    except Exception as exc:
+        emit('ai_response', {"type": "agent_error", "error": str(exc)}, room=room)
+    finally:
+        if not done_sent:
+            emit('ai_response', {"type": "done"}, room=room)
+
+
+@socketio.on('join')
+@login_required
+def handle_join_room(data):
+    """Adds the current user to a Socket.IO room for conversation updates."""
+    room = data.get('room')
+    if room:
+        join_room(room)
+
+
+@socketio.on('leave')
+@login_required
+def handle_leave_room(data):
+    """Removes the current user from a Socket.IO room when they leave a chat."""
+    room = data.get('room')
+    if room:
+        leave_room(room)
 
 def process_final_answer(messages, conversation, canvas_mode):
     """Processes the final answer from the AI, saving to canvas if needed."""

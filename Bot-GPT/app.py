@@ -28,9 +28,20 @@ def create_app(config_name=None):
 
     # Ensure the instance folder exists
     try:
-        os.makedirs(app.instance_path)
-    except OSError:
-        pass
+        os.makedirs(app.instance_path, exist_ok=True)
+    except TypeError:
+        # Python versions prior to 3.2 do not support exist_ok; fall back to
+        # a manual check so we still guarantee the directory exists.
+        if not os.path.isdir(app.instance_path):
+            os.makedirs(app.instance_path)
+
+    # If the application is using a SQLite database ensure its directory exists
+    database_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
+    if database_uri.startswith('sqlite:///'):
+        db_path = database_uri.replace('sqlite:///', '', 1)
+        db_directory = os.path.dirname(db_path)
+        if db_directory and not os.path.exists(db_directory):
+            os.makedirs(db_directory, exist_ok=True)
 
     # --- Initialize Extensions ---
     db.init_app(app)

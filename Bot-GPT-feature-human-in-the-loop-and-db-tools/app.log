@@ -1,5 +1,0 @@
-[2025-09-07 06:32:27 +0000] [103623] [INFO] Starting gunicorn 23.0.0
-[2025-09-07 06:32:27 +0000] [103623] [INFO] Listening at: http://0.0.0.0:5001 (103623)
-[2025-09-07 06:32:27 +0000] [103623] [INFO] Using worker: gthread
-[2025-09-07 06:32:27 +0000] [103739] [INFO] Booting worker with pid: 103739
-[2025-09-07 06:32:46 +0000] [103623] [INFO] Handling signal: term

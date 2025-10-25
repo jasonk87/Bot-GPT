@@ -11,7 +11,7 @@ class Config:
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     MAX_CONTENT_LENGTH = 16 * 1024 * 1024
-    OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://192.168.86.30:11434")
+    OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://192.168.86.250:11434")
     USER_DATA_DIR = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "user_data"
     )
