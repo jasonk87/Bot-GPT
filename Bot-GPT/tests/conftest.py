@@ -1,11 +1,11 @@
 import os
 import sys
-import json
 
 # This line must come before the app imports.
 # It adds the project root to the Python path.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+import json
 import pytest
 
 from app import create_app

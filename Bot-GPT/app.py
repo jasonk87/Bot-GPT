@@ -36,7 +36,7 @@ def create_app(config_name=None):
     db.init_app(app)
     login_manager.init_app(app)
     socketio.init_app(app)
-    login_manager.login_view = 'main.login'
+    login_manager.login_view = 'auth.login'
 
     @login_manager.user_loader
     def load_user(user_id):

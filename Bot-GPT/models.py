@@ -61,3 +61,7 @@ class Conversation(db.Model):
         back_populates='conversation',
         cascade="all, delete-orphan"
     )
+
+    def is_participant(self, user_id):
+        """Check if a user is a participant in the conversation."""
+        return any(p.user_id == user_id for p in self.participants)

@@ -1,4 +1,5 @@
 import json
+import pytest
 from models import Conversation, ConversationParticipant, User
 
 
@@ -26,8 +27,8 @@ def test_get_workspace_files_route(logged_in_client, db, test_user, mocker):
     db.session.commit()
 
     # 2. Mock filesystem interactions to isolate the test.
-    mocker.patch('routes.get_workspace_path', return_value='/fake/path')
-    mock_get_file_tree = mocker.patch('routes.get_file_tree', return_value=[
+    mocker.patch('workspace.get_workspace_path', return_value='/fake/path')
+    mock_get_file_tree = mocker.patch('workspace.get_file_tree', return_value=[
         {'name': 'test.txt', 'type': 'file', 'path': 'test.txt'}
     ])
 
@@ -51,8 +52,6 @@ def test_get_workspace_files_unauthorized(client):
     assert response.status_code == 302
     assert '/login' in response.headers['Location']
 
-
-import pytest
 
 @pytest.mark.xfail(reason="This test passes in the pytest environment, but fails when running the app as a server. This is the bug to be fixed.")
 def test_register_new_user(client, db):
@@ -109,7 +108,7 @@ def test_summarize_conversation(logged_in_client, db, test_user, mocker, tmp_pat
         ]
     }))
     mocker.patch.dict(
-        'routes.current_app.config',
+        'workspace.current_app.config',
         {'USER_DATA_DIR': tmp_path}
     )
 
@@ -118,7 +117,7 @@ def test_summarize_conversation(logged_in_client, db, test_user, mocker, tmp_pat
         yield json.dumps({"message": {"content": "This is "}})
         yield json.dumps({"message": {"content": "a summary."}})
 
-    mocker.patch('routes.call_ollama_chat_stream', side_effect=mock_stream)
+    mocker.patch('workspace.call_ollama_chat_stream', side_effect=mock_stream)
 
     # 3. Make the request.
     response = logged_in_client.get(f'/api/conversation/{convo_id}/summarize')

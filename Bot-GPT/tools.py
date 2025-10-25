@@ -1,8 +1,8 @@
 import os
 import subprocess
 import re
+import inspect
 from flask import current_app
-from flask_socketio import emit
 from extensions import socketio
 from models import Conversation
 
@@ -269,6 +269,47 @@ def pip(command, conversation_id=None, user_id=None):
         return f"Error: {str(e)}"
 
 
+def google_search(api_key, cse_id, query):
+    """Performs a Google search and returns the results."""
+    try:
+        service = build("customsearch", "v1", developerKey=api_key)
+        res = service.cse().list(q=query, cx=cse_id, num=3).execute()
+        return res.get('items', [])
+    except HttpError as e:
+        raise ConnectionError(f"Google Search API HTTP error: {e.content.decode('utf-8')}") from e
+    except Exception as e:
+        raise ConnectionError(f"An unexpected error occurred during Google search: {e}") from e
+
+def scrape_text_from_url(url):
+    """Scrapes text content from a URL."""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        for script_or_style in soup(["script", "style"]):
+            script_or_style.decompose()
+        text = soup.get_text()
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        return '\n'.join(chunk for chunk in chunks if chunk)
+    except requests.exceptions.RequestException as e:
+        return f"--- Could not get {url}: {e} ---\n\n"
+
+def summarize_text(text, query, model, ollama_host):
+    """Summarizes text using an AI model."""
+    summarization_prompt = f"Based on the following web content, please provide a comprehensive answer to the user's query: '{query}'. Synthesize the information from the sources into a single, coherent response. Do not just list the content from each source. Your answer should be well-structured, easy to understand, and directly address the user's question. Format the response using Markdown for readability.\n\n--- WEB CONTENT ---\n{text}"
+    try:
+        response = requests.post(
+            f"{ollama_host}/api/chat",
+            json={"model": model, "messages": [{"role": "user", "content": summarization_prompt}], "stream": False},
+            timeout=120
+        )
+        response.raise_for_status()
+        return response.json().get("message", {}).get("content", "")
+    except requests.exceptions.RequestException as e:
+        raise ConnectionError(f"Could not connect to the AI model to summarize: {e}") from e
+
 def web_search(query, conversation_id=None, user_id=None, user=None):
     """
     Performs a web search using the Google Search API, scrapes the top
@@ -281,40 +322,17 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
         return "Error: Google Search API key or CSE ID is not configured."
 
     if not all([requests, BeautifulSoup, build]):
-        missing = [
-            lib for lib, present in [
-                ("'requests'", requests),
-                ("'beautifulsoup4'", BeautifulSoup),
-                ("'google-api-python-client'", build)
-            ] if not present
-        ]
+        missing = [lib for lib, present in [("'requests'", requests), ("'beautifulsoup4'", BeautifulSoup), ("'google-api-python-client'", build)] if not present]
         return f"Error: Missing required libraries: {', '.join(missing)}."
 
     try:
-        service = build("customsearch", "v1", developerKey=api_key)
-        res = service.cse().list(q=query, cx=cse_id, num=3).execute()
-        search_results = res.get('items', [])
-
+        search_results = google_search(api_key, cse_id, query)
         if not search_results:
             return f"No results found for '{query}'."
 
         consolidated_content = ""
         for result in search_results:
-            try:
-                url = result['link']
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                soup = BeautifulSoup(response.text, 'html.parser')
-                for script_or_style in soup(["script", "style"]):
-                    script_or_style.decompose()
-                text = soup.get_text()
-                lines = (line.strip() for line in text.splitlines())
-                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                content_text = '\n'.join(chunk for chunk in chunks if chunk)
-                consolidated_content += f"--- From {url} ---\n{content_text}\n\n"
-            except requests.exceptions.RequestException as e:
-                consolidated_content += f"--- Could not get {url}: {e} ---\n\n"
+            consolidated_content += scrape_text_from_url(result['link'])
 
         if not consolidated_content.strip():
             return "Could not retrieve any content from the search results."
@@ -326,21 +344,11 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
         current_model = user.selected_model if user else 'default_model_name'
         ollama_host = current_app.config['OLLAMA_HOST']
 
-        summarization_prompt = f"Based on the following web content, please provide a comprehensive answer to the user's query: '{query}'. Synthesize the information from the sources into a single, coherent response. Do not just list the content from each source. Your answer should be well-structured, easy to understand, and directly address the user's question. Format the response using Markdown for readability.\n\n--- WEB CONTENT ---\n{consolidated_content}"
-
-        response = requests.post(
-            f"{ollama_host}/api/chat",
-            json={"model": current_model, "messages": [{"role": "user", "content": summarization_prompt}], "stream": False},
-            timeout=120
-        )
-        response.raise_for_status()
-        summary = response.json().get("message", {}).get("content", "")
+        summary = summarize_text(consolidated_content, query, current_model, ollama_host)
         return f"Based on my web search, here is the answer to your query about '{query}':\n\n{summary}"
 
-    except HttpError as e:
-        return f"Error: Google Search API HTTP error: {e.content.decode('utf-8')}"
-    except requests.exceptions.RequestException as e:
-        return f"Warning: Could not connect to the AI model to summarize. Returning raw search results.\n\n--- RAW WEB CONTENT ---\n{consolidated_content}"
+    except ConnectionError as e:
+        return f"Error during web search: {e}"
     except Exception as e:
         return f"An unexpected error occurred during web search: {e}"
 
@@ -403,27 +411,36 @@ def ask_coder(task_description, user=None, user_id=None):
 
 def call_ollama_chat_stream(model, messages, system_prompt):
     """Calls the Ollama chat API and yields response chunks."""
-    ollama_host = current_app.config['OLLAMA_HOST']
-    response = requests.post(
-        f"{ollama_host}/api/chat",
-        json={
-            "model": model,
-            "messages": [{"role": "system", "content": system_prompt}] + messages,
-            "stream": True
-        },
-        stream=True,
-        timeout=120
-    )
-    response.raise_for_status()
+    try:
+        ollama_host = current_app.config['OLLAMA_HOST']
+        response = requests.post(
+            f"{ollama_host}/api/chat",
+            json={
+                "model": model,
+                "messages": [{"role": "system", "content": system_prompt}] + messages,
+                "stream": True
+            },
+            stream=True,
+            timeout=120
+        )
+        response.raise_for_status()
 
-    buffer = ""
-    for chunk in response.iter_content(chunk_size=None):
-        if chunk:
-            buffer += chunk.decode('utf-8', errors='ignore')
-            while '\n' in buffer:
-                line, buffer = buffer.split('\n', 1)
-                if line.strip():
-                    yield line
+        buffer = ""
+        for chunk in response.iter_content(chunk_size=None):
+            if chunk:
+                buffer += chunk.decode('utf-8', errors='ignore')
+                while '\n' in buffer:
+                    line, buffer = buffer.split('\n', 1)
+                    if line.strip():
+                        try:
+                            json.loads(line)
+                            yield line
+                        except json.JSONDecodeError:
+                            print(f"Skipping invalid JSON line: {line}")
+    except requests.exceptions.RequestException as e:
+        raise ConnectionError(f"Could not connect to Ollama: {e}") from e
+    except Exception as e:
+        raise ConnectionError(f"An unexpected error occurred: {e}") from e
 
 def handle_tool_call(tool_call, conversation, user):
     """Handles a tool call from the AI."""

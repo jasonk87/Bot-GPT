@@ -4,10 +4,12 @@ from models import Conversation
 
 main = Blueprint('main', __name__)
 
+
 @main.route('/')
 def index():
     """Renders the main chat interface."""
     return render_template('index.html')
+
 
 @main.route('/profile')
 @login_required

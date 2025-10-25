@@ -1,12 +1,13 @@
 import json
+import os
 import re
 import time
 import requests
 from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
-from flask_socketio import emit, join_room, leave_room
+from flask_socketio import emit
 from extensions import db, socketio
-from models import Conversation, ConversationParticipant, User
+from models import Conversation, ConversationParticipant
 from tools import call_ollama_chat_stream, handle_tool_call
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
 
@@ -16,8 +17,11 @@ AGENT_SESSIONS = {}
 
 def initialize_chat(data):
     """Initializes a chat session, loading messages and settings."""
-    messages_str = data.get('messages', '[]')
-    messages = json.loads(messages_str)
+    try:
+        messages_str = data.get('messages', '[]')
+        messages = json.loads(messages_str)
+    except (json.JSONDecodeError, TypeError):
+        raise ValueError("Invalid 'messages' format")
 
     model = data.get('model') or current_user.selected_model
     persona_key = current_user.selected_persona or 'default'
@@ -44,7 +48,7 @@ def handle_ai_response(data):
         yield {"type": "agent_error", "error": "Invalid 'messages' format"}
         return
 
-    yield {"type": "conversation_id", "id": conversation_id}
+    yield {"type": "conversation_id", "id": conversation.id}
 
     agent_mode = data.get('agent_mode', False)
     AGENT_SESSIONS[conversation.id] = {"stop_requested": False}
@@ -57,10 +61,14 @@ def handle_ai_response(data):
                 break
 
             full_response_content, assistant_message = "", {"role": "assistant", "content": ""}
-            stream = call_ollama_chat_stream(model, messages, system_prompt)
-            for chunk in stream:
-                full_response_content += chunk
-                yield {"type": "assistant_chunk", "content": chunk}
+            try:
+                stream = call_ollama_chat_stream(model, messages, system_prompt)
+                for chunk in stream:
+                    full_response_content += chunk
+                    yield {"type": "assistant_chunk", "content": chunk}
+            except requests.exceptions.ConnectionError as e:
+                yield {"type": "agent_error", "error": f"Could not connect to Ollama: {e}"}
+                break
 
             assistant_message['content'] = full_response_content
             messages.append(assistant_message)
@@ -153,10 +161,12 @@ def update_conversation_title(conversation, messages):
         except requests.exceptions.RequestException as e:
             print(f"Could not auto-generate title: {e}")
 
+
 def save_conversation_history(conversation, messages):
     """Saves the conversation history to a JSON file."""
     db.session.commit()
     conversation_path = os.path.join(current_app.config['USER_DATA_DIR'], str(conversation.owner_id), 'conversations', f"{conversation.id}.json")
+    os.makedirs(os.path.dirname(conversation_path), exist_ok=True)
     with open(conversation_path, 'w', encoding='utf-8') as f:
         json.dump({"messages": messages, "title": conversation.title}, f, indent=2)
 
@@ -199,3 +209,24 @@ def get_models():
         return jsonify(response.json().get('models', []))
     except requests.exceptions.RequestException as e:
         return jsonify({"error": str(e)}), 502
+
+@chat.route('/api/chat')
+@login_required
+def chat_proxy():
+    """ (DEPRECATED) Orchestrates the ReAct loop for conversational AI."""
+    messages_str = request.args.get('messages', '[]')
+    model = request.args.get('model')
+    conversation_id_arg = request.args.get('conversation_id')
+
+    data = {
+        "messages": messages_str,
+        "model": model,
+        "conversation_id": conversation_id_arg
+    }
+
+    def event_stream():
+        with current_app.app_context():
+            for event in handle_ai_response(data):
+                yield f"data: {json.dumps(event)}\n\n"
+
+    return Response(event_stream(), mimetype='text/event-stream')

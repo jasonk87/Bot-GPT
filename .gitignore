@@ -13,3 +13,6 @@ key.py
 
 # User-specific data
 user_data/
+
+# Virtual environment
+venv/

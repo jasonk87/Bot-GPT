@@ -5,6 +5,7 @@ from models import User
 
 auth = Blueprint('auth', __name__)
 
+
 @auth.route('/register', methods=['POST'])
 def register():
     """Handles user registration."""
@@ -23,6 +24,7 @@ def register():
         "username": new_user.username
     }), 201
 
+
 @auth.route('/login', methods=['POST'])
 def login():
     """Handles user login."""
@@ -35,12 +37,14 @@ def login():
         }), 200
     return jsonify({"message": "Invalid username or password"}), 401
 
+
 @auth.route('/logout')
 @login_required
 def logout():
     """Handles user logout."""
     logout_user()
     return jsonify({"message": "Logout successful"}), 200
+
 
 @auth.route('/check_auth')
 def check_auth():
