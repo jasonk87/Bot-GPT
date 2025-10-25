@@ -4,6 +4,7 @@ __pycache__/
 
 # Instance folder
 instance/
+Bot-GPT/instance/
 
 # Local Keys
 key.py

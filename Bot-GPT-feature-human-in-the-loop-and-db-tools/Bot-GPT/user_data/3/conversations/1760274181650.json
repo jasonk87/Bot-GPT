@@ -1,9 +1,0 @@
-{
-  "messages": [
-    {
-      "role": "user",
-      "content": "create a higher/lower number guessing game"
-    }
-  ],
-  "title": "New Chat"
-}

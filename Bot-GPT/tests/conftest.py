@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import json
 import pytest
+from unittest import mock
 
 from app import create_app
 from extensions import db as _db, socketio as _socketio
@@ -31,6 +32,59 @@ def app(tmp_path):
         yield app
         _db.session.remove()
         _db.drop_all()
+
+
+class _PatchProxy:
+    """Proxy that mimics pytest-mock's patch helper."""
+
+    def __init__(self, register):
+        self._register = register
+
+    def __call__(self, target, *args, **kwargs):
+        patcher = mock.patch(target, *args, **kwargs)
+        mocked = patcher.start()
+        self._register(patcher)
+        return mocked
+
+    def dict(self, target, *args, **kwargs):
+        patcher = mock.patch.dict(target, *args, **kwargs)
+        patcher.start()
+        self._register(patcher)
+        return patcher
+
+
+class SimpleMocker:
+    """Lightweight stand-in for pytest-mock's MockerFixture."""
+
+    def __init__(self):
+        self._patchers = []
+        self.patch = _PatchProxy(self._register)
+
+    def _register(self, patcher):
+        self._patchers.append(patcher)
+
+    def mock_open(self, *args, **kwargs):
+        return mock.mock_open(*args, **kwargs)
+
+    def spy(self, obj, attribute):
+        patcher = mock.patch.object(obj, attribute, wraps=getattr(obj, attribute))
+        wrapped = patcher.start()
+        self._register(patcher)
+        return wrapped
+
+    def stop(self):
+        while self._patchers:
+            self._patchers.pop().stop()
+
+
+@pytest.fixture
+def mocker():
+    """Provide a minimal mocker fixture when pytest-mock isn't available."""
+    simple = SimpleMocker()
+    try:
+        yield simple
+    finally:
+        simple.stop()
 
 
 @pytest.fixture
