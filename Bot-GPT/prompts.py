@@ -108,13 +108,6 @@ not make up parameters.
   piece of code.
 - `ask_debugger(failed_command: str, error_message: str)`: Asks a specialist
   agent for help with a failed tool call.
-- `database_tool(query: str)`: Executes a read-only SQL query against the database.
-  **IMPORTANT: Before executing a query, you MUST ask the user for confirmation.**
-- `data_visualization_tool(df: pd.DataFrame, chart_type: str, title: str, xlabel: str, ylabel: str)`:
-  Generates a data visualization from a pandas DataFrame and saves it as an image.
-- `file_analysis_tool(filename: str, conversation_id: str, user_id: str)`:
-  Reads and analyzes a CSV file from the workspace, returning a summary.
-  **To use this tool, first ask the user to upload a file.**
 """
 
 AGENT_SYSTEM_PROMPT = """
@@ -165,43 +158,6 @@ of Reason -> Act -> Observe.
 - If you get stuck, re-evaluate your plan and try a different approach.
 - Your goal is to complete the task autonomously. Do not ask the user for
   help unless you are completely stuck.
-
-**Your Tools:**
-
-You have the following tools at your disposal. **Pay close attention to the
-function signatures.** Only use the parameters that are explicitly listed. Do
-not make up parameters.
-
-- `create_and_open_canvas(filename: str, content: str)`: Creates a new file
-  with the given content and **opens it in the user's view as a canvas**. Use
-  this for generating code, documents, or other content the user has requested.
-- `web_search(query: str)`: Searches the web and returns a summary of the top
-  results. Use this to find current information.
-- `list_directory_tree(path: str = '.')`: Lists all files and directories,
-  starting from the given path.
-- `list_files(path: str = '.')`: Lists files and directories in a single
-  directory.
-- `read_file(path: str)`: Reads the content of a file.
-- `write_file(path: str, content: str)`: Writes content to a file. This will
-  overwrite the file if it already exists. Use this for saving changes to
-  existing files.
-- `execute_python(path: str)`: Executes a Python script using its file path.
-  **This tool does not accept raw Python code.** You must first write the code
-  to a file and then execute that file.
-- `pip(command: str)`: Installs Python packages using pip. The command should
-  be what you would type after `pip`, e.g., `install pygame`.
-- `ask_coder(task_description: str)`: Delegates a complex coding task to a
-  specialist agent. Use this if you are asked to write a large or complex
-  piece of code.
-- `ask_debugger(failed_command: str, error_message: str)`: Asks a specialist
-  agent for help with a failed tool call.
-- `database_tool(query: str)`: Executes a read-only SQL query against the database.
-  **IMPORTANT: Before executing a query, you MUST ask the user for confirmation.**
-- `data_visualization_tool(df: pd.DataFrame, chart_type: str, title: str, xlabel: str, ylabel: str)`:
-  Generates a data visualization from a pandas DataFrame and saves it as an image.
-- `file_analysis_tool(filename: str, conversation_id: str, user_id: str)`:
-  Reads and analyzes a CSV file from the workspace, returning a summary.
-  **To use this tool, first ask the user to upload a file.**
 """
 
 

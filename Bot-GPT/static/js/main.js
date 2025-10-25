@@ -202,7 +202,17 @@ async function initializeApp(username) {
                     showToolCall(currentAgentBubble, data.name, data.params);
                     break;
                 case 'tool_result':
-                    updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
+                    if (data.result && data.result.type === 'visualization') {
+                        const img = document.createElement('img');
+                        img.src = data.result.path;
+                        img.className = 'w-full h-auto rounded-lg mt-2';
+                        const answerContent = currentAgentBubble.querySelector('.answer-content');
+                        answerContent.appendChild(img);
+                        answerContent.style.display = 'block';
+                        updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
+                    } else {
+                        updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
+                    }
                     break;
                 case 'tool_error':
                     updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);

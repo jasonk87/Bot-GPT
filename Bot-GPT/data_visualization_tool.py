@@ -42,4 +42,4 @@ def data_visualization_tool(df: pd.DataFrame, chart_type: str, title: str, xlabe
     plt.savefig(filepath)
     plt.close()
 
-    return f"/static/visualizations/{filename}"
+    return {"type": "visualization", "path": f"/static/visualizations/{filename}"}
