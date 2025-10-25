@@ -102,14 +102,17 @@ def client(app):
 
 @pytest.fixture
 def db(app):
-    """A fixture to provide the database session for tests."""
+    """A fixture to provide the database session for tests, with proper setup and teardown."""
     with app.app_context():
+        _db.create_all()
         yield _db
-
+        _db.session.remove()
+        _db.drop_all()
 
 @pytest.fixture
 def test_user(db):
-    """Create a test user."""
+    """Create a test user, ensuring the database is clean."""
+    # The db fixture now handles setup and teardown, so we can just create the user
     user = User(id=1, username='testuser')
     user.set_password('password')
     db.session.add(user)
