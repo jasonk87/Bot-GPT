@@ -1,5 +1,4 @@
 pytest
 pytest-flask
-pytest-playwright
 pytest-mock
 flake8

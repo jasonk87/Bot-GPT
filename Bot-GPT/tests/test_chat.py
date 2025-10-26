@@ -101,7 +101,6 @@ def test_agent_mode_with_stop(app, test_user, socketio, mocker):
         client.disconnect()
 
 
-@pytest.mark.xfail(reason="This test is flaky and fails intermittently. It needs to be refactored to be more robust.")
 def test_plan_visualization_events(app, socketio, test_user):
     """
     Tests that the plan visualization tools emit the correct Socket.IO events.
@@ -109,22 +108,29 @@ def test_plan_visualization_events(app, socketio, test_user):
     from tools import set_plan
     convo_id = "plan_test_convo"
 
-    with app.test_client() as http_client:
-        http_client.post('/login', json={'username': 'testuser', 'password': 'password'})
-        client = socketio.test_client(app, flask_test_client=http_client)
+    with app.test_request_context('/'):
+        login_user(test_user)
+        client = socketio.test_client(app)
+        assert client.is_connected()
 
-    client.emit('join', {'room': convo_id})
-    client.get_received()
-    socketio.sleep(1)
+        client.emit('join', {'room': convo_id})
 
-    plan_steps = ["Step 1", "Step 2"]
-    set_plan(steps=plan_steps, conversation_id=convo_id)
-    socketio.sleep(1)
+        plan_steps = ["Step 1", "Step 2"]
+        set_plan(steps=plan_steps, conversation_id=convo_id)
 
-    received = client.get_received()
-    assert len(received) > 0
-    assert received[0]['name'] == 'plan_updated'
-    assert received[0]['args'][0]['steps'] == plan_steps
+        # Poll for the event with a timeout
+        import time
+        start_time = time.time()
+        received = []
+        while time.time() - start_time < 5:
+            received = client.get_received()
+            if any(e['name'] == 'plan_updated' for e in received):
+                break
+            socketio.sleep(0.1)
 
-    if client.is_connected():
+        assert any(e['name'] == 'plan_updated' for e in received), "Did not receive 'plan_updated' event."
+
+        plan_update_event = next(e for e in received if e['name'] == 'plan_updated')
+        assert plan_update_event['args'][0]['steps'] == plan_steps
+
         client.disconnect()
