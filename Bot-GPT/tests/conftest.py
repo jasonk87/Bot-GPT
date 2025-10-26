@@ -10,14 +10,18 @@ import pytest
 from unittest import mock
 
 from app import create_app
+
+@pytest.fixture(scope="session")
+def base_url(live_server):
+    return live_server.url()
 from extensions import db as _db, socketio as _socketio
 from models import User
 
 
-@pytest.fixture(scope='function')
-def app(tmp_path):
+@pytest.fixture(scope='session')
+def app(tmp_path_factory):
     """Create and configure a new app instance for each test."""
-    db_path = tmp_path / "test.db"
+    db_path = tmp_path_factory.mktemp("data") / "test.db"
     app = create_app()
     app.config.update({
         "TESTING": True,
@@ -100,7 +104,7 @@ def client(app):
         yield client
 
 
-@pytest.fixture
+@pytest.fixture(scope='session')
 def db(app):
     """A fixture to provide the database session for tests, with proper setup and teardown."""
     with app.app_context():
@@ -109,10 +113,13 @@ def db(app):
         _db.session.remove()
         _db.drop_all()
 
-@pytest.fixture
+@pytest.fixture(scope='function')
 def test_user(db):
     """Create a test user, ensuring the database is clean."""
-    # The db fixture now handles setup and teardown, so we can just create the user
+    # Clean up the User table before creating a new user
+    db.session.query(User).delete()
+    db.session.commit()
+
     user = User(id=1, username='testuser')
     user.set_password('password')
     db.session.add(user)

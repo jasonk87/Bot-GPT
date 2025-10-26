@@ -70,7 +70,7 @@ def handle_ai_response(data):
                     yield {"type": "assistant_chunk", "content": chunk}
             except requests.exceptions.ConnectionError as e:
                 yield {"type": "agent_error", "error": f"Could not connect to Ollama: {e}"}
-                return  # Stop execution and proceed to finally block
+                break
 
             assistant_message['content'] = full_response_content
             messages.append(assistant_message)
@@ -123,18 +123,17 @@ def handle_chat_message(data):
         return
 
     emit('ai_response', {"type": "user_message", "content": last_user_message}, room=room, include_self=False)
-
+    done_sent = False
     try:
         for event in handle_ai_response(data):
             emit('ai_response', event, room=room)
+            if event.get('type') == 'done':
+                done_sent = True
     except Exception as exc:
-        # It's good practice to log the exception on the server
-        print(f"An error occurred during chat handling: {exc}")
-        # Inform the client about the error
         emit('ai_response', {"type": "agent_error", "error": str(exc)}, room=room)
     finally:
-        # Ensure the 'done' event is always sent to the client
-        emit('ai_response', {"type": "done"}, room=room)
+        if not done_sent:
+            emit('ai_response', {"type": "done"}, room=room)
 
 
 @socketio.on('join')

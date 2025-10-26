@@ -34,9 +34,13 @@ let isAgentRunning = false;
 let stopBtnListener = null;
 let isCanvasMode = false;
 let currentAgentBubble = null;
-let fullAgentResponse = "";
 let currentResponseContent = "";
 let lastOpenedCanvasPath = null;
+
+// New variables for throttled rendering
+const RENDER_THROTTLE_MS = 100; // Render every 100ms
+let responseBuffer = "";
+let renderInterval = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
     const response = await fetch(`${window.location.origin}/check_auth`);
@@ -183,9 +187,10 @@ async function initializeApp(username) {
                     planStepContent.textContent = `${data.step_number}. ${data.step_description}`;
                     break;
                 case 'assistant_chunk':
-                    // This is the main event for streaming content
-                    currentResponseContent += data.content;
-                    updateBotBubble(currentAgentBubble, currentResponseContent, false);
+                    responseBuffer += data.content;
+                    if (!renderInterval) {
+                        renderInterval = setInterval(renderBufferedResponse, RENDER_THROTTLE_MS);
+                    }
                     break;
                 case 'assistant_end':
                     // This signals the end of a single thought-act-observe loop from the AI
@@ -216,6 +221,10 @@ async function initializeApp(username) {
                     break;
                 case 'done':
                     // The 'done' event now signifies the absolute end of the agent's work.
+                    clearInterval(renderInterval);
+                    renderInterval = null;
+                    renderBufferedResponse(); // Final render
+                    updateBotBubble(currentAgentBubble, currentResponseContent, true); // Ensure final state is highlighted
                     setAgentRunning(false);
                     const conversationItem = document.querySelector(`.conversation-item[data-id='${currentConversationId}'] .truncate`);
                     if (conversationItem && data.title) {
@@ -225,6 +234,8 @@ async function initializeApp(username) {
                     currentResponseContent = "";
                     break;
                 case 'agent_error':
+                    clearInterval(renderInterval);
+                    renderInterval = null;
                     if (currentAgentBubble) {
                         const answerContent = currentAgentBubble.querySelector('.answer-content');
                         const agentStatus = currentAgentBubble.querySelector('.agent-status');
@@ -469,6 +480,14 @@ async function initializeApp(username) {
     const canvasPanel = document.getElementById('canvas-panel');
 
     let isResizing = false;
+
+    function renderBufferedResponse() {
+        if (responseBuffer.length > 0) {
+            currentResponseContent += responseBuffer;
+            responseBuffer = "";
+            updateBotBubble(currentAgentBubble, currentResponseContent, false);
+        }
+    }
 
     if (resizer) {
         resizer.addEventListener('mousedown', (e) => {
