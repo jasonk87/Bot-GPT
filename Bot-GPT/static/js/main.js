@@ -224,11 +224,21 @@ async function initializeApp(username) {
                     }
                     break;
                 case 'tool_result':
-                     // The final result event now just confirms completion.
-                     // The content is already streamed.
+                    // The final result event now just confirms completion.
+                    // The content is already streamed.
+                    const finalToolOutputEl = document.querySelector(`.tool-output[data-tool-id="${data.tool_call_id}"]`);
+                    if (finalToolOutputEl) {
+                        const indicator = finalToolOutputEl.parentElement.querySelector('.tool-streaming-indicator');
+                        if (indicator) indicator.style.display = 'none';
+                    }
                     updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
                     break;
                 case 'tool_error':
+                    const errorToolOutputEl = document.querySelector(`.tool-output[data-tool-id="${data.tool_call_id}"]`);
+                    if (errorToolOutputEl) {
+                        const indicator = errorToolOutputEl.parentElement.querySelector('.tool-streaming-indicator');
+                        if (indicator) indicator.style.display = 'none';
+                    }
                     updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);
                     break;
                 case 'final_answer':
@@ -1054,14 +1064,19 @@ function createBotMessageContainer(animate = true) {
             </div>
             <div class="tool-activity" style="display: none;">
                 <div class="tool-activity-header">
-                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l-4 4-4-4 4-4"></path></svg>
+                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
                     <span class="font-semibold tool-header-text">Tool Call</span>
                 </div>
                 <div class="tool-activity-body">
                     <div class="font-mono text-xs text-gray-400 mb-1">Parameters:</div>
                     <pre class="tool-params bg-gray-900 p-2 rounded text-xs mb-2"></pre>
-                    <div class="font-mono text-xs text-gray-400 mb-1">Output:</div>
-                    <pre class="tool-output bg-black p-2 rounded text-xs whitespace-pre-wrap"></pre>
+                    <div class="flex items-center font-mono text-xs text-gray-400 mb-1">
+                        <span>Output:</span>
+                        <div class="tool-streaming-indicator ml-2">
+                            <span></span><span></span><span></span>
+                        </div>
+                    </div>
+                    <pre class="tool-output bg-black p-2 rounded text-xs whitespace-pre-wrap max-h-64 overflow-y-auto"></pre>
                 </div>
             </div>
             <div class="answer-content prose prose-invert max-w-none" style="display: none;"></div>
@@ -1166,10 +1181,14 @@ function showToolCall(bubbleElement, toolName, toolParams, toolCallId) {
     const toolHeaderEl = toolActivity.querySelector('.tool-header-text');
     const toolParamsEl = toolActivity.querySelector('.tool-params');
     const toolOutputEl = toolActivity.querySelector('.tool-output');
+    const streamingIndicator = toolActivity.querySelector('.tool-streaming-indicator');
 
     agentStatus.style.display = 'none';
     answerContent.style.display = 'none';
     toolActivity.style.display = 'block';
+
+    // Make sure the indicator is visible when the tool call starts
+    if (streamingIndicator) streamingIndicator.style.display = 'flex';
 
     toolHeaderEl.textContent = `Action: ${toolName}`;
     toolParamsEl.textContent = JSON.stringify(toolParams, null, 2);
