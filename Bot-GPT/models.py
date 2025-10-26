@@ -1,3 +1,4 @@
+from datetime import datetime
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 from extensions import db
@@ -61,7 +62,28 @@ class Conversation(db.Model):
         back_populates='conversation',
         cascade="all, delete-orphan"
     )
+    messages = db.relationship(
+        'Message',
+        back_populates='conversation',
+        cascade="all, delete-orphan",
+        order_by='Message.timestamp'
+    )
 
     def is_participant(self, user_id):
         """Check if a user is a participant in the conversation."""
         return any(p.user_id == user_id for p in self.participants)
+
+
+class Message(db.Model):
+    """Message model for storing chat history."""
+    id = db.Column(db.Integer, primary_key=True)
+    conversation_id = db.Column(
+        db.String, db.ForeignKey('conversation.id'), nullable=False
+    )
+    role = db.Column(db.String(50), nullable=False)  # 'user' or 'assistant'
+    content = db.Column(db.Text, nullable=False)
+    timestamp = db.Column(
+        db.DateTime, nullable=False, default=datetime.utcnow
+    )
+
+    conversation = db.relationship('Conversation', back_populates='messages')

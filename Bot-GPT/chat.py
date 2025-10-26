@@ -7,7 +7,7 @@ from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
 from flask_socketio import emit, join_room, leave_room
 from extensions import db, socketio
-from models import Conversation, ConversationParticipant
+from models import Conversation, ConversationParticipant, Message
 from tools import call_ollama_chat_stream, handle_tool_call
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
 
@@ -17,26 +17,42 @@ AGENT_SESSIONS = {}
 
 def initialize_chat(data):
     """Initializes a chat session, loading messages and settings."""
-    try:
-        messages_str = data.get('messages', '[]')
-        messages = json.loads(messages_str)
-    except (json.JSONDecodeError, TypeError):
-        raise ValueError("Invalid 'messages' format")
+    conversation_id = data.get('conversation_id')
+
+    if conversation_id:
+        conversation = Conversation.query.get(conversation_id)
+        if not conversation or not conversation.is_participant(current_user.id):
+            raise ValueError("Conversation not found or you don't have access.")
+
+        # Load messages from DB
+        messages = [{"role": m.role, "content": m.content} for m in conversation.messages]
+
+        # Append the latest user message from the frontend
+        try:
+            latest_messages = json.loads(data.get('messages', '[]'))
+            if latest_messages:
+                messages.append(latest_messages[-1])
+        except (json.JSONDecodeError, TypeError):
+            pass # Ignore if messages are not valid JSON
+
+    else: # New conversation
+        conversation_id = str(int(time.time() * 1000))
+        conversation = Conversation(id=conversation_id, title="New Chat", owner_id=current_user.id)
+        db.session.add(conversation)
+        participant = ConversationParticipant(user_id=current_user.id, conversation_id=conversation_id, role='owner')
+        db.session.add(participant)
+        db.session.commit()
+
+        try:
+            messages = json.loads(data.get('messages', '[]'))
+        except (json.JSONDecodeError, TypeError):
+            messages = []
 
     model = data.get('model') or current_user.selected_model
     persona_key = current_user.selected_persona or 'default'
     system_prompt = PERSONAS.get(persona_key, {}).get('prompt', DEFAULT_SYSTEM_PROMPT)
     if data.get('agent_mode', False):
         system_prompt = AGENT_SYSTEM_PROMPT
-
-    conversation_id = data.get('conversation_id') or str(int(time.time() * 1000))
-    conversation = Conversation.query.get(conversation_id)
-    if not conversation:
-        conversation = Conversation(id=conversation_id, title="New Chat", owner_id=current_user.id)
-        db.session.add(conversation)
-        participant = ConversationParticipant(user_id=current_user.id, conversation_id=conversation_id, role='owner')
-        db.session.add(participant)
-        db.session.commit()
 
     return messages, model, system_prompt, conversation
 
@@ -106,7 +122,19 @@ def handle_ai_response(data):
         yield from process_final_answer(messages, conversation, data.get('canvas_mode', False))
 
     update_conversation_title(conversation, messages)
-    save_conversation_history(conversation, messages)
+
+    # Save the final user and assistant messages to the database
+    for msg in messages:
+        # Avoid saving duplicate messages if they already exist in the db
+        if not Message.query.filter_by(conversation_id=conversation.id, role=msg['role'], content=msg['content']).first():
+            new_message = Message(
+                conversation_id=conversation.id,
+                role=msg['role'],
+                content=msg['content']
+            )
+            db.session.add(new_message)
+    db.session.commit()
+
     yield {"type": "done", "title": conversation.title}
 
 @socketio.on('chat_message')
@@ -198,14 +226,6 @@ def update_conversation_title(conversation, messages):
             print(f"Could not auto-generate title: {e}")
 
 
-def save_conversation_history(conversation, messages):
-    """Saves the conversation history to a JSON file."""
-    db.session.commit()
-    conversation_path = os.path.join(current_app.config['USER_DATA_DIR'], str(conversation.owner_id), 'conversations', f"{conversation.id}.json")
-    os.makedirs(os.path.dirname(conversation_path), exist_ok=True)
-    with open(conversation_path, 'w', encoding='utf-8') as f:
-        json.dump({"messages": messages, "title": conversation.title}, f, indent=2)
-
 @socketio.on('stop_agent')
 @login_required
 def handle_stop_agent(data):
@@ -214,6 +234,44 @@ def handle_stop_agent(data):
     if conversation_id and conversation_id in AGENT_SESSIONS:
         AGENT_SESSIONS[conversation_id]["stop_requested"] = True
         emit('ai_response', {"type": "agent_error", "error": "Stop signal received. Attempting to halt..."})
+
+@socketio.on('load_conversations')
+@login_required
+def load_conversations():
+    """Loads all conversations for the current user."""
+    participants = ConversationParticipant.query.filter_by(user_id=current_user.id).all()
+    conversations = []
+    for p in participants:
+        conversations.append({
+            "id": p.conversation.id,
+            "title": p.conversation.title,
+            "role": p.role
+        })
+    emit('conversations_loaded', conversations)
+
+@socketio.on('load_conversation')
+@login_required
+def load_conversation(data):
+    """Loads a specific conversation's messages."""
+    conversation_id = data.get('conversation_id')
+    conversation = Conversation.query.filter_by(id=conversation_id).first()
+
+    if conversation and conversation.is_participant(current_user.id):
+        messages = [{
+            "role": msg.role,
+            "content": msg.content
+        } for msg in conversation.messages]
+
+        participant = ConversationParticipant.query.filter_by(
+            user_id=current_user.id,
+            conversation_id=conversation_id
+        ).first()
+
+        emit('conversation_loaded', {
+            "id": conversation.id,
+            "messages": messages,
+            "role": participant.role if participant else 'participant'
+        })
 
 @chat.route('/api/settings', methods=['GET'])
 @login_required

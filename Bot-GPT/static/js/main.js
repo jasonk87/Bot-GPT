@@ -304,6 +304,14 @@ async function initializeApp(username) {
         updateParticipantList(data.participants);
     });
 
+    socket.on('conversations_loaded', (conversations) => {
+        populateConversations(conversations);
+    });
+
+    socket.on('conversation_loaded', (data) => {
+        loadConversation(data);
+    });
+
     function updateParticipantList(participants) {
         if (!participantList) return;
         participantList.innerHTML = ''; // Clear the list
@@ -453,7 +461,7 @@ async function initializeApp(username) {
     await populateModels();
     await loadUserSettings();
     await populateFileExplorer();
-    await populateConversations();
+    socket.emit('load_conversations');
 
     // --- Resizer Logic ---
     const resizer = document.getElementById('resizer');
@@ -1177,119 +1185,109 @@ function addConversationToList(id, title) {
     item.classList.add('active');
 }
 
-async function populateConversations() {
-    try {
-        const response = await fetch(`${window.location.origin}${API_BASE}/conversations`);
-        const convos = await response.json();
-        conversationList.innerHTML = '';
-        convos.forEach(convo => {
-            const item = document.createElement('div');
-            const isActive = convo.id === currentConversationId;
-            item.className = `conversation-item item-hover group flex justify-between items-center p-2 rounded-md cursor-pointer hover:bg-gray-700 ${isActive ? 'active' : ''}`;
-            item.dataset.id = convo.id;
+function populateConversations(convos) {
+    conversationList.innerHTML = '';
+    convos.forEach(convo => {
+        const item = document.createElement('div');
+        const isActive = convo.id === currentConversationId;
+        item.className = `conversation-item item-hover group flex justify-between items-center p-2 rounded-md cursor-pointer hover:bg-gray-700 ${isActive ? 'active' : ''}`;
+        item.dataset.id = convo.id;
 
-                    let buttons = '';
-                    if (convo.role === 'owner') {
-                        buttons = `<button class="share-btn p-1 text-gray-400 hover:text-white" title="Share">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12s-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6.002l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.368a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z"></path></svg>
-                                   </button>
-                                   <button class="delete-btn p-1 text-gray-400 hover:text-white" title="Delete">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                   </button>`;
-                    }
-                    item.innerHTML = `<span class="truncate flex-1">${convo.title}</span><div class="flex items-center">${buttons}</div>`;
+        let buttons = '';
+        if (convo.role === 'owner') {
+            buttons = `<button class="share-btn p-1 text-gray-400 hover:text-white" title="Share">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12s-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6.002l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.368a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z"></path></svg>
+                               </button>
+                               <button class="delete-btn p-1 text-gray-400 hover:text-white" title="Delete">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                               </button>`;
+        }
+        item.innerHTML = `<span class="truncate flex-1">${convo.title}</span><div class="flex items-center">${buttons}</div>`;
 
-            item.addEventListener('click', () => {
-                if (!isActive && !isAgentRunning) loadConversation(convo.id);
+        item.addEventListener('click', () => {
+            if (!isActive && !isAgentRunning) {
+                socket.emit('load_conversation', { conversation_id: convo.id });
+            }
+        });
+
+        if (convo.role === 'owner') {
+            item.querySelector('.share-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                openShareModal(convo.id);
             });
+            item.querySelector('.delete-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                confirmDeletion(convo.id, 'conversation', 'conversation');
+            });
+        }
+        conversationList.appendChild(item);
+    });
+}
 
-                    if (convo.role === 'owner') {
-                        item.querySelector('.share-btn').addEventListener('click', (e) => {
-                            e.stopPropagation();
-                            openShareModal(convo.id);
-                        });
-                        item.querySelector('.delete-btn').addEventListener('click', (e) => {
-                            e.stopPropagation();
-                            confirmDeletion(convo.id, 'conversation', 'conversation');
-                        });
+async function openShareModal(conversationId) {
+    shareModal.classList.remove('hidden');
+    shareUserList.innerHTML = '<p>Loading users...</p>';
+    try {
+        const response = await fetch(`${window.location.origin}${API_BASE}/users`);
+        const users = await response.json();
+        if (users.length === 0) {
+            shareUserList.innerHTML = '<p>No other users to share with.</p>';
+            return;
+        }
+        shareUserList.innerHTML = '';
+        users.forEach(user => {
+            const userItem = document.createElement('div');
+            userItem.className = 'p-2 hover:bg-gray-700 cursor-pointer rounded';
+            userItem.textContent = user.username;
+            userItem.addEventListener('click', async () => {
+                try {
+                    const shareResponse = await fetch(`${window.location.origin}${API_BASE}/conversation/${conversationId}/share`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ user_id: user.id }),
+                    });
+                    const data = await shareResponse.json();
+                    if (shareResponse.ok) {
+                        alert(`Conversation shared with ${user.username}`);
+                        shareModal.classList.add('hidden');
+                    } else {
+                        throw new Error(data.message || 'Failed to share conversation');
                     }
-            conversationList.appendChild(item);
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                }
+            });
+            shareUserList.appendChild(userItem);
         });
     } catch (error) {
-        console.error("Failed to populate conversations:", error);
+        shareUserList.innerHTML = `<p class="text-red-400">Could not load users: ${error.message}</p>`;
     }
 }
 
-        async function openShareModal(conversationId) {
-            shareModal.classList.remove('hidden');
-            shareUserList.innerHTML = '<p>Loading users...</p>';
-            try {
-                const response = await fetch(`${window.location.origin}${API_BASE}/users`);
-                const users = await response.json();
-                if (users.length === 0) {
-                    shareUserList.innerHTML = '<p>No other users to share with.</p>';
-                    return;
-                }
-                shareUserList.innerHTML = '';
-                users.forEach(user => {
-                    const userItem = document.createElement('div');
-                    userItem.className = 'p-2 hover:bg-gray-700 cursor-pointer rounded';
-                    userItem.textContent = user.username;
-                    userItem.addEventListener('click', async () => {
-                        try {
-                            const shareResponse = await fetch(`${window.location.origin}${API_BASE}/conversation/${conversationId}/share`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ user_id: user.id }),
-                            });
-                            const data = await shareResponse.json();
-                            if (shareResponse.ok) {
-                                alert(`Conversation shared with ${user.username}`);
-                                shareModal.classList.add('hidden');
-                            } else {
-                                throw new Error(data.message || 'Failed to share conversation');
-                            }
-                        } catch (error) {
-                            alert(`Error: ${error.message}`);
-                        }
-                    });
-                    shareUserList.appendChild(userItem);
-                });
-            } catch (error) {
-                shareUserList.innerHTML = `<p class="text-red-400">Could not load users: ${error.message}</p>`;
-            }
-        }
-
-async function loadConversation(id) {
+function loadConversation(data) {
     if (currentConversationId) {
-        socket.emit('leave', {room: currentConversationId});
+        socket.emit('leave', { room: currentConversationId });
     }
-    try {
-        const response = await fetch(`${window.location.origin}${API_BASE}/conversation/${id}`);
-        const data = await response.json();
-        currentConversationId = id;
-                currentConversationRole = data.role;
-        chatContainer.innerHTML = '';
-        welcomeMessage.style.display = 'none';
+    currentConversationId = data.id;
+    currentConversationRole = data.role;
+    chatContainer.innerHTML = '';
+    welcomeMessage.style.display = 'none';
 
-        conversationHistory = data.messages || [];
-        // Re-render history
-        conversationHistory.forEach(msg => {
-            if (msg.role === 'user') {
-                appendMessage(msg.content, 'user', false);
-            } else if (msg.role === 'assistant') {
-                const botBubble = createBotMessageContainer(false);
-                updateBotBubble(botBubble, msg.content, true);
-            }
-        });
+    conversationHistory = data.messages || [];
+    // Re-render history
+    conversationHistory.forEach(msg => {
+        if (msg.role === 'user') {
+            appendMessage(msg.content, 'user', false);
+        } else if (msg.role === 'assistant') {
+            const botBubble = createBotMessageContainer(false);
+            updateBotBubble(botBubble, msg.content, true);
+        }
+    });
 
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-        socket.emit('join', {room: id});
-        await populateFileExplorer();
-        await populateConversations();
-    } catch (error) {
-        console.error("Error loading conversation:", error);
-    }
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+    socket.emit('join', { room: data.id });
+    populateFileExplorer();
+    socket.emit('load_conversations'); // To update the active state
 }
 
 function smartScroll(element) {
@@ -1310,7 +1308,7 @@ function smartScroll(element) {
 function startNewChat() {
     if (isAgentRunning) return;
     currentConversationId = null;
-            currentConversationRole = 'owner';
+    currentConversationRole = 'owner';
     conversationHistory = [];
     chatContainer.innerHTML = '';
     welcomeMessage.style.display = 'flex';
@@ -1318,7 +1316,7 @@ function startNewChat() {
     planPanel.classList.add('hidden');
     planPanel.classList.remove('flex');
     populateFileExplorer();
-    populateConversations();
+    socket.emit('load_conversations'); // To update active state
 }
 
 function appendMessage(text, sender, animate = true) {
