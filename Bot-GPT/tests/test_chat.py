@@ -56,62 +56,49 @@ def test_full_chat_with_tool_call(app, test_user, mocker):
         assert events[7]["title"] == "List Files"
 
 
-def test_agent_mode_with_stop(app, db, test_user, socketio, mocker):
+def test_agent_mode_with_stop(app, test_user, socketio, mocker):
     """
     Tests that the stop_agent event correctly updates the agent's state.
     """
     from chat import AGENT_SESSIONS
     convo_id = "stop_test_convo"
-
-    is_running_event = threading.Event()
-    assertion_complete_event = threading.Event()
+    agent_stop_processed = threading.Event()
 
     def mock_handle_ai_response(*args, **kwargs):
         AGENT_SESSIONS[convo_id] = {"stop_requested": False}
-        is_running_event.set()
-
-        # Wait for the stop signal from the main thread
-        while not AGENT_SESSIONS[convo_id]["stop_requested"]:
+        while not AGENT_SESSIONS.get(convo_id, {}).get("stop_requested"):
             socketio.sleep(0.01)
 
-        # Now wait for the main thread to finish its assertion
-        assertion_complete_event.wait(timeout=2)
-
-        # Clean up
         if convo_id in AGENT_SESSIONS:
             del AGENT_SESSIONS[convo_id]
-        yield {"type": "done", "title": "Stopped Task"}
+        agent_stop_processed.set()
+        yield {"type": "done"}
 
     mocker.patch("chat.handle_ai_response", side_effect=mock_handle_ai_response)
 
-    with app.test_client() as http_client:
-        http_client.post('/login', json={'username': 'testuser', 'password': 'password'})
-        client = socketio.test_client(app, flask_test_client=http_client)
+    with app.test_request_context('/'):
+        login_user(test_user)
+        client = socketio.test_client(app)
+        assert client.is_connected()
 
-    chat_thread = threading.Thread(target=client.emit, args=("chat_message", {
-        "messages": json.dumps([{"role": "user", "content": "do a long task"}]),
-        "model": "test-model", "agent_mode": True, "conversation_id": convo_id
-    }))
-    chat_thread.start()
+        def run_chat():
+            with app.test_request_context('/'):
+                login_user(test_user)
+                client.emit("chat_message", {
+                    "messages": json.dumps([{"role": "user", "content": "do a long task"}]),
+                    "model": "test-model", "agent_mode": True, "conversation_id": convo_id
+                })
 
-    try:
-        assert is_running_event.wait(timeout=5), "Agent did not start."
-        assert convo_id in AGENT_SESSIONS
-
-        client.emit("stop_agent", {"conversation_id": convo_id})
+        socketio.start_background_task(run_chat)
         socketio.sleep(0.1)
 
-        assert AGENT_SESSIONS.get(convo_id, {}).get("stop_requested") is True
+        assert convo_id in AGENT_SESSIONS, "Agent session was not created."
+        client.emit("stop_agent", {"conversation_id": convo_id})
 
-    finally:
-        assertion_complete_event.set()
-        chat_thread.join(timeout=5)
-        assert not chat_thread.is_alive(), "Chat thread did not terminate."
+        assert agent_stop_processed.wait(timeout=5), "Agent did not process the stop signal."
+        assert convo_id not in AGENT_SESSIONS, "Agent session was not cleaned up."
 
-        if client.is_connected():
-            client.disconnect()
-
-        assert convo_id not in AGENT_SESSIONS
+        client.disconnect()
 
 
 @pytest.mark.xfail(reason="This test is flaky and fails intermittently. It needs to be refactored to be more robust.")
