@@ -84,8 +84,16 @@ def handle_ai_response(data):
             if not tool_match:
                 break
 
+            tool_call_id = f"tool_{int(time.time() * 1000)}"
             try:
                 tool_call = json.loads(tool_match.group(1))
+                yield {
+                    "type": "tool_call",
+                    "tool_call_id": tool_call_id,
+                    "name": tool_call.get("tool"),
+                    "params": tool_call.get("parameters")
+                }
+
                 tool_result, _ = handle_tool_call(tool_call, conversation, current_user)
 
                 if isinstance(tool_result, dict):
@@ -97,11 +105,11 @@ def handle_ai_response(data):
 
                 tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
                 messages.append({"role": "user", "content": tool_response_message})
-                yield {"type": "tool_result", "result": tool_result}
+                yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": tool_result}
             except Exception as e:
                 error_message = f"Error processing tool: {e}"
                 messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
-                yield {"type": "tool_error", "error": error_message}
+                yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": error_message}
     finally:
         if conversation.id in AGENT_SESSIONS:
             del AGENT_SESSIONS[conversation.id]

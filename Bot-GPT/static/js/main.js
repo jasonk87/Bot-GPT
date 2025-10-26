@@ -197,15 +197,13 @@ async function initializeApp(username) {
                     currentResponseContent = "";
                     break;
                 case 'tool_call':
-                     // A tool call is part of the assistant's response, so we display it.
-                    updateBotBubble(currentAgentBubble, currentResponseContent, true);
-                    showToolCall(currentAgentBubble, data.name, data.params);
+                    showToolCall(currentAgentBubble, data.name, data.params, data.tool_call_id);
                     break;
                 case 'tool_result':
-                    updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
+                    updateToolCallResult(currentAgentBubble, data.tool_call_id, data.result, false);
                     break;
                 case 'tool_error':
-                    updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);
+                    updateToolCallResult(currentAgentBubble, data.tool_call_id, data.error, true);
                     break;
                 case 'final_answer':
                     // This is now the definitive final answer from the agent.
@@ -1029,24 +1027,18 @@ function createBotMessageContainer(animate = true) {
                     <span></span><span></span><span></span>
                 </div>
             </div>
-            <div class="tool-activity" style="display: none;">
-                <div class="tool-activity-header">
-                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l-4 4-4-4 4-4"></path></svg>
-                            <span class="font-semibold tool-header-text">Tool Call</span>
-                </div>
-                <div class="tool-activity-body">
-                    <pre class="tool-params bg-gray-900 p-2 rounded text-xs"></pre>
-                </div>
+            <div class="tool-calls-container">
+                <!-- Tool call UIs will be injected here -->
             </div>
             <div class="answer-content prose prose-invert max-w-none" style="display: none;"></div>
         </div>`;
     chatContainer.appendChild(botMessageWrapper);
 
-            const thinkingHeader = botMessageWrapper.querySelector('.thinking-header');
-            const thinkingContent = botMessageWrapper.querySelector('.thinking-content');
-            thinkingHeader.addEventListener('click', () => {
-                thinkingContent.style.display = thinkingContent.style.display === 'none' ? 'block' : 'none';
-            });
+    const thinkingHeader = botMessageWrapper.querySelector('.thinking-header');
+    const thinkingContent = botMessageWrapper.querySelector('.thinking-content');
+    thinkingHeader.addEventListener('click', () => {
+        thinkingContent.style.display = thinkingContent.style.display === 'none' ? 'block' : 'none';
+    });
 
     smartScroll(chatContainer);
     return botMessageWrapper;
@@ -1059,13 +1051,11 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     const thinkingContentEl = thinkingContainer.querySelector('.thinking-content');
     const answerContent = bubbleElement.querySelector('.answer-content');
     const agentStatus = bubbleElement.querySelector('.agent-status');
-    const toolActivity = bubbleElement.querySelector('.tool-activity');
+    const toolCallsContainer = bubbleElement.querySelector('.tool-calls-container');
 
-    // Extract thought content
     const thinkMatch = responseContent.match(/<think>([\s\S]*?)<\/think>/);
     const thinkContent = thinkMatch ? thinkMatch[1] : null;
 
-    // Extract conversational content (everything outside think and tool blocks)
     const conversationalContent = responseContent
         .replace(/<think>[\s\S]*?<\/think>/g, '')
         .replace(/```json\s*([\s\S]*?)\s*```/g, '')
@@ -1075,11 +1065,8 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
         thinkingContainer.style.display = 'block';
         thinkingContentEl.innerHTML = marked.parse(thinkContent);
         smartScroll(thinkingContentEl);
-    } else {
-        // Hide it only if we are in a final state, otherwise it might just not have arrived yet
-        if (isFinal) {
-            thinkingContainer.style.display = 'none';
-        }
+    } else if (isFinal) {
+        thinkingContainer.style.display = 'none';
     }
 
     if (conversationalContent) {
@@ -1088,18 +1075,14 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
         answerContent.innerHTML = marked.parse(conversationalContent);
     } else {
         answerContent.style.display = 'none';
-        // If there's no conversational content yet, and no tool is active, show the "thinking" status
-        if ((!toolActivity.style.display || toolActivity.style.display === 'none') && !isFinal) {
+        if (toolCallsContainer.children.length === 0 && !isFinal) {
              agentStatus.style.display = 'block';
         }
     }
 
     if (isFinal) {
-        // Hide the main thinking indicator when the turn is truly over
         agentStatus.style.display = 'none';
-        if (!conversationalContent && !thinkContent) {
-            // If there's no content at all in the end, don't show an empty bubble.
-            // This can happen if the AI only calls a tool.
+        if (!conversationalContent && !thinkContent && toolCallsContainer.children.length === 0) {
             answerContent.style.display = 'none';
         }
 
@@ -1121,31 +1104,92 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
 function updateAgentStatus(bubbleElement, statusText, isError = false) {
     if (!bubbleElement) return;
     const agentStatus = bubbleElement.querySelector('.agent-status');
-    const toolActivity = bubbleElement.querySelector('.tool-activity');
+    const toolCallsContainer = bubbleElement.querySelector('.tool-calls-container');
     const answerContent = bubbleElement.querySelector('.answer-content');
 
     agentStatus.innerHTML = statusText;
     agentStatus.style.display = 'block';
-    toolActivity.style.display = 'none';
+    toolCallsContainer.innerHTML = ''; // Clear any previous tool calls
     answerContent.style.display = 'none';
 
     agentStatus.classList.toggle('text-red-400', isError);
 }
 
-function showToolCall(bubbleElement, toolName, toolParams) {
+function showToolCall(bubbleElement, toolName, toolParams, toolCallId) {
     if (!bubbleElement) return;
+    const container = bubbleElement.querySelector('.tool-calls-container');
+    if (!container) return;
+
     const agentStatus = bubbleElement.querySelector('.agent-status');
-    const toolActivity = bubbleElement.querySelector('.tool-activity');
-    const answerContent = bubbleElement.querySelector('.answer-content');
-            const toolHeaderEl = toolActivity.querySelector('.tool-header-text');
-    const toolParamsEl = toolActivity.querySelector('.tool-params');
-
     agentStatus.style.display = 'none';
-    answerContent.style.display = 'none';
-    toolActivity.style.display = 'block';
 
-            toolHeaderEl.textContent = `Action: ${toolName}`;
-    toolParamsEl.textContent = JSON.stringify(toolParams, null, 2);
+    const toolCallEl = document.createElement('div');
+    toolCallEl.className = 'tool-call-rich';
+    toolCallEl.dataset.toolCallId = toolCallId;
+    toolCallEl.dataset.toolName = toolName; // Store for later
+
+    toolCallEl.innerHTML = `
+        <div class="tool-call-rich-header">
+            <svg class="animate-spin h-4 w-4 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span>Action: ${toolName}</span>
+        </div>
+        <div class="tool-call-rich-body">
+            <div class="font-semibold text-sm mb-1">Parameters:</div>
+            <pre class="tool-call-rich-params">${JSON.stringify(toolParams, null, 2)}</pre>
+            <div class="tool-call-rich-result-container" style="display: none;">
+                <div class="font-semibold text-sm mt-2 mb-1 result-label">Result:</div>
+                <pre class="tool-call-rich-result"></pre>
+            </div>
+        </div>
+    `;
+
+    container.appendChild(toolCallEl);
+    smartScroll(chatContainer);
+}
+
+function updateToolCallResult(bubbleElement, toolCallId, result, isError) {
+    if (!bubbleElement) return;
+
+    const toolCallEl = bubbleElement.querySelector(`.tool-call-rich[data-tool-call-id="${toolCallId}"]`);
+    if (!toolCallEl) return;
+
+    const header = toolCallEl.querySelector('.tool-call-rich-header');
+    const toolName = toolCallEl.dataset.toolName;
+
+    // Replace spinner with a static icon
+    header.innerHTML = `
+        <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l-4 4-4-4 4-4"></path></svg>
+        <span>Action: ${toolName}</span>
+    `;
+
+    const resultContainer = toolCallEl.querySelector('.tool-call-rich-result-container');
+    const resultEl = toolCallEl.querySelector('.tool-call-rich-result');
+    const resultLabel = toolCallEl.querySelector('.result-label');
+
+    resultContainer.style.display = 'block';
+
+    let resultString;
+    if (typeof result === 'object' && result !== null) {
+        resultString = JSON.stringify(result, null, 2);
+    } else {
+        resultString = String(result);
+    }
+
+    resultEl.textContent = resultString;
+
+    if (isError) {
+        resultEl.classList.add('text-red-400');
+        header.classList.add('text-red-400');
+        resultLabel.textContent = 'Error:';
+    } else {
+        header.classList.add('text-green-400');
+        resultLabel.textContent = 'Result:';
+    }
+
+    smartScroll(chatContainer);
 }
 
 function addConversationToList(id, title) {

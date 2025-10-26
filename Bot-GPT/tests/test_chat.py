@@ -48,12 +48,13 @@ def test_full_chat_with_tool_call(app, test_user, mocker):
         assert events[0]["type"] == "conversation_id"
         assert events[1]["type"] == "assistant_chunk"
         assert events[2]["type"] == "assistant_end"
-        assert events[3]["type"] == "tool_result"
-        assert events[4]["type"] == "assistant_chunk"
-        assert events[5]["type"] == "assistant_end"
-        assert events[6]["type"] == "final_answer"
-        assert events[7]["type"] == "done"
-        assert events[7]["title"] == "List Files"
+        assert events[3]["type"] == "tool_call"
+        assert events[4]["type"] == "tool_result"
+        assert events[5]["type"] == "assistant_chunk"
+        assert events[6]["type"] == "assistant_end"
+        assert events[7]["type"] == "final_answer"
+        assert events[8]["type"] == "done"
+        assert events[8]["title"] == "List Files"
 
 
 def test_agent_mode_with_stop(app, test_user, socketio, mocker):
