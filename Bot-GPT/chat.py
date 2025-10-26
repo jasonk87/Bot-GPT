@@ -98,18 +98,29 @@ def handle_ai_response(data):
                     "params": tool_call.get("parameters")
                 }
 
-                tool_result, _ = handle_tool_call(tool_call, conversation, current_user)
+                full_tool_result = ""
+                # handle_tool_call is now a generator
+                for tool_result_chunk, _ in handle_tool_call(tool_call, conversation, current_user):
+                    # Handle special dictionary-based results from tools like write_file
+                    if isinstance(tool_result_chunk, dict):
+                        status = tool_result_chunk.get('status')
+                        if status == 'canvas_created':
+                            yield {"type": "open_canvas", "filename": tool_result_chunk.get('filename')}
+                        elif status == 'file_written':
+                            yield {"type": "file_updated", "path": tool_result_chunk.get('path'), "content": tool_result_chunk.get('content')}
+                        # Convert dict to string for logging/history
+                        chunk_str = json.dumps(tool_result_chunk, indent=2)
+                    else:
+                        chunk_str = str(tool_result_chunk)
 
-                if isinstance(tool_result, dict):
-                    status = tool_result.get('status')
-                    if status == 'canvas_created':
-                        yield {"type": "open_canvas", "filename": tool_result.get('filename')}
-                    elif status == 'file_written':
-                        yield {"type": "file_updated", "path": tool_result.get('path'), "content": tool_result.get('content')}
+                    full_tool_result += chunk_str
+                    yield {"type": "tool_result_chunk", "tool_call_id": tool_call_id, "chunk": chunk_str}
 
-                tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
+
+                tool_response_message = f"TOOL RESPONSE:\n---\n{full_tool_result}\n---"
                 messages.append({"role": "user", "content": tool_response_message})
-                yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": tool_result}
+                # Send the final aggregated result
+                yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": full_tool_result}
             except Exception as e:
                 error_message = f"Error processing tool: {e}"
                 messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})

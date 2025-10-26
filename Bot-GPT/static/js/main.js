@@ -211,11 +211,21 @@ async function initializeApp(username) {
                     currentResponseContent = "";
                     break;
                 case 'tool_call':
-                     // A tool call is part of the assistant's response, so we display it.
+                    // A tool call is part of the assistant's response, so we display it.
                     updateBotBubble(currentAgentBubble, currentResponseContent, true);
-                    showToolCall(currentAgentBubble, data.name, data.params);
+                    // Pass the unique tool_call_id to the UI management function
+                    showToolCall(currentAgentBubble, data.name, data.params, data.tool_call_id);
+                    break;
+                case 'tool_result_chunk':
+                    const toolOutputEl = document.querySelector(`.tool-output[data-tool-id="${data.tool_call_id}"]`);
+                    if (toolOutputEl) {
+                        toolOutputEl.textContent += data.chunk;
+                        smartScroll(toolOutputEl);
+                    }
                     break;
                 case 'tool_result':
+                     // The final result event now just confirms completion.
+                     // The content is already streamed.
                     updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
                     break;
                 case 'tool_error':
@@ -1045,10 +1055,13 @@ function createBotMessageContainer(animate = true) {
             <div class="tool-activity" style="display: none;">
                 <div class="tool-activity-header">
                     <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l-4 4-4-4 4-4"></path></svg>
-                            <span class="font-semibold tool-header-text">Tool Call</span>
+                    <span class="font-semibold tool-header-text">Tool Call</span>
                 </div>
                 <div class="tool-activity-body">
-                    <pre class="tool-params bg-gray-900 p-2 rounded text-xs"></pre>
+                    <div class="font-mono text-xs text-gray-400 mb-1">Parameters:</div>
+                    <pre class="tool-params bg-gray-900 p-2 rounded text-xs mb-2"></pre>
+                    <div class="font-mono text-xs text-gray-400 mb-1">Output:</div>
+                    <pre class="tool-output bg-black p-2 rounded text-xs whitespace-pre-wrap"></pre>
                 </div>
             </div>
             <div class="answer-content prose prose-invert max-w-none" style="display: none;"></div>
@@ -1145,20 +1158,24 @@ function updateAgentStatus(bubbleElement, statusText, isError = false) {
     agentStatus.classList.toggle('text-red-400', isError);
 }
 
-function showToolCall(bubbleElement, toolName, toolParams) {
+function showToolCall(bubbleElement, toolName, toolParams, toolCallId) {
     if (!bubbleElement) return;
     const agentStatus = bubbleElement.querySelector('.agent-status');
     const toolActivity = bubbleElement.querySelector('.tool-activity');
     const answerContent = bubbleElement.querySelector('.answer-content');
-            const toolHeaderEl = toolActivity.querySelector('.tool-header-text');
+    const toolHeaderEl = toolActivity.querySelector('.tool-header-text');
     const toolParamsEl = toolActivity.querySelector('.tool-params');
+    const toolOutputEl = toolActivity.querySelector('.tool-output');
 
     agentStatus.style.display = 'none';
     answerContent.style.display = 'none';
     toolActivity.style.display = 'block';
 
-            toolHeaderEl.textContent = `Action: ${toolName}`;
+    toolHeaderEl.textContent = `Action: ${toolName}`;
     toolParamsEl.textContent = JSON.stringify(toolParams, null, 2);
+    // Clear previous output and set the data-tool-id
+    toolOutputEl.textContent = '';
+    toolOutputEl.dataset.toolId = toolCallId;
 }
 
 function addConversationToList(id, title) {

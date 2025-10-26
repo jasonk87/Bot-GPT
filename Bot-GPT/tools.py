@@ -226,30 +226,34 @@ def update_task_status(step_index: int, status: str, message: str = None, conver
 
 
 def execute_python(path, conversation_id=None, user_id=None):
-    """Executes a Python script within the conversation's workspace."""
+    """Executes a Python script within the conversation's workspace and streams the output."""
     workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path:
-        return "Error: Could not determine workspace."
+        yield "Error: Could not determine workspace."
+        return
 
     file_path = os.path.abspath(os.path.join(workspace_path, path))
-    if not file_path.startswith(
-            os.path.abspath(workspace_path)) or not file_path.endswith(".py"):
-        return "Error: Access denied or not a Python file."
+    if not file_path.startswith(os.path.abspath(workspace_path)) or not file_path.endswith(".py"):
+        yield "Error: Access denied or not a Python file."
+        return
 
     try:
-        process = subprocess.run(
-            ['python', file_path],
-            capture_output=True,
+        process = subprocess.Popen(
+            ['python', '-u', file_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=10,
             cwd=workspace_path
         )
-        output = process.stdout
-        if process.stderr:
-            output += f"\n--- ERRORS ---\n{process.stderr}"
-        return output
+
+        for line in iter(process.stdout.readline, ''):
+            yield line
+        process.stdout.close()
+        return_code = process.wait()
+        if return_code:
+            yield f"\n--- PROCESS EXITED WITH CODE: {return_code} ---"
     except Exception as e:
-        return f"Error: {str(e)}"
+        yield f"Error: {str(e)}"
 
 
 def pip(command, conversation_id=None, user_id=None):
@@ -471,7 +475,7 @@ def call_ollama_chat_stream(model, messages, system_prompt, conversation_id):
         raise ConnectionError(f"An unexpected error occurred: {e}") from e
 
 def handle_tool_call(tool_call, conversation, user):
-    """Handles a tool call from the AI."""
+    """Handles a tool call from the AI, supporting both regular and streaming tools."""
     tool_name = tool_call.get('tool')
     raw_params = tool_call.get('parameters', {})
     file_creation_tool_used = False
@@ -491,30 +495,34 @@ def handle_tool_call(tool_call, conversation, user):
         "update_task_status": update_task_status,
     }
 
-    if tool_name in tool_map:
-        if tool_name in ['create_and_open_canvas', 'write_file']:
-            file_creation_tool_used = True
-        tool_func = tool_map[tool_name]
-        context_params = {
-            "conversation_id": conversation.id,
-            "owner_id": conversation.owner_id,
-            "user_id": user.id,
-            "user_data_dir": current_app.config['USER_DATA_DIR'],
-            "ollama_host": current_app.config['OLLAMA_HOST'],
-            "user": user,
-            "api_key": current_app.config['GOOGLE_API_KEY'],
-            "cse_id": current_app.config['GOOGLE_CSE_ID']
-        }
-
-        tool_params = {}
-        sig = inspect.signature(tool_func)
-        for param_name in sig.parameters:
-            if param_name in raw_params:
-                tool_params[param_name] = raw_params[param_name]
-            elif param_name in context_params:
-                tool_params[param_name] = context_params[param_name]
-
-        tool_result = tool_func(**tool_params)
-        return tool_result, file_creation_tool_used
-    else:
+    if tool_name not in tool_map:
         raise ValueError(f"Tool '{tool_name}' not found.")
+
+    if tool_name in ['create_and_open_canvas', 'write_file']:
+        file_creation_tool_used = True
+
+    tool_func = tool_map[tool_name]
+    context_params = {
+        "conversation_id": conversation.id,
+        "user_id": user.id,
+        "user": user,
+    }
+
+    tool_params = {}
+    sig = inspect.signature(tool_func)
+    for param_name in sig.parameters:
+        if param_name in raw_params:
+            tool_params[param_name] = raw_params[param_name]
+        elif param_name in context_params:
+            tool_params[param_name] = context_params[param_name]
+
+    tool_result = tool_func(**tool_params)
+
+    # This is the key change: check if the result is a generator
+    if inspect.isgenerator(tool_result):
+        # Yield a tuple: (chunk, file_creation_flag)
+        for chunk in tool_result:
+            yield chunk, file_creation_tool_used
+    else:
+        # Yield a tuple for consistency
+        yield tool_result, file_creation_tool_used
