@@ -69,4 +69,5 @@ def create_app(config_name=None):
 
 if __name__ == '__main__':
     app = create_app()
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True, use_reloader=False)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True,
+                 allow_unsafe_werkzeug=True, use_reloader=False)

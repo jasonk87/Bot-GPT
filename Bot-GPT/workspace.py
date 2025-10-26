@@ -201,6 +201,54 @@ def get_users():
     ]
     return jsonify(users_list)
 
+@workspace.route('/api/workspace/folder', methods=['POST'])
+@login_required
+def create_folder():
+    """Creates a new folder in the workspace."""
+    data = request.get_json()
+    path = data.get('path')
+    conversation_id = data.get('conversation_id')
+    conversation = Conversation.query.get(conversation_id)
+
+    if not conversation or conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied"}), 403
+
+    workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
+    folder_path = os.path.join(workspace_path, path)
+    if not is_safe_path(workspace_path, folder_path):
+        return jsonify({"error": "Access denied"}), 403
+
+    try:
+        os.makedirs(folder_path, exist_ok=True)
+        return jsonify({"success": True, "message": f"Folder '{path}' created."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@workspace.route('/api/workspace/rename', methods=['POST'])
+@login_required
+def rename_file_or_folder():
+    """Renames a file or folder in the workspace."""
+    data = request.get_json()
+    old_path = data.get('old_path')
+    new_path = data.get('new_path')
+    conversation_id = data.get('conversation_id')
+    conversation = Conversation.query.get(conversation_id)
+
+    if not conversation or conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied"}), 403
+
+    workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
+    old_full_path = os.path.join(workspace_path, old_path)
+    new_full_path = os.path.join(workspace_path, new_path)
+    if not is_safe_path(workspace_path, old_full_path) or not is_safe_path(workspace_path, new_full_path):
+        return jsonify({"error": "Access denied"}), 403
+
+    try:
+        os.rename(old_full_path, new_full_path)
+        return jsonify({"success": True, "message": f"Renamed '{old_path}' to '{new_path}'."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @workspace.route('/api/upload', methods=['POST'])
 @login_required
 def upload_file():

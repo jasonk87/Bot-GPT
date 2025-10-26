@@ -579,7 +579,18 @@ async function populateFileExplorer() {
     try {
         const response = await fetch(`${window.location.origin}${API_BASE}/workspace/files/${currentConversationId}`);
         const files = await response.json();
-        fileExplorer.innerHTML = buildFileTree(files);
+
+        let header = '';
+        if (currentConversationRole === 'owner') {
+            header = `
+                <div class="flex justify-end p-1">
+                    <button class="new-folder-btn text-gray-400 hover:text-white" title="New Folder">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h5l2 3h9a2 2 0 012 2v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path></svg>
+                    </button>
+                </div>
+            `;
+        }
+        fileExplorer.innerHTML = header + buildFileTree(files);
         attachFileEventListeners();
     } catch (error) {
         console.error("Failed to populate file explorer:", error);
@@ -595,14 +606,20 @@ function buildFileTree(nodes, pathPrefix = '') {
         const isDir = node.type === 'directory';
         const icon = isDir ? '&#128193;' : '&#128196;';
 
-                let deleteBtn = '';
-                if (currentConversationRole === 'owner') {
-                    deleteBtn = `<button class="delete-btn text-red-500 hover:text-red-400 font-bold ml-2 flex-shrink-0" title="Delete">&times;</button>`;
-                }
+        let actionButtons = '';
+        if (currentConversationRole === 'owner') {
+            actionButtons = `
+                <div class="flex items-center">
+                    <button class="rename-btn text-gray-400 hover:text-white mr-2" title="Rename">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                    </button>
+                    <button class="delete-btn text-red-500 hover:text-red-400 font-bold" title="Delete">&times;</button>
+                </div>`;
+        }
 
         html += `<li class="file-item item-hover flex items-center justify-between group" data-path="${fullPath}" data-type="${node.type}">
                             <span class="flex-1 cursor-pointer hover:text-blue-400 truncate">${icon} ${node.name}</span>
-                            ${deleteBtn}
+                            <div class="hidden group-hover:flex items-center">${actionButtons}</div>
                          </li>`;
         if (isDir && node.children) {
             html += `<li class="pl-4">${buildFileTree(node.children, fullPath)}</li>`;
@@ -613,23 +630,89 @@ function buildFileTree(nodes, pathPrefix = '') {
 }
 
 function attachFileEventListeners() {
+    // New Folder button
+    const newFolderBtn = document.querySelector('.new-folder-btn');
+    if (newFolderBtn) {
+        newFolderBtn.addEventListener('click', () => handleNewFolder());
+    }
+
     document.querySelectorAll('.file-item').forEach(item => {
         const path = item.dataset.path;
         const type = item.dataset.type;
         item.querySelector('span').addEventListener('click', () => {
-                    if (type === 'file') {
-                        openFileCanvas(path);
-                    }
+            if (type === 'file') {
+                openFileCanvas(path);
+            }
         });
 
-                const deleteBtn = item.querySelector('.delete-btn');
-                if (deleteBtn) {
-                    deleteBtn.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        confirmDeletion(path, type, 'file');
-                    });
-                }
+        const deleteBtn = item.querySelector('.delete-btn');
+        if (deleteBtn) {
+            deleteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                confirmDeletion(path, type, 'file');
+            });
+        }
+
+        const renameBtn = item.querySelector('.rename-btn');
+        if (renameBtn) {
+            renameBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                handleRename(path);
+            });
+        }
     });
+}
+
+async function handleNewFolder() {
+    const folderName = prompt("Enter the name for the new folder:");
+    if (!folderName) return;
+
+    try {
+        const response = await fetch(`${window.location.origin}${API_BASE}/workspace/folder`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                path: folderName,
+                conversation_id: currentConversationId
+            })
+        });
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error);
+        }
+        await populateFileExplorer();
+    } catch (error) {
+        alert(`Error creating folder: ${error.message}`);
+    }
+}
+
+async function handleRename(oldPath) {
+    const newName = prompt(`Enter the new name for "${oldPath}":`);
+    if (!newName) return;
+
+    // Construct the new path, preserving the directory structure
+    const pathParts = oldPath.split('/');
+    pathParts[pathParts.length - 1] = newName;
+    const newPath = pathParts.join('/');
+
+    try {
+        const response = await fetch(`${window.location.origin}${API_BASE}/workspace/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                old_path: oldPath,
+                new_path: newPath,
+                conversation_id: currentConversationId
+            })
+        });
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error);
+        }
+        await populateFileExplorer();
+    } catch (error) {
+        alert(`Error renaming: ${error.message}`);
+    }
 }
 
         function showCanvasPanel(path, content, mode) {
