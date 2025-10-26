@@ -10,6 +10,7 @@ from extensions import db, socketio
 from models import Conversation, ConversationParticipant, Message
 from tools import call_ollama_chat_stream, handle_tool_call
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
+from utils import PLAN_APPROVALS
 
 chat = Blueprint('chat', __name__)
 

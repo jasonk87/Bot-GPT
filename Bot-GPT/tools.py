@@ -27,28 +27,7 @@ except ImportError:
     build = None
     HttpError = None
 
-# --- Helper function for conversation-specific workspaces ---
-def get_workspace_path(conversation_id, user_id):
-    """Constructs a path to a conversation-specific workspace."""
-    if not user_id or not conversation_id:
-        return None
-
-    conversation = Conversation.query.get(conversation_id)
-    if not conversation:
-        owner_id = user_id
-    else:
-        owner_id = conversation.owner_id
-
-    path = os.path.join(
-        current_app.config['USER_DATA_DIR'],
-        str(owner_id),
-        'workspaces',
-        str(conversation_id)
-    )
-    if not os.path.exists(path):
-        os.makedirs(path)
-    return path
-
+from utils import get_workspace_path
 
 def is_safe_path(base, path, follow_symlinks=True):
     """Checks if a path is safe to access."""
@@ -200,16 +179,36 @@ def set_current_plan_step(step_number, step_description):
     }
 
 
-def set_plan(steps: list, conversation_id: str, **kwargs):
+def set_plan(steps: list, conversation_id: str, requires_approval: bool = False, **kwargs):
     """
-    Sets the agent's plan and sends it to the UI.
-    The plan should be a list of strings.
+    Sets the agent's plan, sends it to the UI, and optionally waits for approval.
     """
     if not conversation_id:
         return "Error: conversation_id is required to set a plan."
 
-    socketio.emit('plan_updated', {'steps': steps}, room=conversation_id)
-    return f"Plan with {len(steps)} steps has been set and sent to the user."
+    from utils import PLAN_APPROVALS
+    PLAN_APPROVALS[conversation_id] = None  # Reset approval state
+
+    socketio.emit('plan_updated', {'steps': steps, 'requires_approval': requires_approval}, room=conversation_id)
+
+    if not requires_approval:
+        return f"Plan with {len(steps)} steps has been set and sent to the user."
+
+    # Wait for the user's response
+    timeout = 300  # 5 minutes
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if PLAN_APPROVALS.get(conversation_id):
+            break
+        socketio.sleep(1)  # Yield control to allow other operations
+
+    response = PLAN_APPROVALS.pop(conversation_id, 'timeout')
+    if response == 'approve':
+        return "Plan approved by the user. Proceeding with execution."
+    elif response == 'reject':
+        return "Plan rejected by the user. Please replan based on user feedback."
+    else:
+        return "No response from the user within the time limit. Assuming rejection."
 
 
 def update_task_status(step_index: int, status: str, message: str = None, conversation_id: str = None, **kwargs):
