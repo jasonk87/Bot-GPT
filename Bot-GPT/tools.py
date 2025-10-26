@@ -430,18 +430,17 @@ def call_ollama_chat_stream(model, messages, system_prompt):
             if not raw_line:
                 continue
 
-            # Ollama streams Server Sent Events which are prefixed with
-            # "data:".  Strip the prefix so the remaining content is valid
-            # JSON regardless of whether Ollama is configured for SSE or
-            # plain newline-delimited JSON responses.
-            line = raw_line
-            if line.startswith(':'):
-                # Comment / heartbeat lines can be ignored entirely.
+            # Ollama may stream heartbeat lines that start with a colon
+            if raw_line.startswith(':'):
                 continue
-            if line.startswith('data:'):
-                line = line[len('data:'):].strip()
 
-            if not line or line == '[DONE]':
+            # It may also stream Server Sent Events which are prefixed with "data:"
+            # Strip the prefix so the remaining content is valid JSON
+            line = raw_line
+            if line.startswith('data:'):
+                line = line[len('data:'):]
+
+            if not line.strip() or line == '[DONE]':
                 continue
 
             try:
