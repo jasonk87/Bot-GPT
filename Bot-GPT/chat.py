@@ -73,8 +73,11 @@ def handle_ai_response(data):
                 for chunk in stream:
                     full_response_content += chunk
                     yield {"type": "assistant_chunk", "content": chunk}
-            except requests.exceptions.ConnectionError as e:
-                yield {"type": "agent_error", "error": f"Could not connect to Ollama: {e}"}
+            except (requests.exceptions.ConnectionError, TimeoutError, ConnectionError) as e:
+                yield {"type": "agent_error", "error": f"AI service request failed: {e}"}
+                break
+            except Exception as e:
+                yield {"type": "agent_error", "error": f"An unexpected error occurred: {e}"}
                 break
 
             assistant_message['content'] = full_response_content
@@ -138,24 +141,26 @@ def handle_ai_response(data):
 def handle_chat_message(data):
     """Handles a chat message received over WebSocket."""
     room = data.get('conversation_id') or request.sid
-    try:
-        messages = json.loads(data['messages'])
-        last_user_message = messages[-1]['content'] if messages else ''
-    except (KeyError, TypeError, json.JSONDecodeError):
-        emit('ai_response', {"type": "agent_error", "error": "Invalid message payload"}, room=room)
-        emit('ai_response', {"type": "done"}, room=room)
-        return
-
-    emit('ai_response', {"type": "user_message", "content": last_user_message}, room=room, include_self=False)
     done_sent = False
     try:
+        try:
+            messages = json.loads(data['messages'])
+            last_user_message = messages[-1]['content'] if messages else ''
+        except (KeyError, TypeError, json.JSONDecodeError):
+            emit('ai_response', {"type": "agent_error", "error": "Invalid message payload"}, room=room)
+            return
+
+        emit('ai_response', {"type": "user_message", "content": last_user_message}, room=room, include_self=False)
         for event in handle_ai_response(data):
             emit('ai_response', event, room=room)
             if event.get('type') == 'done':
                 done_sent = True
+
     except Exception as exc:
+        # Catch any unexpected errors from the generator or message parsing
         emit('ai_response', {"type": "agent_error", "error": str(exc)}, room=room)
     finally:
+        # Ensure 'done' is always sent, unless it already has been
         if not done_sent:
             emit('ai_response', {"type": "done"}, room=room)
 

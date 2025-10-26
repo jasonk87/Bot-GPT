@@ -3,6 +3,7 @@ import subprocess
 import re
 import inspect
 import json
+import time
 from flask import current_app
 from extensions import socketio
 from models import Conversation
@@ -425,7 +426,12 @@ def call_ollama_chat_stream(model, messages, system_prompt):
         )
         response.raise_for_status()
 
+        last_chunk_time = time.time()
         for raw_line in response.iter_lines(decode_unicode=True):
+            if time.time() - last_chunk_time > 30:  # 30-second timeout between chunks
+                raise TimeoutError("Stream timed out: No data received for 30 seconds.")
+            last_chunk_time = time.time()
+
             if not raw_line:
                 continue
 

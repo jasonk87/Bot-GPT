@@ -38,9 +38,16 @@ class ProductionConfig(Config):
         )
     )
 
+class TestConfig(Config):
+    """Testing configuration."""
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+    WTF_CSRF_ENABLED = False
+
 
 config = {
     'development': DevelopmentConfig,
     'production': ProductionConfig,
+    'testing': TestConfig,
     'default': DevelopmentConfig
 }
