@@ -109,11 +109,15 @@ def db(app):
 
 @pytest.fixture
 def test_user(db):
-    """Create a test user."""
-    user = User(id=1, username='testuser')
-    user.set_password('password')
-    db.session.add(user)
-    db.session.commit()
+    """Create a test user, ensuring it's not a duplicate."""
+    # Using a specific ID like 1 can cause issues if not cleaned up.
+    # A better approach is to check if the user exists.
+    user = db.session.get(User, 1)
+    if not user:
+        user = User(id=1, username='testuser')
+        user.set_password('password')
+        db.session.add(user)
+        db.session.commit()
     return user
 
 

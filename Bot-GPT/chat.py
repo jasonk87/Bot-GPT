@@ -16,26 +16,18 @@ chat = Blueprint('chat', __name__)
 AGENT_SESSIONS = {}
 
 def initialize_chat(data):
-    """Initializes a chat session, loading messages and settings."""
+    """
+    Initializes a chat session, preparing the conversation object and settings.
+    Note: This function no longer loads message history. The history is taken
+    directly from the client's payload in `handle_ai_response`.
+    """
     conversation_id = data.get('conversation_id')
 
     if conversation_id:
         conversation = Conversation.query.get(conversation_id)
         if not conversation or not conversation.is_participant(current_user.id):
             raise ValueError("Conversation not found or you don't have access.")
-
-        # Load messages from DB
-        messages = [{"role": m.role, "content": m.content} for m in conversation.messages]
-
-        # Append the latest user message from the frontend
-        try:
-            latest_messages = json.loads(data.get('messages', '[]'))
-            if latest_messages:
-                messages.append(latest_messages[-1])
-        except (json.JSONDecodeError, TypeError):
-            pass # Ignore if messages are not valid JSON
-
-    else: # New conversation
+    else:  # New conversation
         conversation_id = str(int(time.time() * 1000))
         conversation = Conversation(id=conversation_id, title="New Chat", owner_id=current_user.id)
         db.session.add(conversation)
@@ -43,24 +35,20 @@ def initialize_chat(data):
         db.session.add(participant)
         db.session.commit()
 
-        try:
-            messages = json.loads(data.get('messages', '[]'))
-        except (json.JSONDecodeError, TypeError):
-            messages = []
-
     model = data.get('model') or current_user.selected_model
     persona_key = current_user.selected_persona or 'default'
     system_prompt = PERSONAS.get(persona_key, {}).get('prompt', DEFAULT_SYSTEM_PROMPT)
     if data.get('agent_mode', False):
         system_prompt = AGENT_SYSTEM_PROMPT
 
-    return messages, model, system_prompt, conversation
+    return model, system_prompt, conversation
 
 def handle_ai_response(data):
     """Handles the AI response loop and yields events."""
     try:
-        messages, model, system_prompt, conversation = initialize_chat(data)
-    except ValueError as exc:
+        model, system_prompt, conversation = initialize_chat(data)
+        messages = json.loads(data.get('messages', '[]'))
+    except (ValueError, json.JSONDecodeError) as exc:
         yield {"type": "agent_error", "error": str(exc)}
         return
 
@@ -123,16 +111,15 @@ def handle_ai_response(data):
 
     update_conversation_title(conversation, messages)
 
-    # Save the final user and assistant messages to the database
+    # Replace the stored messages with the latest history
+    conversation.messages.clear()
     for msg in messages:
-        # Avoid saving duplicate messages if they already exist in the db
-        if not Message.query.filter_by(conversation_id=conversation.id, role=msg['role'], content=msg['content']).first():
-            new_message = Message(
-                conversation_id=conversation.id,
-                role=msg['role'],
-                content=msg['content']
-            )
-            db.session.add(new_message)
+        new_message = Message(
+            conversation_id=conversation.id,
+            role=msg['role'],
+            content=msg['content']
+        )
+        db.session.add(new_message)
     db.session.commit()
 
     yield {"type": "done", "title": conversation.title}
@@ -222,6 +209,7 @@ def update_conversation_title(conversation, messages):
             cleaned_title = re.sub(r'<think>[\s\S]*?</think>', '', raw_title).strip().replace('"', '')
             if cleaned_title:
                 conversation.title = cleaned_title
+                db.session.commit()
         except requests.exceptions.RequestException as e:
             print(f"Could not auto-generate title: {e}")
 
