@@ -457,8 +457,8 @@ async function initializeApp(username) {
     });
 
     function handleSendButtonClick() {
-        if (isAgentRunning && agentModeToggle.checked) {
-            // If the agent is running in agent mode, this is a "Stop" button
+        if (isAgentRunning) {
+            // If the agent is running, this is a "Stop" button
             socket.emit('stop_agent', { conversation_id: currentConversationId });
         } else {
             // Otherwise, it's a "Send" button
@@ -966,19 +966,11 @@ function setAgentRunning(isRunning, agentMode = false) {
     chatInput.disabled = isRunning;
 
     if (isRunning) {
-        if (agentMode) {
-            // Transform to a Stop button
-            sendButton.innerHTML = `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3A.5.5 0 018 7zm2 4a.5.5 0 01.5.5v3a.5.5 0 01-1 0v-3a.5.5 0 01.5-.5z" clip-rule="evenodd"></path></svg>`;
-            sendButton.classList.remove('bg-blue-600', 'hover:bg-blue-700');
-            sendButton.classList.add('bg-red-600', 'hover:bg-red-700');
-            sendButton.disabled = false; // Keep it enabled to be clickable
-        } else {
-            // Standard thinking spinner
-            sendButton.disabled = true;
-            sendButton.classList.add('bg-gray-500', 'cursor-not-allowed');
-            sendButton.classList.remove('bg-blue-600', 'hover:bg-blue-700', 'bg-red-600', 'hover:bg-red-700');
-            sendButton.innerHTML = `<svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
-        }
+        // Transform to a Stop button
+        sendButton.innerHTML = `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 000 2h6a1 1 0 100-2H7z" clip-rule="evenodd"></path></svg>`;
+        sendButton.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+        sendButton.classList.add('bg-red-600', 'hover:bg-red-700');
+        sendButton.disabled = false; // Keep it enabled to be clickable
     } else {
         // Revert to Send button
         sendButton.disabled = false;

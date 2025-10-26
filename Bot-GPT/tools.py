@@ -410,8 +410,9 @@ def ask_coder(task_description, user=None, user_id=None):
     except Exception as e:
         return f"Error calling Coder agent: {e}"
 
-def call_ollama_chat_stream(model, messages, system_prompt):
+def call_ollama_chat_stream(model, messages, system_prompt, conversation_id):
     """Calls the Ollama chat API and yields response chunks."""
+    from chat import AGENT_SESSIONS
     try:
         ollama_host = current_app.config['OLLAMA_HOST']
         response = requests.post(
@@ -428,6 +429,8 @@ def call_ollama_chat_stream(model, messages, system_prompt):
 
         last_chunk_time = time.time()
         for raw_line in response.iter_lines(decode_unicode=True):
+            if AGENT_SESSIONS.get(conversation_id, {}).get("stop_requested"):
+                break
             if time.time() - last_chunk_time > 30:  # 30-second timeout between chunks
                 raise TimeoutError("Stream timed out: No data received for 30 seconds.")
             last_chunk_time = time.time()

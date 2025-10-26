@@ -69,7 +69,7 @@ def handle_ai_response(data):
 
             full_response_content, assistant_message = "", {"role": "assistant", "content": ""}
             try:
-                stream = call_ollama_chat_stream(model, messages, system_prompt)
+                stream = call_ollama_chat_stream(model, messages, system_prompt, conversation.id)
                 for chunk in stream:
                     full_response_content += chunk
                     yield {"type": "assistant_chunk", "content": chunk}
@@ -233,9 +233,12 @@ def update_conversation_title(conversation, messages):
 def handle_stop_agent(data):
     """Handles a request to stop a running agent."""
     conversation_id = data.get('conversation_id')
-    if conversation_id and conversation_id in AGENT_SESSIONS:
+    room = data.get('conversation_id') or request.sid
+    if conversation_id and AGENT_SESSIONS.get(conversation_id):
         AGENT_SESSIONS[conversation_id]["stop_requested"] = True
-        emit('ai_response', {"type": "agent_error", "error": "Stop signal received. Attempting to halt..."})
+        emit('ai_response', {"type": "agent_error", "error": "Stop signal received. Attempting to halt..."}, room=room)
+    # Always send a done event to ensure the button is re-enabled, even if no agent was running.
+    emit('ai_response', {"type": "done"}, room=room)
 
 @socketio.on('load_conversations')
 @login_required
