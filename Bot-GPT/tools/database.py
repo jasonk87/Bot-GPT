@@ -2,16 +2,14 @@ import os
 from sqlalchemy import create_engine, inspect
 from urllib.parse import quote_plus
 
+from flask import current_app
+
 def get_db_schema(conversation_id=None, user_id=None):
     """
     Inspects the database and returns its schema.
     """
-    from utils import get_workspace_path
-
-    # In a real app, you'd get the db connection info from your app's config
-    # For this example, we'll assume the standard SQLite DB location
-    instance_path = os.path.join(get_workspace_path(conversation_id, user_id), '..', 'instance')
-    db_path = os.path.join(instance_path, 'users.db')
+    # Get the path to the database from the app's instance path
+    db_path = os.path.join(current_app.instance_path, 'users.db')
 
     if not os.path.exists(db_path):
         return f"Error: Database file not found at {db_path}"
