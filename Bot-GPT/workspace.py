@@ -20,11 +20,16 @@ workspace = Blueprint("workspace", __name__)
 @workspace.route("/api/workspace/files/<conversation_id>", methods=["GET"])
 @login_required
 def get_workspace_files(conversation_id):
+    """Returns the file tree for a conversation's workspace."""
     conversation = Conversation.query.get(conversation_id)
     if not conversation or not conversation.is_participant(current_user.id):
-        return jsonify([])
+        return jsonify({"error": "Access denied"}), 403
+
+    # Workspace path is always determined by the owner
     workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
-    return jsonify(get_file_tree(workspace_path))
+    if not workspace_path:
+        return jsonify({"error": "Workspace not found"}), 404
+    return jsonify(get_file_tree(workspace_path, workspace_path))
 
 
 @workspace.route("/api/workspace/file", methods=["GET"])
@@ -155,27 +160,53 @@ def delete_conversation(session_id):
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
+    # Only the owner can delete the conversation
     if conversation.owner_id != current_user.id:
         return jsonify({"error": "Access denied. Only the owner can delete."}), 403
 
-    user_data_dir = os.path.join(
-        current_app.config["USER_DATA_DIR"], str(conversation.owner_id)
-    )
-    convo_path = os.path.join(user_data_dir, "conversations", f"{session_id}.json")
-    workspace_path = os.path.join(user_data_dir, "workspaces", session_id)
+    # Construct path using the verified owner's ID
+    workspace_path = get_workspace_path(session_id, conversation.owner_id)
 
     try:
-        if os.path.exists(convo_path):
-            os.remove(convo_path)
+        # The workspace directory itself
         if os.path.exists(workspace_path):
             shutil.rmtree(workspace_path)
 
+        # The conversation record from the database
         db.session.delete(conversation)
         db.session.commit()
 
         return jsonify({"success": True})
     except Exception as e:
         db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@workspace.route("/api/workspace/file", methods=["DELETE"])
+@login_required
+def delete_file_or_folder():
+    """Deletes a file or folder from the workspace."""
+    path = request.json.get("path")
+    conversation_id = request.json.get("conversation_id")
+    conversation = Conversation.query.get(conversation_id)
+
+    if not conversation or conversation.owner_id != current_user.id:
+        return jsonify({"error": "Access denied"}), 403
+
+    workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
+    full_path = os.path.join(workspace_path, path)
+    if not is_safe_path(workspace_path, full_path):
+        return jsonify({"error": "Access denied"}), 403
+
+    try:
+        if os.path.isfile(full_path):
+            os.remove(full_path)
+        elif os.path.isdir(full_path):
+            shutil.rmtree(full_path)
+        else:
+            return jsonify({"error": "File or directory not found"}), 404
+        return jsonify({"success": True, "message": f"Deleted '{path}'."})
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 

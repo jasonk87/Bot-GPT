@@ -39,7 +39,7 @@ def test_get_workspace_files_route(logged_in_client, app, test_user, mocker):
     assert response.status_code == 200
     data = json.loads(response.data)
     assert data == [{"name": "test.txt", "type": "file", "path": "test.txt"}]
-    mock_get_file_tree.assert_called_once_with("/fake/path")
+    mock_get_file_tree.assert_called_once_with("/fake/path", "/fake/path")
 
 
 def test_get_workspace_files_unauthorized(client):
