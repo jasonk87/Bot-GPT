@@ -28,13 +28,12 @@ def initialize_chat(data):
         if not conversation or not conversation.check_permission(current_user):
             raise ValueError("Conversation not found or you don't have access.")
     else:  # New conversation
-        conversation_id = str(int(time.time() * 1000))
-        conversation = Conversation(
-            id=conversation_id, title="New Chat", owner_id=current_user.id
-        )
+        conversation = Conversation(title="New Chat", owner_id=current_user.id)
         db.session.add(conversation)
+        db.session.flush()  # Ensure the conversation gets an ID
+        conversation_id = conversation.id
         participant = ConversationParticipant(
-            user_id=current_user.id, conversation_id=conversation_id, role="owner"
+            user_id=current_user.id, conversation_id=conversation.id, role="owner"
         )
         db.session.add(participant)
         db.session.commit()
@@ -124,7 +123,7 @@ def handle_ai_response(data):
                         }
 
                 tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
-                messages.append({"role": "user", "content": tool_response_message})
+                messages.append({"role": "tool", "content": tool_response_message})
                 yield {
                     "type": "tool_result",
                     "tool_call_id": tool_call_id,

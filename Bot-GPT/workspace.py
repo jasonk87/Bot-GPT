@@ -5,7 +5,7 @@ import time
 from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
-from extensions import db
+from extensions import db, socketio
 from models import Conversation, User, ConversationParticipant
 from tools import (
     get_workspace_path,
@@ -387,5 +387,5 @@ def upload_file():
         f"- {file_list_str}\n\n"
         f"User's prompt: {prompt}"
     )
-
+    socketio.emit('ai_response', {'type': 'done'}, room=conversation_id)
     return jsonify(message=message_to_ai, conversation_id=conversation_id), 200

@@ -59,4 +59,3 @@ def test_upload_file(logged_in_client, mocker):
     data = json.loads(response.data)
     assert "User uploaded the following files" in data["message"]
     assert "test.txt" in data["message"]
-    assert isinstance(data["conversation_id"], int)

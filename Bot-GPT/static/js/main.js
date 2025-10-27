@@ -982,6 +982,8 @@ async function handleFileUpload(event) {
         }
     } catch (error) {
         alert(`Error uploading file: ${error.message}`);
+    } finally {
+        setAgentRunning(false);
     }
 }
 
@@ -1036,7 +1038,12 @@ function sendMessage() {
         canvas_mode: isCanvasMode,
         agent_mode: agentMode
     };
-    socket.emit('chat_message', params);
+    try {
+        socket.emit('chat_message', params);
+    } catch (error) {
+        console.error("Error sending message:", error);
+        setAgentRunning(false);
+    }
 }
 
 function createBotMessageContainer(animate = true) {
