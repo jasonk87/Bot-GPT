@@ -151,9 +151,14 @@ def handle_ai_response(data):
 
     update_conversation_title(conversation, messages)
 
+    # Filter out any tool-related messages before saving
+    messages_to_save = [
+        msg for msg in messages if msg.get("role") in ["user", "assistant"]
+    ]
+
     # Replace the stored messages with the latest history
     conversation.messages.clear()
-    for msg in messages:
+    for msg in messages_to_save:
         new_message = Message(
             conversation_id=conversation.id, role=msg["role"], content=msg["content"]
         )

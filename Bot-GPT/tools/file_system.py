@@ -1,4 +1,5 @@
 import os
+from extensions import socketio
 from utils import get_workspace_path
 
 
@@ -116,6 +117,14 @@ def write_file(path, content, conversation_id=None, user_id=None):
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
+
+        # After successfully writing the file, emit an event to the room
+        socketio.emit(
+            "refresh_files",
+            {"conversation_id": conversation_id},
+            room=str(conversation_id),
+        )
+
         return {
             "status": "file_written",
             "path": path,
