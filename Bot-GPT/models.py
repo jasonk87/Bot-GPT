@@ -32,7 +32,7 @@ class ConversationParticipant(db.Model):
     __tablename__ = "conversation_participant"
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), primary_key=True)
     conversation_id = db.Column(
-        db.String, db.ForeignKey("conversation.id"), primary_key=True
+        db.Integer, db.ForeignKey("conversation.id"), primary_key=True
     )
     role = db.Column(
         db.String(20), nullable=False, default="participant"
@@ -43,7 +43,7 @@ class ConversationParticipant(db.Model):
 
 
 class Conversation(db.Model):
-    id = db.Column(db.String(150), primary_key=True)
+    id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(100), nullable=False, default="New Chat")
     owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
 
@@ -65,9 +65,15 @@ class Conversation(db.Model):
         Check if a user has a certain permission level for this conversation.
         Level can be 'participant' or 'owner'.
         """
-        if level == "owner":
-            return self.owner_id == user.id
+        # The owner always has the highest level of permission.
+        if self.owner_id == user.id:
+            return True
 
+        # If 'owner' level is explicitly required, and the user is not the owner, deny access.
+        if level == "owner":
+            return False
+
+        # For 'participant' level, check if they are in the participants list.
         is_participant = any(p.user_id == user.id for p in self.participants)
         return is_participant
 

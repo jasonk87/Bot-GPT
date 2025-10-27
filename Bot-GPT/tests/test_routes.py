@@ -17,11 +17,13 @@ def test_get_workspace_files_route(logged_in_client, app, test_user, mocker):
     Tests the workspace files API endpoint for an authenticated user.
     """
     # 1. Setup: Create a conversation owned by the test user.
-    convo = Conversation(id="test_convo_123", title="Test Convo", owner_id=test_user.id)
+    convo = Conversation(title="Test Convo", owner_id=test_user.id)
+    db.session.add(convo)
+    db.session.commit()
+
     participant = ConversationParticipant(
         user_id=test_user.id, conversation_id=convo.id, role="owner"
     )
-    db.session.add(convo)
     db.session.add(participant)
     db.session.commit()
 
@@ -33,7 +35,7 @@ def test_get_workspace_files_route(logged_in_client, app, test_user, mocker):
     )
 
     # 3. Make the request.
-    response = logged_in_client.get("/api/workspace/files/test_convo_123")
+    response = logged_in_client.get(f"/api/workspace/files/{convo.id}")
 
     # 4. Assert the response is correct.
     assert response.status_code == 200
@@ -88,12 +90,13 @@ def test_summarize_conversation(logged_in_client, app, test_user, mocker, tmp_pa
     Tests the conversation summarization API endpoint.
     """
     # 1. Setup: Create a conversation and a mock conversation file.
-    convo_id = "summary_test_123"
-    convo = Conversation(id=convo_id, title="Test Convo", owner_id=test_user.id)
+    convo = Conversation(title="Test Convo", owner_id=test_user.id)
+    db.session.add(convo)
+    db.session.commit()
+
     participant = ConversationParticipant(
         user_id=test_user.id, conversation_id=convo.id, role="owner"
     )
-    db.session.add(convo)
     db.session.add(participant)
     db.session.commit()
 
@@ -101,7 +104,7 @@ def test_summarize_conversation(logged_in_client, app, test_user, mocker, tmp_pa
     user_data_dir = tmp_path / str(test_user.id)
     convo_dir = user_data_dir / "conversations"
     convo_dir.mkdir(parents=True)
-    convo_file = convo_dir / f"{convo_id}.json"
+    convo_file = convo_dir / f"{convo.id}.json"
     convo_file.write_text(
         json.dumps(
             {
@@ -122,7 +125,7 @@ def test_summarize_conversation(logged_in_client, app, test_user, mocker, tmp_pa
     mocker.patch("workspace.call_ollama_chat_stream", side_effect=mock_stream)
 
     # 3. Make the request.
-    response = logged_in_client.get(f"/api/conversation/{convo_id}/summarize")
+    response = logged_in_client.get(f"/api/conversation/{convo.id}/summarize")
 
     # 4. Assert the response is correct.
     assert response.status_code == 200

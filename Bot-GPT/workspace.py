@@ -38,6 +38,7 @@ def get_workspace_file_content():
     path = request.args.get("path")
     conversation_id = request.args.get("conversation_id")
     conversation = Conversation.query.get(conversation_id)
+
     if not conversation or not conversation.check_permission(current_user):
         return jsonify({"error": "Access denied"}), 403
 

@@ -438,19 +438,20 @@ async function initializeApp(username) {
 
             // --- Canvas Toggle Logic ---
             canvasToggleBtn.addEventListener('click', () => {
-                isCanvasMode = !isCanvasMode; // Toggle the state
-                canvasToggleBtn.classList.toggle('toggled', isCanvasMode);
+                const canvasPanel = document.getElementById('canvas-panel');
+                const isCurrentlyVisible = !canvasPanel.classList.contains('hidden');
 
-                // If we are turning canvas mode ON, and a file was previously open, reopen it.
-                // Otherwise, the user can open a file from the file explorer.
-                if (isCanvasMode && lastOpenedCanvasPath) {
-                    const canvasPanel = document.getElementById('canvas-panel');
-                    if (canvasPanel.classList.contains('hidden')) {
-                         openFileCanvas(lastOpenedCanvasPath);
-                    }
-                } else if (!isCanvasMode) {
-                    // If we are turning it OFF, hide the panel.
+                if (isCurrentlyVisible) {
                     hideCanvasPanel();
+                } else {
+                    if (lastOpenedCanvasPath) {
+                        openFileCanvas(lastOpenedCanvasPath);
+                    } else {
+                        // Show a blank canvas if none was opened before
+                        showCanvasPanel('Untitled', '// Start typing here...', 'javascript');
+                        isCanvasMode = true; // Manually set state
+                        canvasToggleBtn.classList.add('toggled'); // Manually set toggle
+                    }
                 }
             });
 
