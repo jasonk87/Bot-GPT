@@ -10,13 +10,11 @@ from extensions import db, socketio
 from models import Conversation, ConversationParticipant, Message
 from tools import call_ollama_chat_stream, handle_tool_call
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
-from utils import PLAN_APPROVALS, get_workspace_path
-from memory_manager import MemoryManager
+from utils import PLAN_APPROVALS
 
 chat = Blueprint('chat', __name__)
 
 AGENT_SESSIONS = {}
-memory_manager = MemoryManager()
 
 def initialize_chat(data):
     """
@@ -64,37 +62,19 @@ def handle_ai_response(data):
     tool_match = None
 
     try:
-        # Add the latest user message to memory *before* the loop starts
-        last_user_message = messages[-1]['content']
-        memory_manager.add_message_and_get_store(conversation.id, current_user.id, f"User: {last_user_message}")
-
         for i in range(max_iterations):
             if AGENT_SESSIONS.get(conversation.id, {}).get("stop_requested"):
                 yield {"type": "agent_error", "error": "Agent run stopped by user."}
                 break
 
-            # --- New Memory-Based Context ---
-            # Search for relevant history
-            relevant_history = memory_manager.search_relevant_messages(conversation.id, current_user.id, last_user_message)
-
-            # Construct a condensed message list
-            condensed_messages = []
-            if relevant_history:
-                condensed_messages.append({"role": "system", "content": "Relevant past conversation snippets:\n" + "\n".join(relevant_history)})
-            condensed_messages.append(messages[-1]) # Add the latest user message
-
             full_response_content, assistant_message = "", {"role": "assistant", "content": ""}
             try:
-                # Use the condensed context instead of the full `messages` list
-                stream = call_ollama_chat_stream(model, condensed_messages, system_prompt, conversation.id)
+                stream = call_ollama_chat_stream(model, messages, system_prompt)
                 for chunk in stream:
                     full_response_content += chunk
                     yield {"type": "assistant_chunk", "content": chunk}
-            except (requests.exceptions.ConnectionError, TimeoutError, ConnectionError) as e:
-                yield {"type": "agent_error", "error": f"AI service request failed: {e}"}
-                break
-            except Exception as e:
-                yield {"type": "agent_error", "error": f"An unexpected error occurred: {e}"}
+            except requests.exceptions.ConnectionError as e:
+                yield {"type": "agent_error", "error": f"Could not connect to Ollama: {e}"}
                 break
 
             assistant_message['content'] = full_response_content
@@ -115,29 +95,18 @@ def handle_ai_response(data):
                     "params": tool_call.get("parameters")
                 }
 
-                full_tool_result = ""
-                # handle_tool_call is now a generator
-                for tool_result_chunk, _ in handle_tool_call(tool_call, conversation, current_user):
-                    # Handle special dictionary-based results from tools like write_file
-                    if isinstance(tool_result_chunk, dict):
-                        status = tool_result_chunk.get('status')
-                        if status == 'canvas_created':
-                            yield {"type": "open_canvas", "filename": tool_result_chunk.get('filename')}
-                        elif status == 'file_written':
-                            yield {"type": "file_updated", "path": tool_result_chunk.get('path'), "content": tool_result_chunk.get('content')}
-                        # Convert dict to string for logging/history
-                        chunk_str = json.dumps(tool_result_chunk, indent=2)
-                    else:
-                        chunk_str = str(tool_result_chunk)
+                tool_result, _ = handle_tool_call(tool_call, conversation, current_user)
 
-                    full_tool_result += chunk_str
-                    yield {"type": "tool_result_chunk", "tool_call_id": tool_call_id, "chunk": chunk_str}
+                if isinstance(tool_result, dict):
+                    status = tool_result.get('status')
+                    if status == 'canvas_created':
+                        yield {"type": "open_canvas", "filename": tool_result.get('filename')}
+                    elif status == 'file_written':
+                        yield {"type": "file_updated", "path": tool_result.get('path'), "content": tool_result.get('content')}
 
-
-                tool_response_message = f"TOOL RESPONSE:\n---\n{full_tool_result}\n---"
+                tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
                 messages.append({"role": "user", "content": tool_response_message})
-                # Send the final aggregated result
-                yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": full_tool_result}
+                yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": tool_result}
             except Exception as e:
                 error_message = f"Error processing tool: {e}"
                 messages.append({"role": "user", "content": f"TOOL RESPONSE: {error_message}"})
@@ -147,16 +116,11 @@ def handle_ai_response(data):
             del AGENT_SESSIONS[conversation.id]
 
     if not tool_match:
-        # Add the final AI answer to memory
-        final_answer = messages[-1]['content']
-        memory_manager.add_message_and_get_store(conversation.id, current_user.id, f"Assistant: {final_answer}")
         yield from process_final_answer(messages, conversation, data.get('canvas_mode', False))
 
     update_conversation_title(conversation, messages)
 
-    # Replace the stored messages with the latest history.
-    # The vector store is now the primary long-term memory; the database
-    # is for displaying the most recent turn-by-turn chat history.
+    # Replace the stored messages with the latest history
     conversation.messages.clear()
     for msg in messages:
         new_message = Message(
@@ -174,26 +138,24 @@ def handle_ai_response(data):
 def handle_chat_message(data):
     """Handles a chat message received over WebSocket."""
     room = data.get('conversation_id') or request.sid
+    try:
+        messages = json.loads(data['messages'])
+        last_user_message = messages[-1]['content'] if messages else ''
+    except (KeyError, TypeError, json.JSONDecodeError):
+        emit('ai_response', {"type": "agent_error", "error": "Invalid message payload"}, room=room)
+        emit('ai_response', {"type": "done"}, room=room)
+        return
+
+    emit('ai_response', {"type": "user_message", "content": last_user_message}, room=room, include_self=False)
     done_sent = False
     try:
-        try:
-            messages = json.loads(data['messages'])
-            last_user_message = messages[-1]['content'] if messages else ''
-        except (KeyError, TypeError, json.JSONDecodeError):
-            emit('ai_response', {"type": "agent_error", "error": "Invalid message payload"}, room=room)
-            return
-
-        emit('ai_response', {"type": "user_message", "content": last_user_message}, room=room, include_self=False)
         for event in handle_ai_response(data):
             emit('ai_response', event, room=room)
             if event.get('type') == 'done':
                 done_sent = True
-
     except Exception as exc:
-        # Catch any unexpected errors from the generator or message parsing
         emit('ai_response', {"type": "agent_error", "error": str(exc)}, room=room)
     finally:
-        # Ensure 'done' is always sent, unless it already has been
         if not done_sent:
             emit('ai_response', {"type": "done"}, room=room)
 
@@ -266,12 +228,9 @@ def update_conversation_title(conversation, messages):
 def handle_stop_agent(data):
     """Handles a request to stop a running agent."""
     conversation_id = data.get('conversation_id')
-    room = data.get('conversation_id') or request.sid
-    if conversation_id and AGENT_SESSIONS.get(conversation_id):
+    if conversation_id and conversation_id in AGENT_SESSIONS:
         AGENT_SESSIONS[conversation_id]["stop_requested"] = True
-        emit('ai_response', {"type": "agent_error", "error": "Stop signal received. Attempting to halt..."}, room=room)
-    # Always send a done event to ensure the button is re-enabled, even if no agent was running.
-    emit('ai_response', {"type": "done"}, room=room)
+        emit('ai_response', {"type": "agent_error", "error": "Stop signal received. Attempting to halt..."})
 
 @socketio.on('load_conversations')
 @login_required
@@ -290,32 +249,15 @@ def load_conversations():
 @socketio.on('load_conversation')
 @login_required
 def load_conversation(data):
-    """Loads a specific conversation's messages from the memory store."""
+    """Loads a specific conversation's messages."""
     conversation_id = data.get('conversation_id')
     conversation = Conversation.query.filter_by(id=conversation_id).first()
 
     if conversation and conversation.is_participant(current_user.id):
-        # Rebuild history from the simple text file store
-        message_store_path = os.path.join(
-            get_workspace_path(conversation_id, current_user.id),
-            f"message_store_{conversation_id}.txt"
-        )
-        messages = []
-        if os.path.exists(message_store_path):
-            with open(message_store_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("User: "):
-                        messages.append({"role": "user", "content": line[6:]})
-                    elif line.startswith("Assistant: "):
-                        messages.append({"role": "assistant", "content": line[11:]})
-
-        # Also load the messages from the database for the current turn
-        for msg in conversation.messages:
-            messages.append({
-                "role": msg.role,
-                "content": msg.content
-            })
+        messages = [{
+            "role": msg.role,
+            "content": msg.content
+        } for msg in conversation.messages]
 
         participant = ConversationParticipant.query.filter_by(
             user_id=current_user.id,

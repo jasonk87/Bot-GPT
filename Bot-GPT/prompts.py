@@ -108,6 +108,24 @@ not make up parameters.
   piece of code.
 - `ask_debugger(failed_command: str, error_message: str)`: Asks a specialist
   agent for help with a failed tool call.
+- `index_workspace()`: Scans the entire workspace and creates vector embeddings
+  for all files. This must be done before `query_workspace` can be used.
+- `query_workspace(query: str)`: Searches the indexed workspace for relevant
+  file excerpts. Use this to get context before answering questions about the
+  codebase.
+
+**Answering Questions About the Codebase:**
+
+If the user asks a question about the files in their workspace (e.g., "What
+does this file do?", "How does this feature work?"), you MUST follow this
+procedure:
+
+1.  **Index the Workspace:** Call `index_workspace()` to ensure your knowledge
+    is up-to-date.
+2.  **Query for Context:** Call `query_workspace()` with a search query that is
+    relevant to the user's question.
+3.  **Synthesize and Answer:** Use the retrieved file excerpts to formulate a
+    comprehensive answer. Reference the file paths in your response.
 """
 
 AGENT_SYSTEM_PROMPT = """

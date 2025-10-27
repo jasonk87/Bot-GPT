@@ -211,34 +211,14 @@ async function initializeApp(username) {
                     currentResponseContent = "";
                     break;
                 case 'tool_call':
-                    // A tool call is part of the assistant's response, so we display it.
+                     // A tool call is part of the assistant's response, so we display it.
                     updateBotBubble(currentAgentBubble, currentResponseContent, true);
-                    // Pass the unique tool_call_id to the UI management function
-                    showToolCall(currentAgentBubble, data.name, data.params, data.tool_call_id);
-                    break;
-                case 'tool_result_chunk':
-                    const toolOutputEl = document.querySelector(`.tool-output[data-tool-id="${data.tool_call_id}"]`);
-                    if (toolOutputEl) {
-                        toolOutputEl.textContent += data.chunk;
-                        smartScroll(toolOutputEl);
-                    }
+                    showToolCall(currentAgentBubble, data.name, data.params);
                     break;
                 case 'tool_result':
-                    // The final result event now just confirms completion.
-                    // The content is already streamed.
-                    const finalToolOutputEl = document.querySelector(`.tool-output[data-tool-id="${data.tool_call_id}"]`);
-                    if (finalToolOutputEl) {
-                        const indicator = finalToolOutputEl.parentElement.querySelector('.tool-streaming-indicator');
-                        if (indicator) indicator.style.display = 'none';
-                    }
                     updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
                     break;
                 case 'tool_error':
-                    const errorToolOutputEl = document.querySelector(`.tool-output[data-tool-id="${data.tool_call_id}"]`);
-                    if (errorToolOutputEl) {
-                        const indicator = errorToolOutputEl.parentElement.querySelector('.tool-streaming-indicator');
-                        if (indicator) indicator.style.display = 'none';
-                    }
                     updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);
                     break;
                 case 'final_answer':
@@ -477,8 +457,8 @@ async function initializeApp(username) {
     });
 
     function handleSendButtonClick() {
-        if (isAgentRunning) {
-            // If the agent is running, this is a "Stop" button
+        if (isAgentRunning && agentModeToggle.checked) {
+            // If the agent is running in agent mode, this is a "Stop" button
             socket.emit('stop_agent', { conversation_id: currentConversationId });
         } else {
             // Otherwise, it's a "Send" button
@@ -986,11 +966,19 @@ function setAgentRunning(isRunning, agentMode = false) {
     chatInput.disabled = isRunning;
 
     if (isRunning) {
-        // Transform to a Stop button
-        sendButton.innerHTML = `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 000 2h6a1 1 0 100-2H7z" clip-rule="evenodd"></path></svg>`;
-        sendButton.classList.remove('bg-blue-600', 'hover:bg-blue-700');
-        sendButton.classList.add('bg-red-600', 'hover:bg-red-700');
-        sendButton.disabled = false; // Keep it enabled to be clickable
+        if (agentMode) {
+            // Transform to a Stop button
+            sendButton.innerHTML = `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3A.5.5 0 018 7zm2 4a.5.5 0 01.5.5v3a.5.5 0 01-1 0v-3a.5.5 0 01.5-.5z" clip-rule="evenodd"></path></svg>`;
+            sendButton.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+            sendButton.classList.add('bg-red-600', 'hover:bg-red-700');
+            sendButton.disabled = false; // Keep it enabled to be clickable
+        } else {
+            // Standard thinking spinner
+            sendButton.disabled = true;
+            sendButton.classList.add('bg-gray-500', 'cursor-not-allowed');
+            sendButton.classList.remove('bg-blue-600', 'hover:bg-blue-700', 'bg-red-600', 'hover:bg-red-700');
+            sendButton.innerHTML = `<svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
+        }
     } else {
         // Revert to Send button
         sendButton.disabled = false;
@@ -1064,19 +1052,11 @@ function createBotMessageContainer(animate = true) {
             </div>
             <div class="tool-activity" style="display: none;">
                 <div class="tool-activity-header">
-                    <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-                    <span class="font-semibold tool-header-text">Tool Call</span>
+                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l-4 4-4-4 4-4"></path></svg>
+                            <span class="font-semibold tool-header-text">Tool Call</span>
                 </div>
                 <div class="tool-activity-body">
-                    <div class="font-mono text-xs text-gray-400 mb-1">Parameters:</div>
-                    <pre class="tool-params bg-gray-900 p-2 rounded text-xs mb-2"></pre>
-                    <div class="flex items-center font-mono text-xs text-gray-400 mb-1">
-                        <span>Output:</span>
-                        <div class="tool-streaming-indicator ml-2">
-                            <span></span><span></span><span></span>
-                        </div>
-                    </div>
-                    <pre class="tool-output bg-black p-2 rounded text-xs whitespace-pre-wrap max-h-64 overflow-y-auto"></pre>
+                    <pre class="tool-params bg-gray-900 p-2 rounded text-xs"></pre>
                 </div>
             </div>
             <div class="answer-content prose prose-invert max-w-none" style="display: none;"></div>
@@ -1173,28 +1153,20 @@ function updateAgentStatus(bubbleElement, statusText, isError = false) {
     agentStatus.classList.toggle('text-red-400', isError);
 }
 
-function showToolCall(bubbleElement, toolName, toolParams, toolCallId) {
+function showToolCall(bubbleElement, toolName, toolParams) {
     if (!bubbleElement) return;
     const agentStatus = bubbleElement.querySelector('.agent-status');
     const toolActivity = bubbleElement.querySelector('.tool-activity');
     const answerContent = bubbleElement.querySelector('.answer-content');
-    const toolHeaderEl = toolActivity.querySelector('.tool-header-text');
+            const toolHeaderEl = toolActivity.querySelector('.tool-header-text');
     const toolParamsEl = toolActivity.querySelector('.tool-params');
-    const toolOutputEl = toolActivity.querySelector('.tool-output');
-    const streamingIndicator = toolActivity.querySelector('.tool-streaming-indicator');
 
     agentStatus.style.display = 'none';
     answerContent.style.display = 'none';
     toolActivity.style.display = 'block';
 
-    // Make sure the indicator is visible when the tool call starts
-    if (streamingIndicator) streamingIndicator.style.display = 'flex';
-
-    toolHeaderEl.textContent = `Action: ${toolName}`;
+            toolHeaderEl.textContent = `Action: ${toolName}`;
     toolParamsEl.textContent = JSON.stringify(toolParams, null, 2);
-    // Clear previous output and set the data-tool-id
-    toolOutputEl.textContent = '';
-    toolOutputEl.dataset.toolId = toolCallId;
 }
 
 function addConversationToList(id, title) {

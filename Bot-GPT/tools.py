@@ -3,7 +3,6 @@ import subprocess
 import re
 import inspect
 import json
-import time
 from flask import current_app
 from extensions import socketio
 from models import Conversation
@@ -27,6 +26,12 @@ try:
 except ImportError:
     build = None
     HttpError = None
+
+try:
+    import chromadb
+except ImportError:
+    chromadb = None
+
 
 from utils import get_workspace_path
 
@@ -226,34 +231,30 @@ def update_task_status(step_index: int, status: str, message: str = None, conver
 
 
 def execute_python(path, conversation_id=None, user_id=None):
-    """Executes a Python script within the conversation's workspace and streams the output."""
+    """Executes a Python script within the conversation's workspace."""
     workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path:
-        yield "Error: Could not determine workspace."
-        return
+        return "Error: Could not determine workspace."
 
     file_path = os.path.abspath(os.path.join(workspace_path, path))
-    if not file_path.startswith(os.path.abspath(workspace_path)) or not file_path.endswith(".py"):
-        yield "Error: Access denied or not a Python file."
-        return
+    if not file_path.startswith(
+            os.path.abspath(workspace_path)) or not file_path.endswith(".py"):
+        return "Error: Access denied or not a Python file."
 
     try:
-        process = subprocess.Popen(
-            ['python', '-u', file_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+        process = subprocess.run(
+            ['python', file_path],
+            capture_output=True,
             text=True,
+            timeout=10,
             cwd=workspace_path
         )
-
-        for line in iter(process.stdout.readline, ''):
-            yield line
-        process.stdout.close()
-        return_code = process.wait()
-        if return_code:
-            yield f"\n--- PROCESS EXITED WITH CODE: {return_code} ---"
+        output = process.stdout
+        if process.stderr:
+            output += f"\n--- ERRORS ---\n{process.stderr}"
+        return output
     except Exception as e:
-        yield f"Error: {str(e)}"
+        return f"Error: {str(e)}"
 
 
 def pip(command, conversation_id=None, user_id=None):
@@ -358,6 +359,97 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
         return f"An unexpected error occurred during web search: {e}"
 
 
+def index_workspace(conversation_id, user_id, user):
+    """
+    Scans the user's workspace, creates vector embeddings for each file's
+    content, and stores them in a ChromaDB collection for retrieval.
+    """
+    if not chromadb:
+        return "Error: chromadb is not installed. Please run `pip install chromadb`."
+
+    workspace_path = get_workspace_path(conversation_id, user_id)
+    if not os.path.exists(workspace_path):
+        return "Workspace is empty. Nothing to index."
+
+    try:
+        # Initialize ChromaDB client and collection
+        client = chromadb.Client()
+        collection_name = f"workspace_{conversation_id}"
+        collection = client.get_or_create_collection(name=collection_name)
+
+        # Scan workspace and process files
+        documents = []
+        metadata = []
+        ids = []
+        file_count = 0
+        for root, _, files in os.walk(workspace_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                relative_path = os.path.relpath(file_path, workspace_path)
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                        if content:  # Only index files with content
+                            documents.append(content)
+                            metadata.append({"file_path": relative_path})
+                            ids.append(f"file_{file_count}")
+                            file_count += 1
+                except Exception as e:
+                    print(f"Could not read file {file_path}: {e}")
+
+        if not documents:
+            return "No readable files found in the workspace to index."
+
+        # Add documents to the collection (ChromaDB handles embedding)
+        collection.add(
+            documents=documents,
+            metadatas=metadata,
+            ids=ids
+        )
+
+        return f"Successfully indexed {file_count} files in the workspace."
+
+    except Exception as e:
+        return f"Error during workspace indexing: {e}"
+
+
+def query_workspace(query, conversation_id, user_id, user, n_results=3):
+    """
+    Searches the indexed workspace for a given query and returns the most
+    relevant file excerpts.
+    """
+    if not chromadb:
+        return "Error: chromadb is not installed."
+
+    try:
+        client = chromadb.Client()
+        collection_name = f"workspace_{conversation_id}"
+        collection = client.get_collection(name=collection_name)
+
+        results = collection.query(
+            query_texts=[query],
+            n_results=n_results
+        )
+
+        if not results or not results['documents'][0]:
+            return "No relevant documents found in the workspace for your query."
+
+        # Format the results for the AI
+        context_str = "Relevant file excerpts from your workspace:\n\n"
+        for i, doc in enumerate(results['documents'][0]):
+            file_path = results['metadatas'][0][i]['file_path']
+            context_str += f"--- Excerpt from {file_path} ---\n"
+            context_str += f"{doc}\n\n"
+
+        return context_str
+
+    except Exception as e:
+        # Handle cases where the collection might not exist yet
+        if "does not exist" in str(e):
+            return "Workspace has not been indexed yet. Please call `index_workspace` first."
+        return f"Error during workspace query: {e}"
+
+
 def ask_debugger(failed_command, error_message, user=None, user_id=None):
     """Delegates a debugging task to a specialist agent."""
     debugger_prompt = (
@@ -414,9 +506,8 @@ def ask_coder(task_description, user=None, user_id=None):
     except Exception as e:
         return f"Error calling Coder agent: {e}"
 
-def call_ollama_chat_stream(model, messages, system_prompt, conversation_id):
+def call_ollama_chat_stream(model, messages, system_prompt):
     """Calls the Ollama chat API and yields response chunks."""
-    from chat import AGENT_SESSIONS
     try:
         ollama_host = current_app.config['OLLAMA_HOST']
         response = requests.post(
@@ -431,14 +522,7 @@ def call_ollama_chat_stream(model, messages, system_prompt, conversation_id):
         )
         response.raise_for_status()
 
-        last_chunk_time = time.time()
         for raw_line in response.iter_lines(decode_unicode=True):
-            if AGENT_SESSIONS.get(conversation_id, {}).get("stop_requested"):
-                break
-            if time.time() - last_chunk_time > 30:  # 30-second timeout between chunks
-                raise TimeoutError("Stream timed out: No data received for 30 seconds.")
-            last_chunk_time = time.time()
-
             if not raw_line:
                 continue
 
@@ -475,7 +559,7 @@ def call_ollama_chat_stream(model, messages, system_prompt, conversation_id):
         raise ConnectionError(f"An unexpected error occurred: {e}") from e
 
 def handle_tool_call(tool_call, conversation, user):
-    """Handles a tool call from the AI, supporting both regular and streaming tools."""
+    """Handles a tool call from the AI."""
     tool_name = tool_call.get('tool')
     raw_params = tool_call.get('parameters', {})
     file_creation_tool_used = False
@@ -487,6 +571,8 @@ def handle_tool_call(tool_call, conversation, user):
         "write_file": write_file,
         "execute_python": execute_python,
         "pip": pip,
+        "index_workspace": index_workspace,
+        "query_workspace": query_workspace,
         "ask_debugger": ask_debugger,
         "ask_coder": ask_coder,
         "create_and_open_canvas": create_and_open_canvas,
@@ -495,34 +581,30 @@ def handle_tool_call(tool_call, conversation, user):
         "update_task_status": update_task_status,
     }
 
-    if tool_name not in tool_map:
-        raise ValueError(f"Tool '{tool_name}' not found.")
+    if tool_name in tool_map:
+        if tool_name in ['create_and_open_canvas', 'write_file']:
+            file_creation_tool_used = True
+        tool_func = tool_map[tool_name]
+        context_params = {
+            "conversation_id": conversation.id,
+            "owner_id": conversation.owner_id,
+            "user_id": user.id,
+            "user_data_dir": current_app.config['USER_DATA_DIR'],
+            "ollama_host": current_app.config['OLLAMA_HOST'],
+            "user": user,
+            "api_key": current_app.config['GOOGLE_API_KEY'],
+            "cse_id": current_app.config['GOOGLE_CSE_ID']
+        }
 
-    if tool_name in ['create_and_open_canvas', 'write_file']:
-        file_creation_tool_used = True
+        tool_params = {}
+        sig = inspect.signature(tool_func)
+        for param_name in sig.parameters:
+            if param_name in raw_params:
+                tool_params[param_name] = raw_params[param_name]
+            elif param_name in context_params:
+                tool_params[param_name] = context_params[param_name]
 
-    tool_func = tool_map[tool_name]
-    context_params = {
-        "conversation_id": conversation.id,
-        "user_id": user.id,
-        "user": user,
-    }
-
-    tool_params = {}
-    sig = inspect.signature(tool_func)
-    for param_name in sig.parameters:
-        if param_name in raw_params:
-            tool_params[param_name] = raw_params[param_name]
-        elif param_name in context_params:
-            tool_params[param_name] = context_params[param_name]
-
-    tool_result = tool_func(**tool_params)
-
-    # This is the key change: check if the result is a generator
-    if inspect.isgenerator(tool_result):
-        # Yield a tuple: (chunk, file_creation_flag)
-        for chunk in tool_result:
-            yield chunk, file_creation_tool_used
+        tool_result = tool_func(**tool_params)
+        return tool_result, file_creation_tool_used
     else:
-        # Yield a tuple for consistency
-        yield tool_result, file_creation_tool_used
+        raise ValueError(f"Tool '{tool_name}' not found.")
