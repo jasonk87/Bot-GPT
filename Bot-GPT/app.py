@@ -7,6 +7,7 @@ from routes import main as main_blueprint
 from auth import auth as auth_blueprint
 from chat import chat as chat_blueprint
 from workspace import workspace as workspace_blueprint
+from utils import handle_user_response
 
 
 def create_app(config_name=None):

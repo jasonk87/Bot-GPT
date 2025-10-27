@@ -53,6 +53,7 @@ from .git_integration import (
 )
 from .database import get_db_schema
 from .sql_query import run_sql_query
+from .shell import run_shell_command
 
 
 # Functions moved from the old tools.py
@@ -390,6 +391,7 @@ def handle_tool_call(tool_call, conversation, user):
         "git_add": git_add,
         "get_db_schema": get_db_schema,
         "run_sql_query": run_sql_query,
+        "run_shell_command": run_shell_command,
         "execute_python": execute_python,
         "pip": pip,
         "index_workspace": index_workspace,
@@ -446,6 +448,7 @@ __all__ = [
     "git_add",
     "get_db_schema",
     "run_sql_query",
+    "run_shell_command",
     # from this file
     "create_and_open_canvas",
     "set_current_plan_step",
