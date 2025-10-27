@@ -243,7 +243,9 @@ async function initializeApp(username) {
                     setAgentRunning(false);
                     break;
                 case 'refresh_files':
-                    populateFileExplorer();
+                    if (data.conversation_id === currentConversationId) {
+                        populateFileExplorer();
+                    }
                     break;
                 case 'file_updated':
                     if (editor) {

@@ -145,7 +145,7 @@ def share_conversation(session_id):
         return jsonify({"message": "User is already a participant"}), 200
 
     new_participant = ConversationParticipant(
-        user_id=user_id_to_share_with, conversation_id=session_id, role="participant"
+        user_id=user_id_to_share_with, conversation_id=int(session_id), role="participant"
     )
     db.session.add(new_participant)
     db.session.commit()

@@ -151,3 +151,44 @@ def test_plan_visualization_events(app, socketio, test_user):
         assert plan_update_event["args"][0]["steps"] == plan_steps
 
         client.disconnect()
+
+
+def test_write_file_emits_refresh(app, socketio, test_user, mocker):
+    """
+    Tests that the write_file tool emits a 'refresh_files' event.
+    """
+    from tools import write_file
+
+    convo_id = "refresh_test_convo"
+
+    # Mock get_workspace_path to prevent file system operations
+    mocker.patch('tools.file_system.get_workspace_path', return_value='/tmp')
+    mocker.patch('os.makedirs')
+    mocker.patch('builtins.open', mocker.mock_open())
+
+
+    with app.test_request_context("/"):
+        login_user(test_user)
+        client = socketio.test_client(app)
+        assert client.is_connected()
+
+        client.emit("join", {"room": convo_id})
+
+        write_file(path="test.txt", content="hello", conversation_id=convo_id, user_id=test_user.id)
+
+        # Poll for the event with a timeout
+        import time
+        start_time = time.time()
+        received = []
+        while time.time() - start_time < 5:
+            received = client.get_received()
+            if any(e["name"] == "refresh_files" for e in received):
+                break
+            socketio.sleep(0.1)
+
+        assert any(e["name"] == "refresh_files" for e in received), "Did not receive 'refresh_files' event."
+
+        refresh_event = next(e for e in received if e["name"] == "refresh_files")
+        assert refresh_event["args"][0]["conversation_id"] == convo_id
+
+        client.disconnect()

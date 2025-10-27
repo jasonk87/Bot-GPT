@@ -72,3 +72,39 @@ def test_workspace_access_denied(client, app, two_users):
     assert response.status_code == 200
     assert 'hello' in response.json['content']
     logout(client)
+
+def test_participant_can_access_shared_conversation_file(client, app, two_users):
+    user1, user2 = two_users
+    convo_id = None
+
+    # User 1 creates a conversation and a file
+    with app.app_context():
+        convo = Conversation(owner_id=user1.id, title="User 1's Shared Convo")
+        db.session.add(convo)
+        db.session.commit()
+        convo_id = convo.id
+
+        # User 1 is the owner
+        owner_participant = ConversationParticipant(user_id=user1.id, conversation_id=convo_id, role='owner')
+        db.session.add(owner_participant)
+        db.session.commit()
+
+        workspace_path = get_workspace_path(convo_id, user1.id)
+        os.makedirs(workspace_path, exist_ok=True)
+        with open(os.path.join(workspace_path, 'sharedfile.txt'), 'w') as f:
+            f.write('shared content')
+
+    # User 1 shares the conversation with User 2 via API
+    login(client, 'testuser1', 'password')
+    share_response = client.post(f'/api/conversation/{convo_id}/share', json={'user_id': user2.id})
+    assert share_response.status_code == 201
+    logout(client)
+
+    # User 2 (the participant) should now be able to access the file
+    login(client, 'testuser2', 'password')
+    response = client.get(f'/api/workspace/file?path=sharedfile.txt&conversation_id={convo_id}')
+
+    # This is the assertion that is likely to fail and will show the bug
+    assert response.status_code == 200
+    assert 'shared content' in response.json['content']
+    logout(client)
