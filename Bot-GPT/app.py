@@ -7,19 +7,14 @@ from routes import main as main_blueprint
 from auth import auth as auth_blueprint
 from chat import chat as chat_blueprint
 from workspace import workspace as workspace_blueprint
-from utils import handle_user_response
 
 
 def create_app(config_name=None):
     """Create and configure an instance of the Flask application."""
     if config_name is None:
-        config_name = os.getenv('FLASK_CONFIG', 'default')
+        config_name = os.getenv("FLASK_CONFIG", "default")
 
-    app = Flask(
-        __name__,
-        instance_relative_config=True,
-        template_folder='templates'
-    )
+    app = Flask(__name__, instance_relative_config=True, template_folder="templates")
 
     # --- Configuration ---
     app.config.from_object(config[config_name])
@@ -37,9 +32,9 @@ def create_app(config_name=None):
             os.makedirs(app.instance_path)
 
     # If the application is using a SQLite database ensure its directory exists
-    database_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
-    if database_uri.startswith('sqlite:///'):
-        db_path = database_uri.replace('sqlite:///', '', 1)
+    database_uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
+    if database_uri.startswith("sqlite:///"):
+        db_path = database_uri.replace("sqlite:///", "", 1)
         db_directory = os.path.dirname(db_path)
         if db_directory and not os.path.exists(db_directory):
             os.makedirs(db_directory, exist_ok=True)
@@ -48,7 +43,7 @@ def create_app(config_name=None):
     db.init_app(app)
     login_manager.init_app(app)
     socketio.init_app(app)
-    login_manager.login_view = 'auth.login'
+    login_manager.login_view = "auth.login"
 
     @login_manager.user_loader
     def load_user(user_id):
@@ -68,7 +63,13 @@ def create_app(config_name=None):
     return app
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app = create_app()
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True,
-                 allow_unsafe_werkzeug=True, use_reloader=False)
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=5000,
+        debug=True,
+        allow_unsafe_werkzeug=True,
+        use_reloader=False,
+    )

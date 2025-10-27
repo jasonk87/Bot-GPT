@@ -17,17 +17,8 @@ def test_get_file_tree(tmp_path):
     tree = get_file_tree(str(tmp_path))
 
     expected_tree = [
-        {
-            "name": "empty_dir",
-            "path": "empty_dir",
-            "type": "directory",
-            "children": []
-        },
-        {
-            "name": "file1.txt",
-            "path": "file1.txt",
-            "type": "file"
-        },
+        {"name": "empty_dir", "path": "empty_dir", "type": "directory", "children": []},
+        {"name": "file1.txt", "path": "file1.txt", "type": "file"},
         {
             "name": "sub_dir",
             "path": "sub_dir",
@@ -36,23 +27,19 @@ def test_get_file_tree(tmp_path):
                 {
                     "name": "another_file.log",
                     "path": "sub_dir/another_file.log",
-                    "type": "file"
+                    "type": "file",
                 },
-                {
-                    "name": "file2.txt",
-                    "path": "sub_dir/file2.txt",
-                    "type": "file"
-                }
-            ]
-        }
+                {"name": "file2.txt", "path": "sub_dir/file2.txt", "type": "file"},
+            ],
+        },
     ]
 
     # The order of items is not guaranteed, so sort before comparing.
     def sort_tree(t):
-        t.sort(key=lambda x: x['name'])
+        t.sort(key=lambda x: x["name"])
         for item in t:
-            if 'children' in item:
-                sort_tree(item['children'])
+            if "children" in item:
+                sort_tree(item["children"])
 
     sort_tree(tree)
     sort_tree(expected_tree)

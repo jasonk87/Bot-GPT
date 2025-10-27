@@ -1,31 +1,30 @@
-import os
-import sys
-
-# This line must come before the app imports.
-# It adds the project root to the Python path.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 import json
 import pytest
 from unittest import mock
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app import create_app
 from extensions import db as _db, socketio as _socketio
 from models import User
 
 
-@pytest.fixture(scope='function')
+@pytest.fixture(scope="function")
 def app(tmp_path):
     """Create and configure a new app instance for each test."""
     db_path = tmp_path / "test.db"
     app = create_app()
-    app.config.update({
-        "TESTING": True,
-        "SQLALCHEMY_DATABASE_URI": f"sqlite:///{db_path}",
-        "WTF_CSRF_ENABLED": False,
-        "SECRET_KEY": "test-secret-key",
-        "APPLICATION_ROOT": "/",
-    })
+    app.config.update(
+        {
+            "TESTING": True,
+            "SQLALCHEMY_DATABASE_URI": f"sqlite:///{db_path}",
+            "WTF_CSRF_ENABLED": False,
+            "SECRET_KEY": "test-secret-key",
+            "APPLICATION_ROOT": "/",
+        }
+    )
 
     with app.app_context():
         _db.create_all()
@@ -114,8 +113,8 @@ def test_user(db):
     # A better approach is to check if the user exists.
     user = db.session.get(User, 1)
     if not user:
-        user = User(id=1, username='testuser')
-        user.set_password('password')
+        user = User(id=1, username="testuser")
+        user.set_password("password")
         db.session.add(user)
         db.session.commit()
     return user
@@ -125,12 +124,9 @@ def test_user(db):
 def logged_in_client(client, test_user):
     """A test client logged in via the login route."""
     response = client.post(
-        '/login',
-        data=json.dumps({
-            'username': 'testuser',
-            'password': 'password'
-        }),
-        content_type='application/json'
+        "/login",
+        data=json.dumps({"username": "testuser", "password": "password"}),
+        content_type="application/json",
     )
     assert response.status_code == 200
     return client

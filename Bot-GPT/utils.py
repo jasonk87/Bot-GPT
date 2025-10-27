@@ -6,16 +6,25 @@ from models import Conversation
 
 PLAN_APPROVALS = {}
 
-@socketio.on('user_response')
+
+@socketio.on("user_response")
 @login_required
 def handle_user_response(data):
     """Handles user's response to a plan."""
-    conversation_id = data.get('conversation_id')
+    conversation_id = data.get("conversation_id")
     if conversation_id in PLAN_APPROVALS:
-        PLAN_APPROVALS[conversation_id] = data.get('response')
-        if data.get('response') == 'reject':
-            socketio.emit('ai_response', {"type": "agent_error", "error": "Plan rejected by user. Please provide feedback or a new instruction."}, room=conversation_id)
-            socketio.emit('ai_response', {"type": "done"}, room=conversation_id)
+        PLAN_APPROVALS[conversation_id] = data.get("response")
+        if data.get("response") == "reject":
+            socketio.emit(
+                "ai_response",
+                {
+                    "type": "agent_error",
+                    "error": "Plan rejected by user. Please provide feedback or a new instruction.",
+                },
+                room=conversation_id,
+            )
+            socketio.emit("ai_response", {"type": "done"}, room=conversation_id)
+
 
 def get_workspace_path(conversation_id, user_id):
     """Constructs a path to a conversation-specific workspace."""
@@ -29,10 +38,10 @@ def get_workspace_path(conversation_id, user_id):
         owner_id = conversation.owner_id
 
     path = os.path.join(
-        current_app.config['USER_DATA_DIR'],
+        current_app.config["USER_DATA_DIR"],
         str(owner_id),
-        'workspaces',
-        str(conversation_id)
+        "workspaces",
+        str(conversation_id),
     )
     if not os.path.exists(path):
         os.makedirs(path)

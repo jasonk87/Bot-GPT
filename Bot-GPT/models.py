@@ -6,22 +6,17 @@ from extensions import db
 
 class User(UserMixin, db.Model):
     """User model for the application."""
+
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(150), unique=True, nullable=False)
     password_hash = db.Column(db.String(150), nullable=False)
 
     # User-specific settings
-    selected_model = db.Column(
-        db.String(150), nullable=False, default='qwen3:8b'
-    )
-    selected_persona = db.Column(
-        db.String(150), nullable=True, default='default'
-    )
+    selected_model = db.Column(db.String(150), nullable=False, default="qwen3:8b")
+    selected_persona = db.Column(db.String(150), nullable=True, default="default")
 
     conversations = db.relationship(
-        'ConversationParticipant',
-        back_populates='user',
-        cascade="all, delete-orphan"
+        "ConversationParticipant", back_populates="user", cascade="all, delete-orphan"
     )
 
     def set_password(self, password):
@@ -34,39 +29,35 @@ class User(UserMixin, db.Model):
 
 
 class ConversationParticipant(db.Model):
-    __tablename__ = 'conversation_participant'
-    user_id = db.Column(
-        db.Integer, db.ForeignKey('user.id'), primary_key=True
-    )
+    __tablename__ = "conversation_participant"
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), primary_key=True)
     conversation_id = db.Column(
-        db.String, db.ForeignKey('conversation.id'), primary_key=True
+        db.String, db.ForeignKey("conversation.id"), primary_key=True
     )
     role = db.Column(
-        db.String(20), nullable=False, default='participant'
+        db.String(20), nullable=False, default="participant"
     )  # e.g., 'owner', 'participant'
 
-    user = db.relationship('User', back_populates='conversations')
-    conversation = db.relationship(
-        'Conversation', back_populates='participants'
-    )
+    user = db.relationship("User", back_populates="conversations")
+    conversation = db.relationship("Conversation", back_populates="participants")
 
 
 class Conversation(db.Model):
     id = db.Column(db.String(150), primary_key=True)
     title = db.Column(db.String(100), nullable=False, default="New Chat")
-    owner_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
 
-    owner = db.relationship('User')
+    owner = db.relationship("User")
     participants = db.relationship(
-        'ConversationParticipant',
-        back_populates='conversation',
-        cascade="all, delete-orphan"
+        "ConversationParticipant",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
     )
     messages = db.relationship(
-        'Message',
-        back_populates='conversation',
+        "Message",
+        back_populates="conversation",
         cascade="all, delete-orphan",
-        order_by='Message.timestamp'
+        order_by="Message.timestamp",
     )
 
     def is_participant(self, user_id):
@@ -76,14 +67,13 @@ class Conversation(db.Model):
 
 class Message(db.Model):
     """Message model for storing chat history."""
+
     id = db.Column(db.Integer, primary_key=True)
     conversation_id = db.Column(
-        db.String, db.ForeignKey('conversation.id'), nullable=False
+        db.String, db.ForeignKey("conversation.id"), nullable=False
     )
     role = db.Column(db.String(50), nullable=False)  # 'user' or 'assistant'
     content = db.Column(db.Text, nullable=False)
-    timestamp = db.Column(
-        db.DateTime, nullable=False, default=datetime.utcnow
-    )
+    timestamp = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
-    conversation = db.relationship('Conversation', back_populates='messages')
+    conversation = db.relationship("Conversation", back_populates="messages")
