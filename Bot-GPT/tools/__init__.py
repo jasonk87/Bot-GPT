@@ -340,11 +340,11 @@ def call_ollama_chat_stream(model, messages, system_prompt):
         )
         response.raise_for_status()
 
-        for raw_line in response.iter_lines(decode_unicode=True):
-            if not raw_line:
+        for byte_line in response.iter_lines():
+            if not byte_line:
                 continue
 
-            line = raw_line
+            line = byte_line.decode("utf-8")
             if line.startswith(":"):
                 continue
             if line.startswith("data:"):
