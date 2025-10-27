@@ -1,6 +1,7 @@
 import json
 import pytest
 from models import Conversation, ConversationParticipant, User
+from extensions import db
 
 
 def test_home_page(client):
@@ -11,7 +12,7 @@ def test_home_page(client):
     assert b'/static/js/main.js' in response.data
 
 
-def test_get_workspace_files_route(logged_in_client, db, test_user, mocker):
+def test_get_workspace_files_route(logged_in_client, app, test_user, mocker):
     """
     Tests the workspace files API endpoint for an authenticated user.
     """
@@ -82,7 +83,7 @@ def test_register_new_user(client, db):
     assert user.username == 'newtestuser'
 
 
-def test_summarize_conversation(logged_in_client, db, test_user, mocker, tmp_path):
+def test_summarize_conversation(logged_in_client, app, test_user, mocker, tmp_path):
     """
     Tests the conversation summarization API endpoint.
     """

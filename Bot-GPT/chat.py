@@ -10,11 +10,13 @@ from extensions import db, socketio
 from models import Conversation, ConversationParticipant, Message
 from tools import call_ollama_chat_stream, handle_tool_call
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
-from utils import PLAN_APPROVALS
+from utils import PLAN_APPROVALS, get_workspace_path
+from memory_manager import MemoryManager
 
 chat = Blueprint('chat', __name__)
 
 AGENT_SESSIONS = {}
+memory_manager = MemoryManager()
 
 def initialize_chat(data):
     """
@@ -62,14 +64,29 @@ def handle_ai_response(data):
     tool_match = None
 
     try:
+        # Add the latest user message to memory *before* the loop starts
+        last_user_message = messages[-1]['content']
+        memory_manager.add_message_and_get_store(conversation.id, current_user.id, f"User: {last_user_message}")
+
         for i in range(max_iterations):
             if AGENT_SESSIONS.get(conversation.id, {}).get("stop_requested"):
                 yield {"type": "agent_error", "error": "Agent run stopped by user."}
                 break
 
+            # --- New Memory-Based Context ---
+            # Search for relevant history
+            relevant_history = memory_manager.search_relevant_messages(conversation.id, current_user.id, last_user_message)
+
+            # Construct a condensed message list
+            condensed_messages = []
+            if relevant_history:
+                condensed_messages.append({"role": "system", "content": "Relevant past conversation snippets:\n" + "\n".join(relevant_history)})
+            condensed_messages.append(messages[-1]) # Add the latest user message
+
             full_response_content, assistant_message = "", {"role": "assistant", "content": ""}
             try:
-                stream = call_ollama_chat_stream(model, messages, system_prompt, conversation.id)
+                # Use the condensed context instead of the full `messages` list
+                stream = call_ollama_chat_stream(model, condensed_messages, system_prompt, conversation.id)
                 for chunk in stream:
                     full_response_content += chunk
                     yield {"type": "assistant_chunk", "content": chunk}
@@ -130,11 +147,16 @@ def handle_ai_response(data):
             del AGENT_SESSIONS[conversation.id]
 
     if not tool_match:
+        # Add the final AI answer to memory
+        final_answer = messages[-1]['content']
+        memory_manager.add_message_and_get_store(conversation.id, current_user.id, f"Assistant: {final_answer}")
         yield from process_final_answer(messages, conversation, data.get('canvas_mode', False))
 
     update_conversation_title(conversation, messages)
 
-    # Replace the stored messages with the latest history
+    # Replace the stored messages with the latest history.
+    # The vector store is now the primary long-term memory; the database
+    # is for displaying the most recent turn-by-turn chat history.
     conversation.messages.clear()
     for msg in messages:
         new_message = Message(
@@ -268,15 +290,32 @@ def load_conversations():
 @socketio.on('load_conversation')
 @login_required
 def load_conversation(data):
-    """Loads a specific conversation's messages."""
+    """Loads a specific conversation's messages from the memory store."""
     conversation_id = data.get('conversation_id')
     conversation = Conversation.query.filter_by(id=conversation_id).first()
 
     if conversation and conversation.is_participant(current_user.id):
-        messages = [{
-            "role": msg.role,
-            "content": msg.content
-        } for msg in conversation.messages]
+        # Rebuild history from the simple text file store
+        message_store_path = os.path.join(
+            get_workspace_path(conversation_id, current_user.id),
+            f"message_store_{conversation_id}.txt"
+        )
+        messages = []
+        if os.path.exists(message_store_path):
+            with open(message_store_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("User: "):
+                        messages.append({"role": "user", "content": line[6:]})
+                    elif line.startswith("Assistant: "):
+                        messages.append({"role": "assistant", "content": line[11:]})
+
+        # Also load the messages from the database for the current turn
+        for msg in conversation.messages:
+            messages.append({
+                "role": msg.role,
+                "content": msg.content
+            })
 
         participant = ConversationParticipant.query.filter_by(
             user_id=current_user.id,

@@ -1,8 +1,9 @@
 import json
 import io
 from models import User
+from extensions import db
 
-def test_get_users(logged_in_client, db, test_user):
+def test_get_users(logged_in_client, app, test_user):
     """
     Tests that the get_users API endpoint returns a list of all users
     except the current user.
