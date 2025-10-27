@@ -25,7 +25,7 @@ def initialize_chat(data):
 
     if conversation_id:
         conversation = Conversation.query.get(conversation_id)
-        if not conversation or not conversation.is_participant(current_user.id):
+        if not conversation or not conversation.check_permission(current_user):
             raise ValueError("Conversation not found or you don't have access.")
     else:  # New conversation
         conversation_id = str(int(time.time() * 1000))
