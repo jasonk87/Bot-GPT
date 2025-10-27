@@ -22,7 +22,7 @@ workspace = Blueprint("workspace", __name__)
 def get_workspace_files(conversation_id):
     """Returns the file tree for a conversation's workspace."""
     conversation = Conversation.query.get(conversation_id)
-    if not conversation or not conversation.is_participant(current_user.id):
+    if not conversation or not conversation.check_permission(current_user):
         return jsonify({"error": "Access denied"}), 403
 
     # Workspace path is always determined by the owner
@@ -38,7 +38,7 @@ def get_workspace_file_content():
     path = request.args.get("path")
     conversation_id = request.args.get("conversation_id")
     conversation = Conversation.query.get(conversation_id)
-    if not conversation or not conversation.is_participant(current_user.id):
+    if not conversation or not conversation.check_permission(current_user):
         return jsonify({"error": "Access denied"}), 403
 
     workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
@@ -65,7 +65,7 @@ def save_workspace_file():
     conversation_id = data.get("conversation_id")
     conversation = Conversation.query.get(conversation_id)
 
-    if not conversation or conversation.owner_id != current_user.id:
+    if not conversation or not conversation.check_permission(current_user, level="owner"):
         return jsonify({"error": "Access denied"}), 403
 
     workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
@@ -101,7 +101,7 @@ def get_conversations():
 @login_required
 def get_conversation(session_id):
     conversation = Conversation.query.get(session_id)
-    if not conversation or not conversation.is_participant(current_user.id):
+    if not conversation or not conversation.check_permission(current_user):
         return jsonify({"error": "Access denied"}), 403
 
     convo_path = os.path.join(
@@ -125,7 +125,7 @@ def share_conversation(session_id):
     if not conversation:
         return jsonify({"error": "Conversation not found"}), 404
 
-    if conversation.owner_id != current_user.id:
+    if not conversation.check_permission(current_user, level="owner"):
         return jsonify({"error": "Access denied. Only the owner can share."}), 403
 
     data = request.get_json()
@@ -161,7 +161,7 @@ def delete_conversation(session_id):
         return jsonify({"error": "Conversation not found"}), 404
 
     # Only the owner can delete the conversation
-    if conversation.owner_id != current_user.id:
+    if not conversation.check_permission(current_user, level="owner"):
         return jsonify({"error": "Access denied. Only the owner can delete."}), 403
 
     # Construct path using the verified owner's ID
@@ -190,7 +190,9 @@ def delete_file_or_folder():
     conversation_id = request.json.get("conversation_id")
     conversation = Conversation.query.get(conversation_id)
 
-    if not conversation or conversation.owner_id != current_user.id:
+    if not conversation or not conversation.check_permission(
+        current_user, level="owner"
+    ):
         return jsonify({"error": "Access denied"}), 403
 
     workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
@@ -218,10 +220,7 @@ def summarize_conversation(session_id):
     if not conversation:
         return Response("Conversation not found", status=404)
 
-    is_participant = any(
-        p.user_id == current_user.id for p in conversation.participants
-    )
-    if not is_participant:
+    if not conversation.check_permission(current_user):
         return Response("Access denied", status=403)
 
     owner_id = conversation.owner_id
@@ -288,7 +287,9 @@ def create_folder():
     conversation_id = data.get("conversation_id")
     conversation = Conversation.query.get(conversation_id)
 
-    if not conversation or conversation.owner_id != current_user.id:
+    if not conversation or not conversation.check_permission(
+        current_user, level="owner"
+    ):
         return jsonify({"error": "Access denied"}), 403
 
     workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
@@ -313,7 +314,9 @@ def rename_file_or_folder():
     conversation_id = data.get("conversation_id")
     conversation = Conversation.query.get(conversation_id)
 
-    if not conversation or conversation.owner_id != current_user.id:
+    if not conversation or not conversation.check_permission(
+        current_user, level="owner"
+    ):
         return jsonify({"error": "Access denied"}), 403
 
     workspace_path = get_workspace_path(conversation_id, conversation.owner_id)

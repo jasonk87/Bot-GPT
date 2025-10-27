@@ -60,9 +60,16 @@ class Conversation(db.Model):
         order_by="Message.timestamp",
     )
 
-    def is_participant(self, user_id):
-        """Check if a user is a participant in the conversation."""
-        return any(p.user_id == user_id for p in self.participants)
+    def check_permission(self, user, level="participant"):
+        """
+        Check if a user has a certain permission level for this conversation.
+        Level can be 'participant' or 'owner'.
+        """
+        if level == "owner":
+            return self.owner_id == user.id
+
+        is_participant = any(p.user_id == user.id for p in self.participants)
+        return is_participant
 
 
 class Message(db.Model):

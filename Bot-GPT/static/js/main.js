@@ -905,7 +905,7 @@ async function confirmDeletion(id, type, itemType) {
             if (itemType === 'file') {
                 await populateFileExplorer();
             } else {
-                await populateConversations();
+                socket.emit('load_conversations');
                 if (id === currentConversationId) {
                     startNewChat();
                 }

@@ -223,49 +223,61 @@ def handle_leave_room(data):
 
 
 def process_final_answer(messages, conversation, canvas_mode):
-    """Processes the final answer from the AI, saving to canvas if needed."""
+    """
+    Processes the final answer from the AI. If in canvas_mode, it finds the
+    largest code block, saves it to a file, and signals the frontend to open it.
+    """
     final_answer_content = messages[-1]["content"]
-    if canvas_mode:
-        code_block_match = re.search(r"```(\w*)\n([\s\S]+?)```", final_answer_content)
-        if code_block_match:
-            language = code_block_match.group(1).lower()
-            content_to_save = code_block_match.group(2).strip()
-            file_extension = {
-                "python": "py",
-                "javascript": "js",
-                "html": "html",
-                "css": "css",
-                "json": "json",
-                "sql": "sql",
-                "shell": "sh",
-                "bash": "sh",
-            }.get(language, "txt")
-        else:
-            content_to_save = re.sub(
-                r"<think>[\s\S]*?<\/think>", "", final_answer_content
-            ).strip()
-            file_extension = "md"
+    if not canvas_mode:
+        yield {"type": "final_answer", "content": final_answer_content}
+        return
 
-        timestamp = int(time.time())
-        filename = f"canvas_{timestamp}.{file_extension}"
+    # Find all code blocks and identify the largest one
+    code_blocks = re.findall(r"```(\w*)\n([\s\S]+?)```", final_answer_content)
+    if not code_blocks:
+        # If no code blocks, save the whole message as markdown
+        content_to_save = re.sub(
+            r"<think>[\s\S]*?<\/think>", "", final_answer_content
+        ).strip()
+        file_extension = "md"
+    else:
+        # Find the code block with the most lines
+        largest_block = max(code_blocks, key=lambda item: len(item[1].split("\n")))
+        language = largest_block[0].lower()
+        content_to_save = largest_block[1].strip()
+        file_extension = {
+            "python": "py",
+            "javascript": "js",
+            "html": "html",
+            "css": "css",
+            "json": "json",
+            "sql": "sql",
+            "shell": "sh",
+            "bash": "sh",
+        }.get(language, "txt")
 
-        from tools import write_file
+    # Proceed with saving the determined content
+    timestamp = int(time.time())
+    filename = f"canvas_{timestamp}.{file_extension}"
 
-        write_result = write_file(
-            path=filename,
-            content=content_to_save,
-            conversation_id=conversation.id,
-            user_id=conversation.owner_id,
-        )
+    from tools import write_file
 
-        if "successfully" in write_result.get("message", ""):
-            yield {"type": "open_canvas", "filename": filename}
-            yield {"type": "refresh_files"}
-        else:
-            yield {
-                "type": "agent_error",
-                "error": f"Failed to save to canvas: {write_result.get('message', '')}",
-            }
+    # Note: we pass owner_id to ensure the workspace path is correct
+    write_result = write_file(
+        path=filename,
+        content=content_to_save,
+        conversation_id=conversation.id,
+        user_id=conversation.owner_id,
+    )
+
+    if "successfully" in write_result.get("message", ""):
+        yield {"type": "open_canvas", "filename": filename}
+        # The write_file tool now emits 'refresh_files' directly
+    else:
+        yield {
+            "type": "agent_error",
+            "error": f"Failed to save to canvas: {write_result.get('message', '')}",
+        }
 
     yield {"type": "final_answer", "content": final_answer_content}
 
