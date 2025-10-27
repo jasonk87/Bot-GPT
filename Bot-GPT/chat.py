@@ -356,7 +356,7 @@ def load_conversation(data):
     conversation_id = data.get("conversation_id")
     conversation = Conversation.query.filter_by(id=conversation_id).first()
 
-    if conversation and conversation.is_participant(current_user.id):
+    if conversation and conversation.check_permission(current_user):
         messages = [
             {"role": msg.role, "content": msg.content} for msg in conversation.messages
         ]
