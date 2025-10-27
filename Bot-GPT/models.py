@@ -83,7 +83,7 @@ class Message(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     conversation_id = db.Column(
-        db.String, db.ForeignKey("conversation.id"), nullable=False
+        db.Integer, db.ForeignKey("conversation.id"), nullable=False
     )
     role = db.Column(db.String(50), nullable=False)  # 'user' or 'assistant'
     content = db.Column(db.Text, nullable=False)

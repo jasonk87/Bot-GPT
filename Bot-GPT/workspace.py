@@ -348,14 +348,30 @@ def upload_file():
     prompt = request.form.get("prompt", "")
     conversation_id = request.form.get("conversation_id")
 
-    if not conversation_id:
-        conversation_id = str(int(time.time() * 1000))
-
     if not files or files[0].filename == "":
         return jsonify(error="No selected file"), 400
 
     filenames = []
-    workspace_path = get_workspace_path(conversation_id, current_user.id)
+
+    conversation = None
+    if conversation_id:
+        conversation = Conversation.query.get(conversation_id)
+
+    if not conversation:
+        conversation = Conversation(owner_id=current_user.id)
+        db.session.add(conversation)
+        db.session.flush()  # Flush to get the new conversation's ID
+        participant = ConversationParticipant(
+            user_id=current_user.id, conversation_id=conversation.id, role="owner"
+        )
+        db.session.add(participant)
+        db.session.commit()
+        conversation_id = conversation.id
+
+    if not conversation.check_permission(current_user):
+        return jsonify(error="Access denied"), 403
+
+    workspace_path = get_workspace_path(conversation_id, conversation.owner_id)
     if not workspace_path:
         return jsonify(error="Could not create workspace"), 500
 

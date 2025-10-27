@@ -17,6 +17,10 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.15/mode/javascript/javascript.min.js"></script>
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <style>
+        html, body {
+            height: 100%;
+            overflow: hidden; /* Prevent scrolling on the body */
+        }
         body { font-family: 'Inter', sans-serif; }
         .scrollable-content::-webkit-scrollbar { width: 6px; }
         .scrollable-content::-webkit-scrollbar-track { background: #171717; }
@@ -318,7 +322,7 @@
     </div>
 
     <!-- Main App -->
-    <div id="main-app" class="hidden h-screen flex">
+    <div id="main-app" class="hidden h-full flex">
         <!-- Side Panel -->
         <aside id="side-panel" class="bg-gray-900 w-64 flex-shrink-0 flex flex-col transition-transform duration-300 ease-in-out absolute inset-y-0 left-0 z-30 transform -translate-x-full sm:relative sm:translate-x-0">
             <div class="p-2 flex-shrink-0">
@@ -387,19 +391,28 @@
                 <footer class="p-4 bg-gray-800 flex-shrink-0">
                     <div class="max-w-3xl mx-auto">
                         <div class="relative flex items-center bg-gray-700 rounded-lg p-2 space-x-2">
-                            <button id="upload-btn" class="p-2 text-gray-400 hover:text-white" title="Upload File">
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
-                            </button>
-                            <button id="canvas-toggle-btn" class="p-2 text-gray-400 hover:text-white" title="Canvas Mode">
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                            </button>
-
-                            <!-- Agent Mode Toggle -->
-                            <div class="flex items-center" title="Toggle autonomous agent mode">
-                                <label for="agent-mode-toggle" class="text-sm text-gray-400 mr-2">Agent Mode</label>
-                                <div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
-                                    <input type="checkbox" name="agent-mode-toggle" id="agent-mode-toggle" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
-                                    <label for="agent-mode-toggle" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-600 cursor-pointer"></label>
+                            <!-- Tools Dropdown -->
+                            <div id="tools-dropdown" class="relative">
+                                <button id="tools-dropdown-btn" class="p-2 text-gray-400 hover:text-white" title="Tools">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 16v-2m-7-6H3m18 0h-2M5.636 5.636l-1.414-1.414m15.556 15.556l-1.414-1.414M18.364 5.636l1.414-1.414M4.222 19.778l1.414-1.414M12 18a6 6 0 100-12 6 6 0 000 12z"></path></svg>
+                                </button>
+                                <div id="tools-dropdown-menu" class="hidden absolute bottom-full mb-2 left-0 bg-gray-900 border border-gray-700 rounded-lg shadow-lg p-2 space-y-2">
+                                    <button id="upload-btn" class="w-full flex items-center p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded" title="Upload File">
+                                        <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                                        <span>Attach File</span>
+                                    </button>
+                                    <button id="canvas-toggle-btn" class="w-full flex items-center p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded" title="Canvas Mode">
+                                        <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                                        <span>Canvas Mode</span>
+                                    </button>
+                                    <!-- Agent Mode Toggle -->
+                                    <div class="flex items-center p-2" title="Toggle autonomous agent mode">
+                                        <label for="agent-mode-toggle" class="text-sm text-gray-400 mr-2">Agent Mode</label>
+                                        <div class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+                                            <input type="checkbox" name="agent-mode-toggle" id="agent-mode-toggle" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer"/>
+                                            <label for="agent-mode-toggle" class="toggle-label block overflow-hidden h-6 rounded-full bg-gray-600 cursor-pointer"></label>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <style>

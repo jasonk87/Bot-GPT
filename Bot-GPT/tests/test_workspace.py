@@ -1,5 +1,6 @@
 import json
 import io
+from unittest.mock import MagicMock
 from models import User
 from extensions import db
 
@@ -29,16 +30,23 @@ def test_upload_file(logged_in_client, mocker):
     """
     Tests the file upload API endpoint.
     """
-    # 1. Mock the `get_workspace_path` function to avoid creating directories.
-    mocker.patch("workspace.get_workspace_path", return_value="/tmp/fake_workspace")
+    # 1. Mock file system operations to avoid creating directories and files.
     mocker.patch("os.path.join", return_value="/tmp/fake_workspace/test.txt")
     mocker.patch("builtins.open", mocker.mock_open())
+    mocker.patch("werkzeug.utils.secure_filename", return_value="test.txt")
+    mocker.patch("os.makedirs")
+    # Need to mock the save method on the file object
+    mock_file_storage = MagicMock()
+    mock_file_storage.filename = "test.txt"
+    mock_file_storage.save.return_value = None
+    mocker.patch(
+        "werkzeug.datastructures.FileStorage.save", mock_file_storage.save
+    )
 
-    # 2. Prepare the request data.
+    # 2. Prepare the request data. Note: No conversation_id is sent for a new chat.
     data = {
         "files[]": (io.BytesIO(b"file content"), "test.txt"),
         "prompt": "Here is a file.",
-        "conversation_id": "test_convo_id",
     }
 
     # 3. Make the request.
@@ -51,4 +59,4 @@ def test_upload_file(logged_in_client, mocker):
     data = json.loads(response.data)
     assert "User uploaded the following files" in data["message"]
     assert "test.txt" in data["message"]
-    assert data["conversation_id"] == "test_convo_id"
+    assert isinstance(data["conversation_id"], int)

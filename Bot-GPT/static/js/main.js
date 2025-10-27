@@ -151,8 +151,23 @@ async function initializeApp(username) {
     planActions = document.getElementById('plan-actions');
     approvePlanBtn = document.getElementById('approve-plan-btn');
     rejectPlanBtn = document.getElementById('reject-plan-btn');
+    toolsDropdownBtn = document.getElementById('tools-dropdown-btn');
+    toolsDropdownMenu = document.getElementById('tools-dropdown-menu');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
+
+    // --- Tools Dropdown Logic ---
+    toolsDropdownBtn.addEventListener('click', () => {
+        toolsDropdownMenu.classList.toggle('hidden');
+    });
+
+    // Close dropdown if clicking outside
+    document.addEventListener('click', (event) => {
+        if (!document.getElementById('tools-dropdown').contains(event.target)) {
+            toolsDropdownMenu.classList.add('hidden');
+        }
+    });
+
 
     // --- Event Listeners for Plan Approval ---
     approvePlanBtn.addEventListener('click', () => {

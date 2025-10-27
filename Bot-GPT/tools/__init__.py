@@ -419,6 +419,27 @@ def handle_tool_call(tool_call, conversation, user):
             "cse_id": current_app.config["GOOGLE_CSE_ID"],
         }
 
+        # If the tool operates on the workspace, it must use the owner's ID
+        # to construct the correct path, not the current user's ID.
+        workspace_tools = [
+            "list_files",
+            "read_file",
+            "write_file",
+            "execute_python",
+            "index_workspace",
+            "query_workspace",
+            "create_and_open_canvas",
+            "list_directory_tree",
+            "git_clone",
+            "git_pull",
+            "git_push",
+            "git_commit",
+            "git_add",
+            "run_shell_command",
+        ]
+        if tool_name in workspace_tools:
+            context_params["user_id"] = conversation.owner_id
+
         tool_params = {}
         sig = inspect.signature(tool_func)
         for param_name in sig.parameters:
