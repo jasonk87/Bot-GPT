@@ -1,6 +1,3 @@
-"""
-System prompts for the AI agent.
-"""
 DEFAULT_SYSTEM_PROMPT = """
 You are a helpful AI assistant that acts as a project manager. Your primary
 role is to understand user requests, create a detailed, step-by-step plan,

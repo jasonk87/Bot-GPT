@@ -1,6 +1,3 @@
-"""
-Git integration tools for the AI agent.
-"""
 import subprocess
 import os
 from utils import get_workspace_path
@@ -17,8 +14,7 @@ def git_clone(repo_url, conversation_id=None, user_id=None):
             capture_output=True,
             text=True,
             timeout=300,
-            cwd=workspace_path,
-            check=False
+            cwd=workspace_path
         )
         output = process.stdout
         if process.stderr:
@@ -43,8 +39,7 @@ def git_pull(repo_path, conversation_id=None, user_id=None):
             capture_output=True,
             text=True,
             timeout=300,
-            cwd=repo_full_path,
-            check=False
+            cwd=repo_full_path
         )
         output = process.stdout
         if process.stderr:
@@ -69,8 +64,7 @@ def git_push(repo_path, conversation_id=None, user_id=None):
             capture_output=True,
             text=True,
             timeout=300,
-            cwd=repo_full_path,
-            check=False
+            cwd=repo_full_path
         )
         output = process.stdout
         if process.stderr:
@@ -95,8 +89,7 @@ def git_commit(repo_path, message, conversation_id=None, user_id=None):
             capture_output=True,
             text=True,
             timeout=300,
-            cwd=repo_full_path,
-            check=False
+            cwd=repo_full_path
         )
         output = process.stdout
         if process.stderr:
@@ -121,8 +114,7 @@ def git_add(repo_path, files, conversation_id=None, user_id=None):
             capture_output=True,
             text=True,
             timeout=300,
-            cwd=repo_full_path,
-            check=False
+            cwd=repo_full_path
         )
         output = process.stdout
         if process.stderr:

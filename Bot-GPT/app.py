@@ -1,6 +1,3 @@
-"""
-Main application file for the Flask server.
-"""
 import os
 from flask import Flask
 from extensions import db, login_manager, socketio

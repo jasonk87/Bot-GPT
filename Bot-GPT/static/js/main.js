@@ -772,34 +772,24 @@ async function handleRename(oldPath) {
             const canvasPanel = document.getElementById('canvas-panel');
             const resizer = document.getElementById('resizer');
             const mainContentWrapper = document.getElementById('main-content-wrapper');
+            const canvasFilename = document.getElementById('canvas-filename');
+            const saveCanvasBtn = document.getElementById('save-canvas-btn');
+            const copyCanvasBtn = document.getElementById('canvas-copy-btn');
+            const closeCanvasBtn = document.getElementById('canvas-close-btn');
 
             if (window.innerWidth < 640) {
                 mainContentWrapper.style.display = 'none';
             }
 
-            canvasPanel.innerHTML = `
-                <div class="canvas-header">
-                    <h3 class="canvas-header-title" title="${path}">${path}</h3>
-                    <div class="canvas-header-buttons">
-                        <button id="canvas-copy-btn">Copy</button>
-                        <button id="canvas-save-btn">Save</button>
-                        <button id="canvas-close-btn">&times;</button>
-                    </div>
-                </div>
-                <div id="file-viewer" class="flex-1"></div>
-            `;
+            canvasFilename.textContent = path;
+            canvasFilename.title = path;
 
             canvasPanel.classList.remove('hidden');
             canvasPanel.classList.add('flex');
             resizer.classList.remove('hidden');
 
-            // Attach event listeners for the new buttons
-            document.getElementById('canvas-copy-btn').addEventListener('click', () => {
-                if (editor) navigator.clipboard.writeText(editor.getValue());
-            });
-            document.getElementById('canvas-save-btn').addEventListener('click', async () => {
+            saveCanvasBtn.onclick = async () => {
                 if (editor) {
-                    const path = document.querySelector('#canvas-panel .canvas-header-title').title;
                     const newContent = editor.getValue();
                     try {
                         const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file`, {
@@ -815,15 +805,19 @@ async function handleRename(oldPath) {
                             const data = await response.json();
                             throw new Error(data.error);
                         }
-                        const saveBtn = document.getElementById('canvas-save-btn');
-                        saveBtn.textContent = 'Saved!';
-                        setTimeout(() => { saveBtn.textContent = 'Save'; }, 2000);
+                        saveCanvasBtn.textContent = 'Saved!';
+                        setTimeout(() => { saveCanvasBtn.textContent = 'Save'; }, 2000);
                     } catch (error) {
                         alert(`Error saving file: ${error.message}`);
                     }
                 }
-            });
-            document.getElementById('canvas-close-btn').addEventListener('click', hideCanvasPanel);
+            };
+
+            copyCanvasBtn.onclick = () => {
+                if (editor) navigator.clipboard.writeText(editor.getValue());
+            };
+
+            closeCanvasBtn.onclick = hideCanvasPanel;
 
             initializeEditor(content, mode);
         }
@@ -842,8 +836,7 @@ async function handleRename(oldPath) {
             resizer.classList.add('hidden');
 
             if (editor) {
-                // This is a bit of a hack to ensure CodeMirror instance is destroyed
-                editor.getWrapperElement().remove();
+                editor.toTextArea();
                 editor = null;
             }
 
@@ -873,11 +866,15 @@ async function handleRename(oldPath) {
         }
 
         function initializeEditor(content, mode) {
-            const editorContainer = document.getElementById('file-viewer');
-            if (!editorContainer) return;
-            editorContainer.innerHTML = '';
-            editor = CodeMirror(editorContainer, {
-                value: content,
+            const codeEditor = document.getElementById('code-editor');
+            if (!codeEditor) return;
+            codeEditor.value = content;
+
+            if (editor) {
+                editor.toTextArea();
+            }
+
+            editor = CodeMirror.fromTextArea(codeEditor, {
                 mode: mode,
                 theme: 'dracula',
                 lineNumbers: true,
@@ -887,7 +884,7 @@ async function handleRename(oldPath) {
             // Add debounce for auto-saving
             editor.on('change', () => {
                 clearTimeout(debounceTimer);
-                const saveBtn = document.getElementById('canvas-save-btn');
+                const saveBtn = document.getElementById('save-canvas-btn');
                 if (saveBtn) {
                     saveBtn.textContent = 'Saving...';
                 }

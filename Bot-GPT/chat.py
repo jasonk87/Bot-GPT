@@ -1,6 +1,3 @@
-"""
-Chat routes and WebSocket events for the Flask application.
-"""
 import json
 import re
 import time

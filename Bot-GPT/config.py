@@ -1,6 +1,3 @@
-"""
-Configuration settings for the Flask application.
-"""
 import os
 from dotenv import load_dotenv
 

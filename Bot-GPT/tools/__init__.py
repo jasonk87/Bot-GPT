@@ -32,7 +32,7 @@ try:
 except ImportError:
     chromadb = None
 
-from utils import get_workspace_path, PLAN_APPROVALS
+from utils import get_workspace_path
 
 # Import tool functions from sub-modules
 from .web_search import web_search
@@ -83,13 +83,15 @@ def set_current_plan_step(step_number, step_description):
 
 
 def set_plan(
-    steps: list, conversation_id: str, requires_approval: bool = False
+    steps: list, conversation_id: str, requires_approval: bool = False, **kwargs
 ):
     """
     Sets the agent's plan, sends it to the UI, and optionally waits for approval.
     """
     if not conversation_id:
         return "Error: conversation_id is required to set a plan."
+
+    from utils import PLAN_APPROVALS
 
     PLAN_APPROVALS[conversation_id] = None  # Reset approval state
 
@@ -124,6 +126,7 @@ def update_task_status(
     status: str,
     message: str = None,
     conversation_id: str = None,
+    **kwargs,
 ):
     """
     Updates the status of a single task in the plan.
@@ -156,7 +159,6 @@ def execute_python(path, conversation_id=None, user_id=None):
             text=True,
             timeout=10,
             cwd=workspace_path,
-            check=False,
         )
         output = process.stdout
         if process.stderr:
@@ -166,12 +168,12 @@ def execute_python(path, conversation_id=None, user_id=None):
         return f"Error: {str(e)}"
 
 
-def pip(command):
+def pip(command, conversation_id=None, user_id=None):
     """Installs a Python package using pip."""
     try:
         command_list = ["pip"] + command.split() + ["--disable-pip-version-check"]
         process = subprocess.run(
-            command_list, capture_output=True, text=True, timeout=120, check=False
+            command_list, capture_output=True, text=True, timeout=120
         )
         output = process.stdout
         if process.stderr:
@@ -181,7 +183,7 @@ def pip(command):
         return f"Error: {str(e)}"
 
 
-def index_workspace(conversation_id, user_id):
+def index_workspace(conversation_id, user_id, user):
     """
     Scans the user's workspace, creates vector embeddings for each file's
     content, and stores them in a ChromaDB collection for retrieval.
@@ -231,7 +233,7 @@ def index_workspace(conversation_id, user_id):
         return f"Error during workspace indexing: {e}"
 
 
-def query_workspace(query, conversation_id, n_results=3):
+def query_workspace(query, conversation_id, user_id, user, n_results=3):
     """
     Searches the indexed workspace for a given query and returns the most
     relevant file excerpts.
@@ -265,7 +267,7 @@ def query_workspace(query, conversation_id, n_results=3):
         return f"Error during workspace query: {e}"
 
 
-def ask_debugger(failed_command, error_message, user=None):
+def ask_debugger(failed_command, error_message, user=None, user_id=None):
     """Delegates a debugging task to a specialist agent."""
     debugger_prompt = (
         f"Fix this failed command:\n{failed_command}\n"
@@ -293,7 +295,7 @@ def ask_debugger(failed_command, error_message, user=None):
         return f"Error calling debugger agent: {e}"
 
 
-def ask_coder(task_description, user=None):
+def ask_coder(task_description, user=None, user_id=None):
     """Delegates a coding task to a specialist agent."""
     coder_prompt = (
         "Write Python code for the following task. Your code should be "

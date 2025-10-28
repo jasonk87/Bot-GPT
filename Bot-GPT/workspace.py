@@ -1,6 +1,3 @@
-"""
-Workspace routes for the Flask application.
-"""
 import os
 import shutil
 import json

@@ -1,6 +1,3 @@
-"""
-Authentication routes for the Flask application.
-"""
 from flask import Blueprint, request, jsonify
 from flask_login import login_user, logout_user, login_required, current_user
 from extensions import db

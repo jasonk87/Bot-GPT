@@ -1,11 +1,8 @@
-"""
-SQL query tools for the AI agent.
-"""
 import os
 import sqlite3
 from flask import current_app
 
-def run_sql_query(query):
+def run_sql_query(query, conversation_id=None, user_id=None):
     """
     Executes a read-only SQL query against the application's database.
     Only SELECT statements are allowed.
