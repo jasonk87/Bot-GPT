@@ -1,3 +1,6 @@
+"""
+Flask extensions used in the application.
+"""
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
 from flask_socketio import SocketIO

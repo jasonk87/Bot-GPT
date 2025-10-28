@@ -1,3 +1,6 @@
+"""
+File system tools for the AI agent.
+"""
 import os
 from extensions import socketio
 from utils import get_workspace_path
@@ -46,7 +49,7 @@ def list_directory_tree(path=".", conversation_id=None, user_id=None):
         return f"Error: The path '{path}' is not a valid directory."
 
     tree_string = ""
-    for root, dirs, files in os.walk(start_path):
+    for root, _, files in os.walk(start_path):
         level = root.replace(start_path, "").count(os.sep)
         indent = " " * 4 * (level)
         tree_string += f"{indent}{os.path.basename(root)}/\n"

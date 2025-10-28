@@ -33,7 +33,7 @@ def test_is_safe_path_rejects_paths_outside_workspace(mock_workspace):
 def test_run_shell_command_allowed_command_success(mock_get_path, mock_workspace):
     """Test that an allowed and safe command executes successfully."""
     mock_get_path.return_value = mock_workspace
-    result = run_shell_command(f"ls safe_file.txt", MOCK_CONVERSATION_ID, MOCK_USER_ID, None)
+    result = run_shell_command(f"ls safe_file.txt", MOCK_CONVERSATION_ID, MOCK_USER_ID)
     assert "safe_file.txt" in result
     assert "--- STDOUT ---" in result
 
@@ -41,14 +41,14 @@ def test_run_shell_command_allowed_command_success(mock_get_path, mock_workspace
 def test_run_shell_command_not_allowed(mock_get_path, mock_workspace):
     """Test that a command not in the safelist is rejected."""
     mock_get_path.return_value = mock_workspace
-    result = run_shell_command("python -c 'print(1)'", MOCK_CONVERSATION_ID, MOCK_USER_ID, None)
+    result = run_shell_command("python -c 'print(1)'", MOCK_CONVERSATION_ID, MOCK_USER_ID)
     assert "Error: Command 'python' is not allowed." in result
 
 @patch('tools.shell.get_workspace_path')
 def test_run_shell_command_path_traversal_blocked(mock_get_path, mock_workspace):
     """Test that a command trying to access outside the workspace is blocked."""
     mock_get_path.return_value = mock_workspace
-    result = run_shell_command("ls ../../", MOCK_CONVERSATION_ID, MOCK_USER_ID, None)
+    result = run_shell_command("ls ../../", MOCK_CONVERSATION_ID, MOCK_USER_ID)
     assert "Error: Path '../../' is outside the allowed workspace." in result
 
 @patch('tools.shell.get_workspace_path')
@@ -57,7 +57,7 @@ def test_run_shell_command_injection_blocked(mock_get_path, mock_workspace):
     mock_get_path.return_value = mock_workspace
     # The path jailing correctly identifies '/' as an unsafe path.
     # This is a better and more secure outcome than the original test expected.
-    result = run_shell_command("echo hello && ls /", MOCK_CONVERSATION_ID, MOCK_USER_ID, None)
+    result = run_shell_command("echo hello && ls /", MOCK_CONVERSATION_ID, MOCK_USER_ID)
     assert "Error: Path '/' is outside the allowed workspace." in result
 
 @patch('tools.shell.get_workspace_path')
@@ -65,7 +65,7 @@ def test_run_shell_command_timeout(mock_get_path, mock_workspace):
     """Test that a long-running command is terminated."""
     mock_get_path.return_value = mock_workspace
     with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd="sleep 20", timeout=15)):
-        result = run_shell_command("sleep 20", MOCK_CONVERSATION_ID, MOCK_USER_ID, None)
+        result = run_shell_command("sleep 20", MOCK_CONVERSATION_ID, MOCK_USER_ID)
     assert "Error: Command timed out after 15 seconds." in result
 
 @patch('tools.shell.get_workspace_path')
@@ -73,6 +73,6 @@ def test_command_with_no_output(mock_get_path, mock_workspace):
     """Test that commands with no output return a standard message."""
     mock_get_path.return_value = mock_workspace
     # 'mkdir' is a good example of a command that is silent on success
-    result = run_shell_command("mkdir new_test_dir", MOCK_CONVERSATION_ID, MOCK_USER_ID, None)
+    result = run_shell_command("mkdir new_test_dir", MOCK_CONVERSATION_ID, MOCK_USER_ID)
     assert "Command executed with no output." in result
     assert os.path.isdir(os.path.join(mock_workspace, "new_test_dir"))

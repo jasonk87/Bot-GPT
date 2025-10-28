@@ -1,3 +1,6 @@
+"""
+Utility functions for the Flask application.
+"""
 import os
 from flask import current_app
 from flask_login import login_required

@@ -1,10 +1,14 @@
+"""
+Database tools for the AI agent.
+"""
 import os
-from sqlalchemy import create_engine, inspect
 from urllib.parse import quote_plus
+from sqlalchemy import create_engine, inspect
+
 
 from flask import current_app
 
-def get_db_schema(conversation_id=None, user_id=None):
+def get_db_schema():
     """
     Inspects the database and returns its schema.
     """

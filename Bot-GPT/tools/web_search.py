@@ -1,3 +1,6 @@
+"""
+Web search tools for the AI agent.
+"""
 import requests
 from bs4 import BeautifulSoup
 from googleapiclient.discovery import build
@@ -61,7 +64,7 @@ def summarize_text(text, query, model, ollama_host):
         ) from e
 
 
-def web_search(query, conversation_id=None, user_id=None, user=None):
+def web_search(query, user=None):
     """
     Performs a web search using the Google Search API, scrapes the top
     results, and uses an AI model to summarize the answer.

@@ -1,3 +1,6 @@
+"""
+Shell tools for the AI agent.
+"""
 import os
 import subprocess
 import shlex
@@ -30,7 +33,7 @@ def is_safe_path(path, workspace_root):
     resolved_path = os.path.abspath(os.path.join(workspace_root, path))
     return resolved_path.startswith(workspace_root)
 
-def run_shell_command(command, conversation_id, user_id, user):
+def run_shell_command(command, conversation_id, user_id):
     """
     Executes a shell command in a secure, jailed environment.
     """
