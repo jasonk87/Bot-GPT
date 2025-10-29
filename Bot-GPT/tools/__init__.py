@@ -43,6 +43,7 @@ from .file_system import (
     get_file_tree,
     read_file,
     write_file,
+    replace_in_file,
 )
 from .git_integration import (
     git_clone,
@@ -384,6 +385,7 @@ def handle_tool_call(tool_call, conversation, user):
         "list_files": list_files,
         "read_file": read_file,
         "write_file": write_file,
+        "replace_in_file": replace_in_file,
         "git_clone": git_clone,
         "git_pull": git_pull,
         "git_push": git_push,
@@ -462,6 +464,7 @@ __all__ = [
     "get_file_tree",
     "read_file",
     "write_file",
+    "replace_in_file",
     "git_clone",
     "git_pull",
     "git_push",

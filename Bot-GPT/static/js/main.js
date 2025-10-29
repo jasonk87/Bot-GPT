@@ -772,31 +772,34 @@ async function handleRename(oldPath) {
             const canvasPanel = document.getElementById('canvas-panel');
             const resizer = document.getElementById('resizer');
             const mainContentWrapper = document.getElementById('main-content-wrapper');
-            const canvasFilename = document.getElementById('canvas-filename');
-            const saveCanvasBtn = document.getElementById('save-canvas-btn');
-            const copyCanvasBtn = document.getElementById('canvas-copy-btn');
-            const closeCanvasBtn = document.getElementById('canvas-close-btn');
-            const livePreviewBtn = document.getElementById('live-preview-btn');
 
             if (window.innerWidth < 640) {
                 mainContentWrapper.style.display = 'none';
             }
 
-            canvasFilename.textContent = path;
-            canvasFilename.title = path;
+            canvasPanel.innerHTML = `
+                <div class="canvas-header">
+                    <h3 class="canvas-header-title" title="${path}">${path}</h3>
+                    <div class="canvas-header-buttons">
+                        <button id="canvas-copy-btn">Copy</button>
+                        <button id="canvas-save-btn">Save</button>
+                        <button id="canvas-close-btn">&times;</button>
+                    </div>
+                </div>
+                <div id="file-viewer" class="flex-1"></div>
+            `;
 
             canvasPanel.classList.remove('hidden');
             canvasPanel.classList.add('flex');
             resizer.classList.remove('hidden');
 
-            if (['html', 'css', 'javascript'].includes(mode)) {
-                livePreviewBtn.classList.remove('hidden');
-            } else {
-                livePreviewBtn.classList.add('hidden');
-            }
-
-            saveCanvasBtn.onclick = async () => {
+            // Attach event listeners for the new buttons
+            document.getElementById('canvas-copy-btn').addEventListener('click', () => {
+                if (editor) navigator.clipboard.writeText(editor.getValue());
+            });
+            document.getElementById('canvas-save-btn').addEventListener('click', async () => {
                 if (editor) {
+                    const path = document.querySelector('#canvas-panel .canvas-header-title').title;
                     const newContent = editor.getValue();
                     try {
                         const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file`, {
@@ -812,25 +815,15 @@ async function handleRename(oldPath) {
                             const data = await response.json();
                             throw new Error(data.error);
                         }
-                        saveCanvasBtn.textContent = 'Saved!';
-                        setTimeout(() => { saveCanvasBtn.textContent = 'Save'; }, 2000);
+                        const saveBtn = document.getElementById('canvas-save-btn');
+                        saveBtn.textContent = 'Saved!';
+                        setTimeout(() => { saveBtn.textContent = 'Save'; }, 2000);
                     } catch (error) {
                         alert(`Error saving file: ${error.message}`);
                     }
                 }
-            };
-
-            copyCanvasBtn.onclick = () => {
-                if (editor) navigator.clipboard.writeText(editor.getValue());
-            };
-
-            closeCanvasBtn.onclick = hideCanvasPanel;
-
-            livePreviewBtn.addEventListener('click', () => {
-                const previewPanel = document.getElementById('preview-panel');
-                previewPanel.classList.toggle('hidden');
-                updatePreview();
             });
+            document.getElementById('canvas-close-btn').addEventListener('click', hideCanvasPanel);
 
             initializeEditor(content, mode);
         }
@@ -849,7 +842,8 @@ async function handleRename(oldPath) {
             resizer.classList.add('hidden');
 
             if (editor) {
-                editor.toTextArea();
+                // This is a bit of a hack to ensure CodeMirror instance is destroyed
+                editor.getWrapperElement().remove();
                 editor = null;
             }
 
@@ -867,8 +861,6 @@ async function handleRename(oldPath) {
                 let mode = 'text/plain';
                 if (path.endsWith('.py')) mode = 'python';
                 if (path.endsWith('.js')) mode = 'javascript';
-                if (path.endsWith('.html')) mode = 'html';
-                if (path.endsWith('.css')) mode = 'css';
 
                 showCanvasPanel(path, data.content, mode);
 
@@ -881,25 +873,21 @@ async function handleRename(oldPath) {
         }
 
         function initializeEditor(content, mode) {
-            const codeEditor = document.getElementById('code-editor');
-            if (!codeEditor) return;
-            codeEditor.value = content;
-
-            if (editor) {
-                editor.toTextArea();
-            }
-
-            editor = CodeMirror.fromTextArea(codeEditor, {
+            const editorContainer = document.getElementById('file-viewer');
+            if (!editorContainer) return;
+            editorContainer.innerHTML = '';
+            editor = CodeMirror(editorContainer, {
+                value: content,
                 mode: mode,
                 theme: 'dracula',
                 lineNumbers: true,
                 readOnly: currentConversationRole !== 'owner'
             });
 
-            // Add debounce for auto-saving and live preview
+            // Add debounce for auto-saving
             editor.on('change', () => {
                 clearTimeout(debounceTimer);
-                const saveBtn = document.getElementById('save-canvas-btn');
+                const saveBtn = document.getElementById('canvas-save-btn');
                 if (saveBtn) {
                     saveBtn.textContent = 'Saving...';
                 }
@@ -907,29 +895,8 @@ async function handleRename(oldPath) {
                     if (saveBtn) {
                         saveBtn.click(); // Trigger the save button's existing click logic
                     }
-                    updatePreview();
-                }, 1500); // Save and update preview after 1.5 seconds of inactivity
+                }, 1500); // Save after 1.5 seconds of inactivity
             });
-        }
-
-        function updatePreview() {
-            const previewPanel = document.getElementById('preview-panel');
-            if (previewPanel.classList.contains('hidden')) return;
-
-            const previewIframe = document.getElementById('preview-iframe');
-            const content = editor.getValue();
-            const mode = editor.getMode().name;
-
-            let html;
-            if (mode === 'html') {
-                html = content;
-            } else if (mode === 'css') {
-                html = `<style>${content}</style>`;
-            } else if (mode === 'javascript') {
-                html = `<script>${content}</script>`;
-            }
-
-            previewIframe.src = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
         }
 
 async function confirmDeletion(id, type, itemType) {

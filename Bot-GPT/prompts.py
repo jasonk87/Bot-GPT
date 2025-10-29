@@ -95,9 +95,13 @@ not make up parameters.
 - `list_files(path: str = '.')`: Lists files and directories in a single
   directory.
 - `read_file(path: str)`: Reads the content of a file.
-- `write_file(path: str, content: str)`: Writes content to a file. This will
-  overwrite the file if it already exists. Use this for saving changes to
-  existing files.
+- `write_file(path: str, content: str)`: Writes content to a file. This
+  overwrites the entire file. **Use this for creating new files or replacing
+  the entire content of a small file.** It is risky to use this on large,
+  existing files, as you might accidentally delete important content.
+- `replace_in_file(path: str, search_block: str, replace_block: str)`:
+  Performs a targeted search and replace within a file. This is much safer
+  for making changes to existing files, especially large ones. Use this to
 - `execute_python(path: str)`: Executes a Python script using its file path.
   **This tool does not accept raw Python code.** You must first write the code
   to a file and then execute that file.
