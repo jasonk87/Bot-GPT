@@ -90,60 +90,67 @@ def handle_ai_response(data):
             messages.append(assistant_message)
             yield {"type": "assistant_end"}
 
-            tool_match = re.search(
+            tool_calls = re.findall(
                 r"```json\s*(\{[\s\S]*?\})\s*```", full_response_content
             )
-            if not tool_match:
-                break
+            if not tool_calls:
+                break  # No tools to call, proceed to final answer
 
-            tool_call_id = f"tool_{int(time.time() * 1000)}"
-            try:
-                tool_call = json.loads(tool_match.group(1))
-                yield {
-                    "type": "tool_call",
-                    "tool_call_id": tool_call_id,
-                    "name": tool_call.get("tool"),
-                    "params": tool_call.get("parameters"),
-                }
+            aggregated_tool_results = []
+            for tool_call_str in tool_calls:
+                tool_call_id = f"tool_{int(time.time() * 1000)}"
+                try:
+                    tool_call = json.loads(tool_call_str)
+                    yield {
+                        "type": "tool_call",
+                        "tool_call_id": tool_call_id,
+                        "name": tool_call.get("tool"),
+                        "params": tool_call.get("parameters"),
+                    }
 
-                tool_result, _ = handle_tool_call(tool_call, conversation, current_user)
+                    tool_result, _ = handle_tool_call(
+                        tool_call, conversation, current_user
+                    )
 
-                if isinstance(tool_result, dict):
-                    status = tool_result.get("status")
-                    if status == "canvas_created":
-                        yield {
-                            "type": "open_canvas",
-                            "filename": tool_result.get("filename"),
-                        }
-                    elif status == "file_written":
-                        yield {
-                            "type": "file_updated",
-                            "path": tool_result.get("path"),
-                            "content": tool_result.get("content"),
-                        }
+                    if isinstance(tool_result, dict):
+                        status = tool_result.get("status")
+                        if status == "canvas_created":
+                            yield {
+                                "type": "open_canvas",
+                                "filename": tool_result.get("filename"),
+                            }
+                        elif status == "file_written":
+                            yield {
+                                "type": "file_updated",
+                                "path": tool_result.get("path"),
+                                "content": tool_result.get("content"),
+                            }
 
-                tool_response_message = f"TOOL RESPONSE:\n---\n{tool_result}\n---"
-                messages.append({"role": "tool", "content": tool_response_message})
-                yield {
-                    "type": "tool_result",
-                    "tool_call_id": tool_call_id,
-                    "result": tool_result,
-                }
-            except Exception as e:
-                error_message = f"Error processing tool: {e}"
-                messages.append(
-                    {"role": "user", "content": f"TOOL RESPONSE: {error_message}"}
-                )
-                yield {
-                    "type": "tool_error",
-                    "tool_call_id": tool_call_id,
-                    "error": error_message,
-                }
+                    aggregated_tool_results.append(str(tool_result))
+                    yield {
+                        "type": "tool_result",
+                        "tool_call_id": tool_call_id,
+                        "result": tool_result,
+                    }
+
+                except Exception as e:
+                    error_message = f"Error processing tool: {e}"
+                    aggregated_tool_results.append(error_message)
+                    yield {
+                        "type": "tool_error",
+                        "tool_call_id": tool_call_id,
+                        "error": error_message,
+                    }
+
+            # Append a single aggregated tool response to the message history
+            tool_response_message = "TOOL RESPONSES:\n---\n" + "\n---\n".join(aggregated_tool_results) + "\n---"
+            messages.append({"role": "tool", "content": tool_response_message})
+
     finally:
         if conversation.id in AGENT_SESSIONS:
             del AGENT_SESSIONS[conversation.id]
 
-    if not tool_match:
+    if not tool_calls:
         yield from process_final_answer(
             messages, conversation, data.get("canvas_mode", False)
         )

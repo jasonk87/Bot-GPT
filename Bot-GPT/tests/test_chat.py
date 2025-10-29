@@ -192,3 +192,68 @@ def test_write_file_emits_refresh(app, socketio, test_user, mocker):
         assert refresh_event["args"][0]["conversation_id"] == convo_id
 
         client.disconnect()
+
+
+def test_tree_of_thoughts_multiple_tool_calls(app, test_user, mocker):
+    """
+    Tests that the new Tree of Thoughts logic can parse and execute multiple
+    tool calls from a single AI response.
+    """
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream")
+    mock_handle_tool_call = mocker.patch("chat.handle_tool_call")
+    mocker.patch("chat.update_conversation_title")
+
+    # AI response with two distinct tool calls
+    multi_tool_response = """
+    <think>
+    I have two hypotheses.
+    Hypothesis 1: The user wants to list files.
+    Hypothesis 2: The user wants to know the database schema.
+    </think>
+    ```json
+    {
+        "tool": "list_files",
+        "parameters": {}
+    }
+    ```
+    ```json
+    {
+        "tool": "get_db_schema",
+        "parameters": {}
+    }
+    ```
+    """
+    final_answer = "I have performed both actions."
+
+    mock_stream.side_effect = [
+        iter([multi_tool_response]),
+        iter([final_answer]),
+    ]
+    # Mock the results from the tool calls
+    mock_handle_tool_call.side_effect = [
+        ("file1.txt\nfile2.txt", False),  # Result for list_files
+        ("Table: users(id, name)", False),  # Result for get_db_schema
+    ]
+
+    with app.test_request_context('/api/chat?messages=[{"role":"user","content":"list files and show schema"}]'):
+        login_user(test_user)
+        from chat import chat_proxy
+        response = chat_proxy()
+
+        events = [json.loads(line.replace("data: ", "")) for line in response.response if line]
+
+        tool_call_events = [e for e in events if e["type"] == "tool_call"]
+        tool_result_events = [e for e in events if e["type"] == "tool_result"]
+
+        # Assert that two tool calls were made
+        assert len(tool_call_events) == 2
+        assert tool_call_events[0]["name"] == "list_files"
+        assert tool_call_events[1]["name"] == "get_db_schema"
+
+        # Assert that two tool results were received
+        assert len(tool_result_events) == 2
+        assert "file1.txt" in tool_result_events[0]["result"]
+        assert "Table: users" in tool_result_events[1]["result"]
+
+        # Assert that the handle_tool_call mock was called twice
+        assert mock_handle_tool_call.call_count == 2
