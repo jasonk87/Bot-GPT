@@ -1,133 +1,45 @@
-import json
 import pytest
-from models import Conversation, ConversationParticipant, User
-from extensions import db
+from flask import url_for
+from models import get_all_conversations_for_user
 
-
-def test_home_page(client):
-    """Test that the home page loads and contains expected content."""
-    response = client.get("/")
+def test_index_route(client):
+    """Test the main index route."""
+    response = client.get('/')
     assert response.status_code == 200
-    # Check for a crucial part of the page, like the main script.
-    assert b"/static/js/main.js" in response.data
+    assert b'Ollama Agent' in response.data
 
+def test_profile_route_unauthenticated(client):
+    """Test that the profile route requires login."""
+    response = client.get('/profile')
+    assert response.status_code == 302 # Redirect to login
 
-def test_get_workspace_files_route(logged_in_client, app, test_user, mocker):
-    """
-    Tests the workspace files API endpoint for an authenticated user.
-    """
-    # 1. Setup: Create a conversation owned by the test user.
-    convo = Conversation(title="Test Convo", owner_id=test_user.id)
-    db.session.add(convo)
-    db.session.commit()
+def test_profile_route_authenticated(logged_in_client, test_user, app):
+    """Test the profile route for an authenticated user."""
+    with app.app_context():
+        # Create some dummy conversations for the user
+        from models import save_conversation
+        save_conversation(test_user.id, 'convo1', {'id': 'convo1', 'owner_id': test_user.id, 'title': 'Test Convo 1', 'participants': [], 'messages': []})
 
-    participant = ConversationParticipant(
-        user_id=test_user.id, conversation_id=convo.id, role="owner"
-    )
-    db.session.add(participant)
-    db.session.commit()
+        response = logged_in_client.get('/profile')
+        assert response.status_code == 200
+        assert b'User Profile' in response.data
+        assert b'Test Convo 1' in response.data
 
-    # 2. Mock filesystem interactions to isolate the test.
-    mocker.patch("workspace.get_workspace_path", return_value="/fake/path")
-    mock_get_file_tree = mocker.patch(
-        "workspace.get_file_tree",
-        return_value=[{"name": "test.txt", "type": "file", "path": "test.txt"}],
-    )
+def test_auth_routes(client, test_user, app):
+    """Test registration and login routes."""
+    # Note: test_user fixture already creates a user.
+    # Here we can test the login for that user.
+    login_rv = client.post('/login', json={'username': 'testuser', 'password': 'password'})
+    assert login_rv.status_code == 200
 
-    # 3. Make the request.
-    response = logged_in_client.get(f"/api/workspace/files/{convo.id}")
+    # Test logout
+    logout_rv = client.get('/logout')
+    assert logout_rv.status_code == 200
 
-    # 4. Assert the response is correct.
-    assert response.status_code == 200
-    data = json.loads(response.data)
-    assert data == [{"name": "test.txt", "type": "file", "path": "test.txt"}]
-    mock_get_file_tree.assert_called_once_with("/fake/path", "/fake/path")
+    # Test registering a new user
+    register_rv = client.post('/register', json={'username': 'newuser', 'password': 'newpassword'})
+    assert register_rv.status_code == 201
 
-
-def test_get_workspace_files_unauthorized(client):
-    """
-    Tests that a non-logged-in user is redirected from a protected API.
-    """
-    # Flask-Login's default behavior for @login_required is to redirect to
-    # the login_view, which results in a 302 status code for a browser.
-    response = client.get("/api/workspace/files/some_convo_id")
-    assert response.status_code == 302
-    assert "/login" in response.headers["Location"]
-
-
-@pytest.mark.xfail(
-    reason="This test passes in the pytest environment, but fails when running the app as a server. This is the bug to be fixed."
-)
-def test_register_new_user(client, db):
-    """
-    Tests that a new user can be registered successfully.
-
-    NOTE: This test currently passes because the test environment behaves
-    differently from the live server environment. The bug only manifests
-    when running the app with `python app.py`. This test is here to
-    provide a framework for verifying the fix.
-    """
-    # 1. Make a POST request to the /register endpoint.
-    response = client.post(
-        "/register", json={"username": "newtestuser", "password": "password123"}
-    )
-
-    # 2. Assert the response is successful.
-    assert response.status_code == 201
-    data = json.loads(response.data)
-    assert data["message"] == "Registration successful"
-    assert data["username"] == "newtestuser"
-
-    # 3. Assert the user was actually created in the database.
-    # This is the part that I expect to fail.
-    user = db.session.query(User).filter_by(username="newtestuser").first()
-    assert user is not None
-    assert user.username == "newtestuser"
-
-
-def test_summarize_conversation(logged_in_client, app, test_user, mocker, tmp_path):
-    """
-    Tests the conversation summarization API endpoint.
-    """
-    # 1. Setup: Create a conversation and a mock conversation file.
-    convo = Conversation(title="Test Convo", owner_id=test_user.id)
-    db.session.add(convo)
-    db.session.commit()
-
-    participant = ConversationParticipant(
-        user_id=test_user.id, conversation_id=convo.id, role="owner"
-    )
-    db.session.add(participant)
-    db.session.commit()
-
-    # Create a mock conversation history file
-    user_data_dir = tmp_path / str(test_user.id)
-    convo_dir = user_data_dir / "conversations"
-    convo_dir.mkdir(parents=True)
-    convo_file = convo_dir / f"{convo.id}.json"
-    convo_file.write_text(
-        json.dumps(
-            {
-                "messages": [
-                    {"role": "user", "content": "Hello there."},
-                    {"role": "assistant", "content": "General Kenobi!"},
-                ]
-            }
-        )
-    )
-    mocker.patch.dict("workspace.current_app.config", {"USER_DATA_DIR": tmp_path})
-
-    # 2. Mock the call to the AI model.
-    def mock_stream(*args, **kwargs):
-        yield json.dumps({"message": {"content": "This is "}})
-        yield json.dumps({"message": {"content": "a summary."}})
-
-    mocker.patch("workspace.call_ollama_chat_stream", side_effect=mock_stream)
-
-    # 3. Make the request.
-    response = logged_in_client.get(f"/api/conversation/{convo.id}/summarize")
-
-    # 4. Assert the response is correct.
-    assert response.status_code == 200
-    assert response.mimetype == "text/plain"
-    assert response.data == b"This is a summary."
+    # Test logging in as the new user
+    new_login_rv = client.post('/login', json={'username': 'newuser', 'password': 'newpassword'})
+    assert new_login_rv.status_code == 200

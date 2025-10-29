@@ -1,61 +1,70 @@
+import os
 import json
-import io
-from unittest.mock import MagicMock
-from models import User
-from extensions import db
+import uuid
+from flask import current_app
+from models import _load_users, save_conversation, load_conversation
 
-
-def test_get_users(logged_in_client, app, test_user):
-    """
-    Tests that the get_users API endpoint returns a list of all users
-    except the current user.
-    """
-    # 1. Setup: Create another user.
-    other_user = User(username="otheruser")
-    other_user.set_password("password")
-    db.session.add(other_user)
-    db.session.commit()
-
-    # 2. Make the request.
-    response = logged_in_client.get("/api/users")
-
-    # 3. Assert the response is correct.
+def test_get_users_api(client, two_users):
+    """Test the API endpoint for getting users."""
+    user1, user2 = two_users
+    login(client, user1.username, 'password')
+    response = client.get('/api/users')
     assert response.status_code == 200
-    data = json.loads(response.data)
+    data = response.json
+    assert isinstance(data, list)
     assert len(data) == 1
-    assert data[0]["username"] == "otheruser"
+    assert data[0]['username'] == user2.username
+    logout(client)
 
+def test_upload_file_new_conversation(client, test_user, app):
+    """Test uploading a file to a new conversation."""
+    login(client, test_user.username, 'password')
 
-def test_upload_file(logged_in_client, mocker):
-    """
-    Tests the file upload API endpoint.
-    """
-    # 1. Mock file system operations to avoid creating directories and files.
-    mocker.patch("os.path.join", return_value="/tmp/fake_workspace/test.txt")
-    mocker.patch("builtins.open", mocker.mock_open())
-    mocker.patch("werkzeug.utils.secure_filename", return_value="test.txt")
-    mocker.patch("os.makedirs")
-    # Need to mock the save method on the file object
-    mock_file_storage = MagicMock()
-    mock_file_storage.filename = "test.txt"
-    mock_file_storage.save.return_value = None
-    mocker.patch(
-        "werkzeug.datastructures.FileStorage.save", mock_file_storage.save
-    )
-
-    # 2. Prepare the request data. Note: No conversation_id is sent for a new chat.
+    from io import BytesIO
     data = {
-        "files[]": (io.BytesIO(b"file content"), "test.txt"),
-        "prompt": "Here is a file.",
+        'files[]': (BytesIO(b'my file contents'), 'test.txt'),
+        'prompt': 'Analyze this file.'
     }
 
-    # 3. Make the request.
-    response = logged_in_client.post(
-        "/api/upload", data=data, content_type="multipart/form-data"
-    )
-
-    # 4. Assert the response is correct.
+    response = client.post('/api/upload', data=data, content_type='multipart/form-data')
     assert response.status_code == 200
-    data = json.loads(response.data)
-    assert "User uploaded the following files" in data["message"]
-    assert "test.txt" in data["message"]
+    json_data = response.json
+    assert 'conversation_id' in json_data
+    assert 'Analyze this file' in json_data['message']
+
+    # Verify the conversation and file were created
+    with app.app_context():
+        convo_id = json_data['conversation_id']
+        owner_id = test_user.id
+        workspace_path = os.path.join(current_app.instance_path, str(owner_id), 'workspaces', convo_id)
+        assert os.path.exists(os.path.join(workspace_path, 'test.txt'))
+    logout(client)
+
+def test_share_conversation_api(client, two_users, app):
+    """Test sharing a conversation with another user."""
+    user1, user2 = two_users
+    convo_id = str(uuid.uuid4())
+
+    with app.app_context():
+        convo_data = {
+            "id": convo_id, "owner_id": user1.id, "title": "Shared Convo",
+            "participants": [{"user_id": user1.id, "role": "owner"}], "messages": []
+        }
+        save_conversation(user1.id, convo_id, convo_data)
+
+    login(client, user1.username, 'password')
+    response = client.post(f'/api/conversation/{convo_id}/share', json={'user_id': user2.id})
+    assert response.status_code == 201
+
+    # Verify participant was added
+    with app.app_context():
+        updated_convo = load_conversation(user1.id, convo_id)
+        assert any(p['user_id'] == user2.id for p in updated_convo['participants'])
+    logout(client)
+
+# Helper functions to avoid repeating login/logout in this file
+def login(client, username, password):
+    return client.post('/login', json={'username': username, 'password': password})
+
+def logout(client):
+    return client.get('/logout')

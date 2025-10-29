@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template
 from flask_login import login_required, current_user
-from models import Conversation
+from models import get_all_conversations_for_user
 
 main = Blueprint("main", __name__)
 
@@ -15,7 +15,7 @@ def index():
 @login_required
 def profile():
     """Renders the user profile page."""
-    conversations = Conversation.query.filter_by(owner_id=current_user.id).all()
+    conversations = get_all_conversations_for_user(current_user.id)
     return render_template(
         "profile.html", user=current_user, conversations=conversations
     )

@@ -1,8 +1,4 @@
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager
 from flask_socketio import SocketIO
 
-# Initialize extensions
-db = SQLAlchemy()
-login_manager = LoginManager()
+# Remove db and login_manager as they will be re-initialized in app.py
 socketio = SocketIO()
