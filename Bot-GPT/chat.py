@@ -58,41 +58,7 @@ def handle_ai_response(data):
 
     yield {"type": "conversation_id", "id": conversation.id}
 
-    # --- Automatic Context Retrieval ---
-    # Only run this if it's a user's first message in a turn (not a tool response)
-    # and not in agent_mode, which follows a stricter plan.
     agent_mode = data.get("agent_mode", False)
-    if not agent_mode and len(messages) == 1:
-        yield {"type": "status_update", "message": "Scanning workspace for context..."}
-        from tools import index_workspace, query_workspace
-
-        index_result = index_workspace(
-            conversation_id=conversation.id, user_id=conversation.owner_id
-        )
-        # We don't yield indexing errors to the user, but we could log them.
-
-        user_query = messages[-1]["content"]
-        context_results = query_workspace(
-            query=user_query, conversation_id=conversation.id
-        )
-
-        # Check if the context is useful before prepending it
-        if context_results and "No relevant documents" not in context_results:
-            # Prepend the context to the last user message
-            context_enhanced_prompt = (
-                "--- Relevant Context from Workspace ---\n"
-                f"{context_results}\n"
-                "---\n\n"
-                f"User Query: {user_query}"
-            )
-            messages[-1]["content"] = context_enhanced_prompt
-            yield {
-                "type": "status_update",
-                "message": "Context found. Answering question...",
-            }
-        else:
-            yield {"type": "status_update", "message": "No specific context found. Answering generally..."}
-
     AGENT_SESSIONS[conversation.id] = {"stop_requested": False}
     max_iterations = 100 if agent_mode else 15
 
