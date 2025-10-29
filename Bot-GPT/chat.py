@@ -121,6 +121,14 @@ def handle_ai_response(data):
                             }
                         elif status == "file_written":
                             yield {
+                                "type": "open_canvas",
+                                "filename": tool_result.get("path"),
+                            }
+                            yield {
+                                "type": "refresh_files",
+                                "conversation_id": conversation.id,
+                            }
+                            yield {
                                 "type": "file_updated",
                                 "path": tool_result.get("path"),
                                 "content": tool_result.get("content"),
