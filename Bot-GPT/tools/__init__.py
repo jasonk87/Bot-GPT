@@ -32,8 +32,6 @@ try:
 except ImportError:
     chromadb = None
 
-from utils import get_workspace_path
-
 # Import tool functions from sub-modules
 from .web_search import web_search
 from .file_system import (
@@ -43,6 +41,7 @@ from .file_system import (
     get_file_tree,
     read_file,
     write_file,
+    get_workspace_path,
 )
 from .git_integration import (
     git_clone,
@@ -462,6 +461,7 @@ __all__ = [
     "get_file_tree",
     "read_file",
     "write_file",
+    "get_workspace_path",
     "git_clone",
     "git_pull",
     "git_push",

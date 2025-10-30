@@ -1,8 +1,13 @@
-from flask import Blueprint, request, jsonify, render_template
+import os
+from flask import Blueprint, request, jsonify, render_template, current_app
 from flask_login import login_user, logout_user, login_required, current_user
 from models import User, get_user_by_username, _load_users, _save_users, get_user_by_id
 
 auth = Blueprint("auth", __name__)
+
+def _get_users_path():
+    """Gets the path to the users.json file."""
+    return os.path.join(current_app.instance_path, 'users.json')
 
 @auth.route("/register", methods=["GET", "POST"])
 def register():
@@ -13,21 +18,21 @@ def register():
     data = request.get_json()
     username = data.get("username")
     password = data.get("password")
+    users_path = _get_users_path()
 
-    if get_user_by_username(username):
+    if get_user_by_username(users_path, username):
         return jsonify({"message": "Username already exists"}), 409
 
-    users = _load_users()
+    users = _load_users(users_path)
     new_id = max([int(k) for k in users.keys()]) + 1 if users else 1
 
     new_user = User(id=new_id, username=username, password_hash=None)
     new_user.set_password(password)
 
     users[str(new_id)] = new_user.to_dict()
-    _save_users(users)
+    _save_users(users_path, users)
 
-    # We need to fetch the user object again to make sure it's the correct class instance
-    registered_user = get_user_by_id(new_id)
+    registered_user = get_user_by_id(users_path, new_id)
     login_user(registered_user, remember=True)
 
     return jsonify({"message": "Registration successful", "username": registered_user.username}), 201
@@ -40,7 +45,8 @@ def login():
         return render_template('login.html')
 
     data = request.get_json()
-    user = get_user_by_username(data.get("username"))
+    users_path = _get_users_path()
+    user = get_user_by_username(users_path, data.get("username"))
 
     if user and user.check_password(data.get("password")):
         login_user(user, remember=True)

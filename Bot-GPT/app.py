@@ -2,7 +2,6 @@ import os
 from flask import Flask, jsonify
 from flask_login import LoginManager
 from extensions import socketio
-from models import get_user_by_id
 from config import config
 from routes import main as main_blueprint
 from auth import auth as auth_blueprint
@@ -35,7 +34,9 @@ def create_app(config_name=None):
 
     @login_manager.user_loader
     def load_user(user_id):
-        return get_user_by_id(int(user_id))
+        from models import get_user_by_id
+        users_path = os.path.join(app.instance_path, 'users.json')
+        return get_user_by_id(users_path, int(user_id))
 
     # --- Register Blueprints ---
     app.register_blueprint(main_blueprint)

@@ -2,7 +2,7 @@ import os
 import json
 import uuid
 from flask import current_app
-from models import _load_users, save_conversation, load_conversation
+from models import save_conversation, load_conversation, add_to_conversation_index
 
 def test_get_users_api(client, two_users):
     """Test the API endpoint for getting users."""
@@ -50,7 +50,10 @@ def test_share_conversation_api(client, two_users, app):
             "id": convo_id, "owner_id": user1.id, "title": "Shared Convo",
             "participants": [{"user_id": user1.id, "role": "owner"}], "messages": []
         }
-        save_conversation(user1.id, convo_id, convo_data)
+        convo_path = os.path.join(app.instance_path, str(user1.id), 'conversations', f'{convo_id}.json')
+        save_conversation(convo_path, convo_data)
+        index_path = os.path.join(app.instance_path, 'conversation_index.json')
+        add_to_conversation_index(index_path, convo_id, user1.id)
 
     login(client, user1.username, 'password')
     response = client.post(f'/api/conversation/{convo_id}/share', json={'user_id': user2.id})
@@ -58,8 +61,37 @@ def test_share_conversation_api(client, two_users, app):
 
     # Verify participant was added
     with app.app_context():
-        updated_convo = load_conversation(user1.id, convo_id)
+        convo_path = os.path.join(app.instance_path, str(user1.id), 'conversations', f'{convo_id}.json')
+        updated_convo = load_conversation(convo_path)
         assert any(p['user_id'] == user2.id for p in updated_convo['participants'])
+    logout(client)
+
+def test_summarize_conversation_api(client, two_users, app, mocker):
+    """Test the conversation summarization API endpoint."""
+    user1, user2 = two_users
+    convo_id = str(uuid.uuid4())
+
+    with app.app_context():
+        convo_data = {
+            "id": convo_id, "owner_id": user1.id, "title": "Summary Test",
+            "participants": [{"user_id": user1.id, "role": "owner"}],
+            "messages": [
+                {"role": "user", "content": "What is the capital of France?"},
+                {"role": "assistant", "content": "The capital of France is Paris."}
+            ]
+        }
+        convo_path = os.path.join(app.instance_path, str(user1.id), 'conversations', f'{convo_id}.json')
+        save_conversation(convo_path, convo_data)
+        index_path = os.path.join(app.instance_path, 'conversation_index.json')
+        add_to_conversation_index(index_path, convo_id, user1.id)
+
+    mock_stream = mocker.patch("workspace.call_ollama_chat_stream")
+    mock_stream.return_value = iter(["This is a summary."])
+
+    login(client, user1.username, 'password')
+    response = client.get(f'/api/conversation/{convo_id}/summarize')
+    assert response.status_code == 200
+    assert b"This is a summary." in response.data
     logout(client)
 
 # Helper functions to avoid repeating login/logout in this file

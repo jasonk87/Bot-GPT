@@ -1,7 +1,7 @@
 import os
 import subprocess
 import shlex
-from utils import get_workspace_path
+from .file_system import get_workspace_path
 
 # A safelist of allowed shell commands to prevent arbitrary execution
 ALLOWED_COMMANDS = [

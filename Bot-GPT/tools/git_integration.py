@@ -1,6 +1,6 @@
 import subprocess
 import os
-from utils import get_workspace_path
+from .file_system import get_workspace_path
 
 def git_clone(repo_url, conversation_id=None, user_id=None):
     """Clones a Git repository into the conversation's workspace."""

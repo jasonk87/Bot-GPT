@@ -14,7 +14,6 @@ from models import User, _save_users
 def app():
     """Create and configure a new app instance for the test session."""
     app = create_app('testing')
-    # Clean up and create instance folder for the session
     instance_path = app.instance_path
     if os.path.exists(instance_path):
         shutil.rmtree(instance_path)
@@ -23,7 +22,6 @@ def app():
     with app.app_context():
         yield app
 
-    # Clean up after the session
     if os.path.exists(instance_path):
         shutil.rmtree(instance_path)
 
@@ -37,13 +35,12 @@ def client(app):
 def test_user(app):
     """Create a test user in the users.json file for a function."""
     with app.app_context():
+        users_path = os.path.join(app.instance_path, 'users.json')
         user = User(id=1, username='testuser', password_hash=None)
         user.set_password('password')
         users = {'1': user.to_dict()}
-        _save_users(users)
+        _save_users(users_path, users)
         yield user
-        # Clean up by removing the users.json file
-        users_path = os.path.join(app.instance_path, 'users.json')
         if os.path.exists(users_path):
             os.remove(users_path)
 
@@ -85,6 +82,7 @@ def mocker():
 def two_users(app):
     """Create two users in the users.json file for a function."""
     with app.app_context():
+        users_path = os.path.join(app.instance_path, 'users.json')
         user1 = User(id=1, username='testuser1', password_hash=None)
         user1.set_password('password')
         user2 = User(id=2, username='testuser2', password_hash=None)
@@ -93,9 +91,7 @@ def two_users(app):
             '1': user1.to_dict(),
             '2': user2.to_dict()
         }
-        _save_users(users)
+        _save_users(users_path, users)
         yield user1, user2
-        # Clean up by removing the users.json file
-        users_path = os.path.join(app.instance_path, 'users.json')
         if os.path.exists(users_path):
             os.remove(users_path)

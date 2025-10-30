@@ -1,6 +1,27 @@
 import os
+from flask import current_app
 from extensions import socketio
-from utils import get_workspace_path
+
+
+def get_workspace_path(conversation_id, owner_id):
+    """
+    Constructs a path to a conversation-specific workspace.
+    The path is always based on the conversation's owner.
+    """
+    if not owner_id or not conversation_id:
+        from chat import find_conversation_owner
+        owner_id = find_conversation_owner(conversation_id)
+        if not owner_id:
+            return None
+
+    path = os.path.join(
+        current_app.instance_path,
+        str(owner_id),
+        "workspaces",
+        str(conversation_id),
+    )
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def is_safe_path(base, path, follow_symlinks=True):

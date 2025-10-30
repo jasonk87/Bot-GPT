@@ -1,6 +1,5 @@
 import os
 import shutil
-import json
 import uuid
 from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
@@ -8,10 +7,11 @@ from werkzeug.utils import secure_filename
 from extensions import socketio
 from models import (
     load_conversation, save_conversation, check_permission,
-    _load_users, get_user_by_id, get_all_conversations_for_user
+    _load_users, get_user_by_id, add_to_conversation_index,
+    find_conversation_owner as find_owner_from_index
 )
+from tools.file_system import get_workspace_path
 from tools import (
-    get_workspace_path,
     get_file_tree,
     is_safe_path,
     call_ollama_chat_stream,
@@ -19,13 +19,14 @@ from tools import (
 
 workspace = Blueprint("workspace", __name__)
 
+def _get_conversation_path(owner_id, conversation_id):
+    """Constructs the file path for a given conversation."""
+    return os.path.join(current_app.instance_path, str(owner_id), 'conversations', f'{conversation_id}.json')
+
 def find_conversation_owner(conversation_id):
-    """Find the owner of a conversation by scanning all users."""
-    all_users = _load_users()
-    for user_id in all_users.keys():
-        if os.path.exists(os.path.join(current_app.instance_path, str(user_id), 'conversations', f'{conversation_id}.json')):
-            return int(user_id)
-    return None
+    """Finds the owner of a conversation using the index."""
+    index_path = os.path.join(current_app.instance_path, 'conversation_index.json')
+    return find_owner_from_index(index_path, conversation_id)
 
 @workspace.route("/api/workspace/files/<conversation_id>", methods=["GET"])
 @login_required
@@ -34,7 +35,8 @@ def get_workspace_files(conversation_id):
     if not owner_id:
         return jsonify({"error": "Conversation not found"}), 404
 
-    conversation_data = load_conversation(owner_id, conversation_id)
+    path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(path)
     if not conversation_data or not check_permission(conversation_data, current_user):
         return jsonify({"error": "Access denied"}), 403
 
@@ -59,14 +61,15 @@ def handle_workspace_file():
     if not owner_id:
         return jsonify({"error": "Conversation not found"}), 404
 
-    conversation_data = load_conversation(owner_id, conversation_id)
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
     if not conversation_data:
         return jsonify({"error": "Conversation not found"}), 404
 
     if request.method == 'GET':
         if not check_permission(conversation_data, current_user):
             return jsonify({"error": "Access denied"}), 403
-    else: # POST and DELETE require owner permissions
+    else:
         if not check_permission(conversation_data, current_user, level="owner"):
             return jsonify({"error": "Access denied for this operation"}), 403
 
@@ -113,9 +116,11 @@ def handle_workspace_file():
 @workspace.route("/api/conversations", methods=["GET", "DELETE"])
 @login_required
 def handle_conversations():
+    users_path = os.path.join(current_app.instance_path, 'users.json')
     if request.method == 'GET':
-        convos = get_all_conversations_for_user(current_user.id)
-        convos.sort(key=lambda x: x.get('id', 0), reverse=True) # Assuming id is sortable
+        from models import get_all_conversations_for_user
+        convos = get_all_conversations_for_user(users_path, current_user.id)
+        convos.sort(key=lambda x: x.get('id', 0), reverse=True)
         return jsonify(convos)
 
     if request.method == 'DELETE':
@@ -124,16 +129,14 @@ def handle_conversations():
         if not owner_id:
             return jsonify({"error": "Conversation not found"}), 404
 
-        conversation_data = load_conversation(owner_id, conversation_id)
+        convo_path = _get_conversation_path(owner_id, conversation_id)
+        conversation_data = load_conversation(convo_path)
         if not conversation_data or not check_permission(conversation_data, current_user, level="owner"):
             return jsonify({"error": "Access denied"}), 403
 
         try:
-            # Delete conversation file
-            convo_path = os.path.join(current_app.instance_path, str(owner_id), 'conversations', f'{conversation_id}.json')
             if os.path.exists(convo_path):
                 os.remove(convo_path)
-            # Delete workspace directory
             workspace_path = get_workspace_path(conversation_id, owner_id)
             if os.path.exists(workspace_path):
                 shutil.rmtree(workspace_path)
@@ -149,7 +152,8 @@ def share_conversation(conversation_id):
     if not owner_id:
         return jsonify({"error": "Conversation not found"}), 404
 
-    conversation_data = load_conversation(owner_id, conversation_id)
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
     if not conversation_data or not check_permission(conversation_data, current_user, level="owner"):
         return jsonify({"error": "Access denied. Only the owner can share."}), 403
 
@@ -157,7 +161,8 @@ def share_conversation(conversation_id):
     if not user_id_to_share_with:
         return jsonify({"error": "user_id is required"}), 400
 
-    user_to_share_with = get_user_by_id(user_id_to_share_with)
+    users_path = os.path.join(current_app.instance_path, 'users.json')
+    user_to_share_with = get_user_by_id(users_path, user_id_to_share_with)
     if not user_to_share_with:
         return jsonify({"error": "User to share with not found"}), 404
 
@@ -167,15 +172,45 @@ def share_conversation(conversation_id):
 
     participants.append({'user_id': user_id_to_share_with, 'role': 'participant'})
     conversation_data['participants'] = participants
-    save_conversation(owner_id, conversation_id, conversation_data)
+    save_conversation(convo_path, conversation_data)
 
     return jsonify({"message": "Conversation shared successfully"}), 201
+
+
+@workspace.route("/api/conversation/<conversation_id>/summarize", methods=["GET"])
+@login_required
+def summarize_conversation(conversation_id):
+    owner_id = find_conversation_owner(conversation_id)
+    if not owner_id:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
+    if not conversation_data or not check_permission(conversation_data, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    conversation_text = "\n".join(
+        [f"{msg['role'].capitalize()}: {msg['content']}" for msg in conversation_data.get('messages', [])]
+    )
+    summary_prompt = f"Please provide a concise summary of the following conversation:\n\n{conversation_text}"
+
+    try:
+        model = current_user.selected_model
+        stream = call_ollama_chat_stream(
+            model,
+            messages=[{"role": "user", "content": summary_prompt}],
+            system_prompt="You are a helpful assistant that summarizes conversations."
+        )
+        return Response(stream, mimetype='text/plain')
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @workspace.route("/api/users", methods=["GET"])
 @login_required
 def get_users():
-    users = _load_users()
+    users_path = os.path.join(current_app.instance_path, 'users.json')
+    users = _load_users(users_path)
     users_list = [
         {"id": int(uid), "username": uinfo['username']}
         for uid, uinfo in users.items()
@@ -200,7 +235,8 @@ def upload_file():
         owner_id = find_conversation_owner(conversation_id)
         if not owner_id:
              return jsonify(error="Conversation not found"), 404
-        conversation_data = load_conversation(owner_id, conversation_id)
+        convo_path = _get_conversation_path(owner_id, conversation_id)
+        conversation_data = load_conversation(convo_path)
         if not check_permission(conversation_data, current_user):
             return jsonify(error="Access denied"), 403
     else:
@@ -213,7 +249,12 @@ def upload_file():
             "participants": [{'user_id': owner_id, 'role': 'owner'}],
             "messages": []
         }
-        save_conversation(owner_id, conversation_id, conversation_data)
+        convo_path = _get_conversation_path(owner_id, conversation_id)
+        save_conversation(convo_path, conversation_data)
+
+        # Add to the new index
+        index_path = os.path.join(current_app.instance_path, 'conversation_index.json')
+        add_to_conversation_index(index_path, conversation_id, owner_id)
 
     workspace_path = get_workspace_path(conversation_id, owner_id)
     os.makedirs(workspace_path, exist_ok=True)
