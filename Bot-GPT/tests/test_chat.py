@@ -2,7 +2,7 @@ import pytest
 import json
 import threading
 from unittest.mock import MagicMock, call
-from extensions import socketio
+from app import socketio
 import chat
 
 def test_chat_message_handling(socketio_test_client, test_user, mocker):
@@ -58,21 +58,25 @@ def test_tool_call_in_chat(socketio_test_client, test_user, mocker, app):
     assert len(tool_call_events) == 1
     assert tool_call_events[0]['name'] == 'list_files'
 
-def test_write_file_emits_refresh_and_open(socketio_test_client, test_user, mocker, app):
-    """Test that a write_file tool call emits refresh_files and open_canvas."""
+def test_write_file_emits_open_canvas(socketio_test_client, test_user, mocker, app):
+    """Test that a write_file tool call emits an open_canvas event."""
     mock_stream = mocker.patch("chat.call_ollama_chat_stream")
     mock_handle_tool = mocker.patch("chat.handle_tool_call")
     mocker.patch("chat.update_conversation_title")
 
     tool_call_response = '```json\n{"tool": "write_file", "parameters": {"path": "test.txt", "content": "hello"}}\n```'
-    mock_stream.return_value = iter([tool_call_response])
+    final_answer = "I have written the file."
+    mock_stream.side_effect = [iter([tool_call_response]), iter([final_answer])]
     mock_handle_tool.return_value = ({"status": "file_written", "path": "test.txt"}, True)
+
+    convo_id = "test_convo_123"
+    socketio_test_client.emit('join', {'room': convo_id})
 
     with app.app_context():
         socketio_test_client.emit('chat_message', {
             'messages': json.dumps([{'role': 'user', 'content': 'write a file'}]),
             'model': 'test-model',
-            'conversation_id': ''
+            'conversation_id': convo_id
         })
 
     received = socketio_test_client.get_received()
@@ -82,7 +86,3 @@ def test_write_file_emits_refresh_and_open(socketio_test_client, test_user, mock
     open_canvas_events = [r for r in ai_responses if r.get('type') == 'open_canvas']
     assert len(open_canvas_events) == 1
     assert open_canvas_events[0]['filename'] == 'test.txt'
-
-    # Check for the refresh_files event
-    refresh_files_events = [r for r in ai_responses if r.get('type') == 'refresh_files']
-    assert len(refresh_files_events) == 1

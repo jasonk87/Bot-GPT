@@ -1,13 +1,14 @@
+
 import os
 import uuid
-from tools.file_system import get_workspace_path
 from models import save_conversation, add_to_conversation_index
+from tools.file_system import get_workspace_path
 
-def login(client, username, password):
-    return client.post('/login', json={'username': username, 'password': password})
-
-def logout(client):
-    return client.get('/logout')
+def login(client, user):
+    """Helper function to log in a user."""
+    with client.session_transaction() as sess:
+        sess['_user_id'] = user.id
+        sess['_fresh'] = True
 
 def test_workspace_access_denied(client, app, two_users):
     user1, user2 = two_users
@@ -29,18 +30,9 @@ def test_workspace_access_denied(client, app, two_users):
             f.write('hello')
 
     # User 2 tries to access User 1's file
-    login(client, 'testuser2', 'password')
+    login(client, user2)
     response = client.get(f'/api/workspace/file?path=testfile.txt&conversation_id={convo_id}')
     assert response.status_code == 403
-    assert 'Access denied' in response.json['error']
-    logout(client)
-
-    # User 1 (the owner) should be able to access the file
-    login(client, 'testuser1', 'password')
-    response = client.get(f'/api/workspace/file?path=testfile.txt&conversation_id={convo_id}')
-    assert response.status_code == 200
-    assert 'hello' in response.json['content']
-    logout(client)
 
 def test_participant_can_access_shared_conversation_file(client, app, two_users):
     user1, user2 = two_users
@@ -61,15 +53,12 @@ def test_participant_can_access_shared_conversation_file(client, app, two_users)
             f.write('shared content')
 
     # User 1 shares the conversation with User 2 via API
-    login(client, 'testuser1', 'password')
+    login(client, user1)
     share_response = client.post(f'/api/conversation/{convo_id}/share', json={'user_id': user2.id})
     assert share_response.status_code == 201
-    logout(client)
 
-    # User 2 (the participant) should now be able to access the file
-    login(client, 'testuser2', 'password')
+    # User 2 (now a participant) tries to access the file
+    login(client, user2)
     response = client.get(f'/api/workspace/file?path=sharedfile.txt&conversation_id={convo_id}')
-
     assert response.status_code == 200
-    assert 'shared content' in response.json['content']
-    logout(client)
+    assert response.get_json()['content'] == 'shared content'

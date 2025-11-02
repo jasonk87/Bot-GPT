@@ -629,6 +629,7 @@ async function populateFileExplorer() {
         fileExplorer.innerHTML = '<p class="text-gray-400">No active conversation. Start a new chat to see files.</p>';
         return;
     }
+    fileExplorer.innerHTML = '<p class="text-gray-400">Loading files...</p>';
     try {
         const response = await fetch(`${window.location.origin}${API_BASE}/workspace/files/${currentConversationId}`);
         const files = await response.json();
@@ -720,6 +721,7 @@ async function handleNewFolder() {
     const folderName = prompt("Enter the name for the new folder:");
     if (!folderName) return;
 
+    fileExplorer.innerHTML = '<p class="text-gray-400">Creating folder...</p>';
     try {
         const response = await fetch(`${window.location.origin}${API_BASE}/workspace/folder`, {
             method: 'POST',
@@ -736,6 +738,7 @@ async function handleNewFolder() {
         await populateFileExplorer();
     } catch (error) {
         alert(`Error creating folder: ${error.message}`);
+        await populateFileExplorer();
     }
 }
 
@@ -748,6 +751,7 @@ async function handleRename(oldPath) {
     pathParts[pathParts.length - 1] = newName;
     const newPath = pathParts.join('/');
 
+    fileExplorer.innerHTML = '<p class="text-gray-400">Renaming...</p>';
     try {
         const response = await fetch(`${window.location.origin}${API_BASE}/workspace/rename`, {
             method: 'POST',
@@ -765,6 +769,7 @@ async function handleRename(oldPath) {
         await populateFileExplorer();
     } catch (error) {
         alert(`Error renaming: ${error.message}`);
+        await populateFileExplorer();
     }
 }
 
@@ -904,9 +909,12 @@ async function confirmDeletion(id, type, itemType) {
     deleteModal.classList.remove('hidden');
     const confirmed = await new Promise(resolve => { deleteResolver = resolve; });
     if (confirmed) {
+        if (itemType === 'file' || itemType === 'directory') {
+            fileExplorer.innerHTML = '<p class="text-gray-400">Deleting...</p>';
+        }
         try {
             let url, body;
-            if (itemType === 'file') {
+            if (itemType === 'file' || itemType === 'directory') {
                 url = `${API_BASE}/workspace/file`;
                 body = { path: id, conversation_id: currentConversationId };
             } else {
@@ -920,7 +928,7 @@ async function confirmDeletion(id, type, itemType) {
             });
             if (!response.ok) throw new Error(await response.text());
 
-            if (itemType === 'file') {
+            if (itemType === 'file' || itemType === 'directory') {
                 await populateFileExplorer();
             } else {
                 socket.emit('load_conversations');
@@ -931,6 +939,9 @@ async function confirmDeletion(id, type, itemType) {
         } catch (error) {
             console.error(`Failed to delete ${id}:`, error);
             alert(`Error deleting ${itemType}: ${error.message}`);
+            if (itemType === 'file' || itemType === 'directory') {
+                await populateFileExplorer();
+            }
         }
     }
     deleteModal.classList.add('hidden');

@@ -1,54 +1,69 @@
 import os
-from flask import Blueprint, request, jsonify, render_template, current_app
+import json
+from flask import Blueprint, request, jsonify, current_app
 from flask_login import login_user, logout_user, login_required, current_user
-from models import User, get_user_by_username, _load_users, _save_users, get_user_by_id
+from werkzeug.security import generate_password_hash
+from filelock import FileLock
+
+from models import User, get_user_by_username, _load_users, _save_users
 
 auth = Blueprint("auth", __name__)
 
-def _get_users_path():
-    """Gets the path to the users.json file."""
-    return os.path.join(current_app.instance_path, 'users.json')
+def get_users_path():
+    """Constructs the path to the users.json file."""
+    return os.path.join(current_app.config["USER_DATA_DIR"], 'users.json')
 
-@auth.route("/register", methods=["GET", "POST"])
+@auth.route("/register", methods=["POST"])
 def register():
-    """Handles user registration."""
-    if request.method == 'GET':
-        return render_template('register.html')
-
+    """Handles user registration using a file-based system."""
+    users_path = get_users_path()
     data = request.get_json()
     username = data.get("username")
     password = data.get("password")
-    users_path = _get_users_path()
 
+    if not username or not password:
+        return jsonify({"message": "Username and password are required"}), 400
+
+    # Check if user already exists
     if get_user_by_username(users_path, username):
         return jsonify({"message": "Username already exists"}), 409
 
+    # Load users, create new user, and save
     users = _load_users(users_path)
-    new_id = max([int(k) for k in users.keys()]) + 1 if users else 1
 
-    new_user = User(id=new_id, username=username, password_hash=None)
-    new_user.set_password(password)
+    # Determine new user ID
+    new_user_id = max([int(k) for k in users.keys()]) + 1 if users else 1
 
-    users[str(new_id)] = new_user.to_dict()
+    # Create new user object
+    password_hash = generate_password_hash(password)
+    new_user = User(id=new_user_id, username=username, password_hash=password_hash)
+
+    # Add to users dictionary and save
+    users[str(new_user_id)] = new_user.to_dict()
     _save_users(users_path, users)
 
-    registered_user = get_user_by_id(users_path, new_id)
-    login_user(registered_user, remember=True)
+    # Log in the new user
+    login_user(new_user, remember=True)
 
-    return jsonify({"message": "Registration successful", "username": registered_user.username}), 201
+    return jsonify({
+        "message": "Registration successful",
+        "username": new_user.username
+    }), 201
 
 
-@auth.route("/login", methods=["GET", "POST"])
+@auth.route("/login", methods=["POST"])
 def login():
-    """Handles user login."""
-    if request.method == 'GET':
-        return render_template('login.html')
-
+    """Handles user login using a file-based system."""
+    users_path = get_users_path()
     data = request.get_json()
-    users_path = _get_users_path()
-    user = get_user_by_username(users_path, data.get("username"))
+    username = data.get("username")
+    password = data.get("password")
 
-    if user and user.check_password(data.get("password")):
+    if not username or not password:
+        return jsonify({"message": "Username and password are required"}), 400
+
+    user = get_user_by_username(users_path, username)
+    if user and user.check_password(password):
         login_user(user, remember=True)
         return jsonify({"message": "Login successful", "username": user.username}), 200
 

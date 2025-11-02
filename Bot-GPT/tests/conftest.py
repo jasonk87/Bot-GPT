@@ -6,9 +6,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app import create_app
-from extensions import socketio as _socketio
-from models import User, _save_users
+from app import create_app, socketio as _socketio
+from models import User, _save_users, _load_users
 
 @pytest.fixture(scope='session')
 def app():
@@ -33,13 +32,15 @@ def client(app):
 
 @pytest.fixture(scope='function')
 def test_user(app):
-    """Create a test user in the users.json file for a function."""
+    """Create a test user, ensuring a clean slate for the test."""
     with app.app_context():
         users_path = os.path.join(app.instance_path, 'users.json')
+        if os.path.exists(users_path):
+            os.remove(users_path)
+
         user = User(id=1, username='testuser', password_hash=None)
         user.set_password('password')
-        users = {'1': user.to_dict()}
-        _save_users(users_path, users)
+        _save_users(users_path, {'1': user.to_dict()})
         yield user
         if os.path.exists(users_path):
             os.remove(users_path)
@@ -47,10 +48,10 @@ def test_user(app):
 @pytest.fixture
 def logged_in_client(client, test_user):
     """A test client logged in for a single test."""
-    login_response = client.post('/login', json={'username': 'testuser', 'password': 'password'})
-    assert login_response.status_code == 200
+    with client.session_transaction() as sess:
+        sess['_user_id'] = '1'
+        sess['_fresh'] = True
     yield client
-    client.get('/logout')
 
 @pytest.fixture
 def socketio_test_client(app, logged_in_client):
@@ -80,9 +81,12 @@ def mocker():
 
 @pytest.fixture(scope='function')
 def two_users(app):
-    """Create two users in the users.json file for a function."""
+    """Create two users, ensuring a clean slate for the test."""
     with app.app_context():
         users_path = os.path.join(app.instance_path, 'users.json')
+        if os.path.exists(users_path):
+            os.remove(users_path)
+
         user1 = User(id=1, username='testuser1', password_hash=None)
         user1.set_password('password')
         user2 = User(id=2, username='testuser2', password_hash=None)
@@ -92,6 +96,8 @@ def two_users(app):
             '2': user2.to_dict()
         }
         _save_users(users_path, users)
+
         yield user1, user2
+
         if os.path.exists(users_path):
             os.remove(users_path)

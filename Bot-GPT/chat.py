@@ -1,18 +1,28 @@
-import os
 import json
 import re
 import time
-import uuid
+import os
 import requests
 from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
 from flask_socketio import emit, join_room, leave_room
-from extensions import socketio
+
+# Import from app, not extensions
+from app import socketio
+
+# Import file-based model functions
 from models import (
-    load_conversation, save_conversation, get_all_conversations_for_user,
-    check_permission, _save_users, _load_users, add_to_conversation_index,
-    find_conversation_owner as find_owner_from_index
+    User,
+    load_conversation,
+    save_conversation,
+    add_to_conversation_index,
+    find_conversation_owner,
+    check_permission,
+    get_all_conversations_for_user,
+    _load_users,
+    _save_users,
 )
+
 from tools import call_ollama_chat_stream, handle_tool_call
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
 
@@ -20,48 +30,63 @@ chat = Blueprint("chat", __name__)
 
 AGENT_SESSIONS = {}
 
-def _get_conversation_path(owner_id, conversation_id):
-    """Constructs the file path for a given conversation."""
-    return os.path.join(current_app.instance_path, str(owner_id), 'conversations', f'{conversation_id}.json')
 
-def find_conversation_owner(conversation_id):
-    """Finds the owner of a conversation using the index."""
-    index_path = os.path.join(current_app.instance_path, 'conversation_index.json')
-    return find_owner_from_index(index_path, conversation_id)
+def get_conversation_path(owner_id, conversation_id):
+    """Helper to construct the path to a conversation file."""
+    return os.path.join(
+        current_app.instance_path,
+        str(owner_id),
+        "conversations",
+        f"{conversation_id}.json",
+    )
+
+
+def get_conversation_index_path():
+    """Helper to construct the path to the conversation index file."""
+    return os.path.join(current_app.instance_path, "conversation_index.json")
+
+
+def get_users_path():
+    """Helper to construct the path to the users file."""
+    return os.path.join(current_app.config["USER_DATA_DIR"], 'users.json')
+
 
 def initialize_chat(data):
     """
-    Initializes a chat session, preparing the conversation object and settings
-    using the new file-based system.
+    Initializes a chat session using the file-based storage.
+    Returns: model, system_prompt, conversation_dict, conversation_path
     """
     conversation_id = data.get("conversation_id")
-    owner_id = current_user.id
+    index_path = get_conversation_index_path()
+    conversation = None
+    conversation_path = None
 
     if conversation_id:
-        owner_id = find_conversation_owner(conversation_id)
+        owner_id = find_conversation_owner(index_path, conversation_id)
         if not owner_id:
             raise ValueError("Conversation not found.")
 
-        path = _get_conversation_path(owner_id, conversation_id)
-        conversation_data = load_conversation(path)
+        conversation_path = get_conversation_path(owner_id, conversation_id)
+        conversation = load_conversation(conversation_path)
 
-        if not conversation_data or not check_permission(conversation_data, current_user):
+        if not conversation or not check_permission(conversation, current_user):
             raise ValueError("Conversation not found or you don't have access.")
-    else:  # New conversation
-        conversation_id = str(uuid.uuid4())
-        conversation_data = {
-            "id": conversation_id,
-            "owner_id": current_user.id,
-            "title": "New Chat",
-            "participants": [{'user_id': current_user.id, 'role': 'owner'}],
-            "messages": []
-        }
-        path = _get_conversation_path(current_user.id, conversation_id)
-        save_conversation(path, conversation_data)
 
-        # Add to the new index
-        index_path = os.path.join(current_app.instance_path, 'conversation_index.json')
-        add_to_conversation_index(index_path, conversation_id, current_user.id)
+    else:  # New conversation
+        conversation_id = str(int(time.time() * 1000))
+        owner_id = current_user.id
+        conversation_path = get_conversation_path(owner_id, conversation_id)
+
+        conversation = {
+            "id": conversation_id,
+            "title": "New Chat",
+            "owner_id": owner_id,
+            "participants": [{"user_id": owner_id, "role": "owner"}],
+            "messages": [],
+            "created_at": time.time(),
+        }
+        save_conversation(conversation_path, conversation)
+        add_to_conversation_index(index_path, conversation_id, owner_id)
 
     model = data.get("model") or current_user.selected_model
     persona_key = current_user.selected_persona or "default"
@@ -69,33 +94,37 @@ def initialize_chat(data):
     if data.get("agent_mode", False):
         system_prompt = AGENT_SYSTEM_PROMPT
 
-    return model, system_prompt, conversation_data
+    return model, system_prompt, conversation, conversation_path
+
 
 def handle_ai_response(data):
     """Handles the AI response loop and yields events."""
     try:
-        model, system_prompt, conversation_data = initialize_chat(data)
+        model, system_prompt, conversation, conversation_path = initialize_chat(data)
         messages = json.loads(data.get("messages", "[]"))
+        # Ensure the conversation's message history is in sync with the client
+        conversation["messages"] = messages
     except (ValueError, json.JSONDecodeError) as exc:
         yield {"type": "agent_error", "error": str(exc)}
         return
 
-    conversation_id = conversation_data['id']
-    yield {"type": "conversation_id", "id": conversation_id}
+    yield {"type": "conversation_id", "id": conversation["id"]}
 
     agent_mode = data.get("agent_mode", False)
-    AGENT_SESSIONS[conversation_id] = {"stop_requested": False}
+    AGENT_SESSIONS[conversation["id"]] = {"stop_requested": False}
     max_iterations = 100 if agent_mode else 15
 
     try:
         for i in range(max_iterations):
-            if AGENT_SESSIONS.get(conversation_id, {}).get("stop_requested"):
+            if AGENT_SESSIONS.get(conversation["id"], {}).get("stop_requested"):
                 yield {"type": "agent_error", "error": "Agent run stopped by user."}
-                return
+                break
 
-            full_response_content, assistant_message = "", {"role": "assistant", "content": ""}
+            full_response_content = ""
+            assistant_message = {"role": "assistant", "content": ""}
+
             try:
-                stream = call_ollama_chat_stream(model, messages, system_prompt)
+                stream = call_ollama_chat_stream(model, conversation["messages"], system_prompt)
                 for chunk in stream:
                     full_response_content += chunk
                     yield {"type": "assistant_chunk", "content": chunk}
@@ -104,7 +133,7 @@ def handle_ai_response(data):
                 break
 
             assistant_message["content"] = full_response_content
-            messages.append(assistant_message)
+            conversation["messages"].append(assistant_message)
             yield {"type": "assistant_end"}
 
             tool_calls = re.findall(r"```json\s*(\{[\s\S]*?\})\s*```", full_response_content)
@@ -118,15 +147,14 @@ def handle_ai_response(data):
                     tool_call = json.loads(tool_call_str)
                     yield {"type": "tool_call", "tool_call_id": tool_call_id, "name": tool_call.get("tool"), "params": tool_call.get("parameters")}
 
-                    tool_result, _ = handle_tool_call(tool_call, conversation_data, current_user)
+                    tool_result, _ = handle_tool_call(tool_call, conversation, current_user)
 
                     if isinstance(tool_result, dict):
                         status = tool_result.get("status")
-                        if status in ["canvas_created", "file_written"]:
-                            yield {"type": "open_canvas", "filename": tool_result.get("filename") or tool_result.get("path")}
-                            yield {"type": "refresh_files", "conversation_id": conversation_id}
-                        elif status == "file_updated":
-                             yield {"type": "file_updated", "path": tool_result.get("path"), "content": tool_result.get("content")}
+                        if status == "canvas_created" or (status == "file_written" and tool_call.get("tool") in ["create_and_open_canvas", "write_file"]):
+                            yield {"type": "open_canvas", "filename": tool_result.get("path") or tool_result.get("filename")}
+                        elif status == "file_written":
+                            yield {"type": "file_updated", "path": tool_result.get("path"), "content": tool_result.get("content")}
 
                     aggregated_tool_results.append(str(tool_result))
                     yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": tool_result}
@@ -137,41 +165,63 @@ def handle_ai_response(data):
                     yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": error_message}
 
             tool_response_message = "TOOL RESPONSES:\n---\n" + "\n---\n".join(aggregated_tool_results) + "\n---"
-            messages.append({"role": "tool", "content": tool_response_message})
+            conversation["messages"].append({"role": "tool", "content": tool_response_message})
+
+        else: # This else belongs to the for loop, executes if loop finishes without break
+            if agent_mode:
+                yield {"type": "agent_error", "error": "Agent reached maximum iterations."}
 
     finally:
-        if conversation_id in AGENT_SESSIONS:
-            del AGENT_SESSIONS[conversation_id]
+        if conversation["id"] in AGENT_SESSIONS:
+            del AGENT_SESSIONS[conversation["id"]]
 
+    # Process final answer only if no tool calls were made in the last iteration
     if not tool_calls:
-        yield from process_final_answer(messages, conversation_data, data.get("canvas_mode", False))
+        yield from process_final_answer(conversation, conversation_path, data.get("canvas_mode", False))
 
-    update_conversation_title(conversation_data, messages)
+    update_conversation_title(conversation, conversation_path)
 
-    messages_to_save = [msg for msg in messages if msg.get("role") in ["user", "assistant"]]
-    conversation_data['messages'] = messages_to_save
-    path = _get_conversation_path(conversation_data['owner_id'], conversation_id)
-    save_conversation(path, conversation_data)
+    messages_to_save = [msg for msg in conversation["messages"] if msg.get("role") in ["user", "assistant"]]
+    conversation["messages"] = messages_to_save
 
-    yield {"type": "done", "title": conversation_data['title']}
+    save_conversation(conversation_path, conversation)
+
+    yield {"type": "done", "title": conversation["title"]}
 
 
 @socketio.on("chat_message")
 @login_required
 def handle_chat_message(data):
+    """Handles a chat message received over WebSocket."""
     room = data.get("conversation_id") or request.sid
+    try:
+        messages = json.loads(data["messages"])
+        last_user_message = messages[-1]["content"] if messages else ""
+    except (KeyError, TypeError, json.JSONDecodeError):
+        emit("ai_response", {"type": "agent_error", "error": "Invalid message payload"}, room=room)
+        emit("ai_response", {"type": "done"}, room=room)
+        return
+
+    emit("ai_response", {"type": "user_message", "content": last_user_message}, room=room, include_self=False)
+
+    done_sent = False
     try:
         for event in handle_ai_response(data):
             emit("ai_response", event, room=room)
+            if event.get("type") == "done":
+                done_sent = True
     except Exception as exc:
+        current_app.logger.error(f"Error in chat handler: {exc}", exc_info=True)
         emit("ai_response", {"type": "agent_error", "error": str(exc)}, room=room)
     finally:
-        emit("ai_response", {"type": "done"}, room=room)
+        if not done_sent:
+            emit("ai_response", {"type": "done"}, room=room)
 
 
 @socketio.on("join")
 @login_required
 def handle_join_room(data):
+    """Adds the current user to a Socket.IO room for conversation updates."""
     room = data.get("room")
     if room:
         join_room(room)
@@ -180,83 +230,87 @@ def handle_join_room(data):
 @socketio.on("leave")
 @login_required
 def handle_leave_room(data):
+    """Removes the current user from a Socket.IO room when they leave a chat."""
     room = data.get("room")
     if room:
         leave_room(room)
 
 
-def process_final_answer(messages, conversation_data, canvas_mode):
-    final_answer_content = messages[-1]["content"]
+def process_final_answer(conversation, conversation_path, canvas_mode):
+    """
+    Processes the final answer. If in canvas_mode, saves the largest code block to a file.
+    """
+    if not conversation.get("messages"):
+        return
+
+    final_answer_content = conversation["messages"][-1]["content"]
     if not canvas_mode:
         yield {"type": "final_answer", "content": final_answer_content}
         return
 
     code_blocks = re.findall(r"```(\w*)\n([\s\S]+?)```", final_answer_content)
+    if not code_blocks:
+        content_to_save = re.sub(r"<think>[\s\S]*?<\/think>", "", final_answer_content).strip()
+        file_extension = "md"
+    else:
+        largest_block = max(code_blocks, key=lambda item: len(item[1].split("\n")))
+        language, content_to_save = largest_block[0].lower(), largest_block[1].strip()
+        file_extension = {"python": "py", "javascript": "js", "html": "html", "css": "css", "json": "json", "sql": "sql", "shell": "sh", "bash": "sh"}.get(language, "txt")
 
     timestamp = int(time.time())
-    filename = f"canvas_{timestamp}.py"
-    content_to_save = final_answer_content
-    if code_blocks:
-        content_to_save = max(code_blocks, key=lambda item: len(item[1].split("\n")))[1]
+    filename = f"canvas_{timestamp}.{file_extension}"
 
     from tools import write_file
-    write_result = write_file(
-        path=filename,
-        content=content_to_save,
-        conversation_id=conversation_data['id'],
-        user_id=conversation_data['owner_id'],
-    )
+    write_result = write_file(path=filename, content=content_to_save, conversation_id=conversation["id"], user_id=conversation["owner_id"])
 
     if "successfully" in write_result.get("message", ""):
         yield {"type": "open_canvas", "filename": filename}
-        yield {"type": "refresh_files", "conversation_id": conversation_data['id']}
     else:
         yield {"type": "agent_error", "error": f"Failed to save to canvas: {write_result.get('message', '')}"}
 
     yield {"type": "final_answer", "content": final_answer_content}
 
 
-def update_conversation_title(conversation_data, messages):
-    """Generates a title for a new conversation based on its content."""
-    if conversation_data['title'] == "New Chat" and len(messages) >= 2:
+def update_conversation_title(conversation, conversation_path):
+    """Updates the conversation title if it's a new chat."""
+    if conversation.get("title") == "New Chat" and len(conversation.get("messages", [])) >= 2:
         try:
-            conversation_text = "\n".join(
-                [f"{msg['role'].capitalize()}: {msg['content']}" for msg in messages if msg['role'] in ['user', 'assistant']]
+            user_message = conversation["messages"][0]["content"]
+            assistant_message = next((m["content"] for m in reversed(conversation["messages"]) if m["role"] == "assistant"), "")
+
+            cleaned_content = re.sub(r"<think>[\s\S]*?</think>", "", assistant_message).strip()
+            title_prompt = f"Based on the following exchange, create a very short, concise title (5 words or less).\n\nUser: {user_message}\nAssistant: {cleaned_content}\n\nTitle:"
+
+            response = requests.post(
+                f"{current_app.config['OLLAMA_HOST']}/api/chat",
+                json={"model": "llama3:8b", "messages": [{"role": "user", "content": title_prompt}], "stream": False},
+                timeout=15,
             )
+            response.raise_for_status()
+            raw_title = response.json().get("message", {}).get("content", "").strip()
+            cleaned_title = re.sub(r"<think>[\s\S]*?</think>", "", raw_title).strip().replace('"', "")
 
-            title_prompt = (
-                "Based on the following conversation, please generate a short, descriptive title "
-                f"(5 words or less) that summarizes the main topic:\n\n---\n{conversation_text}\n---"
-            )
-
-            model = current_user.selected_model or 'qwen:8b'
-
-            title_stream = call_ollama_chat_stream(
-                model=model,
-                messages=[{'role': 'user', 'content': title_prompt}],
-                system_prompt="You are an expert at summarizing conversations. Provide only the title, with no preamble."
-            )
-
-            new_title = "".join(list(title_stream)).strip().replace('"', '')
-
-            if new_title and len(new_title) > 1:
-                conversation_data['title'] = new_title
-        except Exception as e:
-            current_app.logger.error(f"Error generating conversation title: {e}")
+            if cleaned_title:
+                conversation["title"] = cleaned_title
+                save_conversation(conversation_path, conversation)
+        except requests.exceptions.RequestException as e:
+            current_app.logger.warning(f"Could not auto-generate title: {e}")
 
 
 @socketio.on("stop_agent")
 @login_required
 def handle_stop_agent(data):
+    """Handles a request to stop a running agent."""
     conversation_id = data.get("conversation_id")
     if conversation_id and conversation_id in AGENT_SESSIONS:
         AGENT_SESSIONS[conversation_id]["stop_requested"] = True
-        emit("ai_response", {"type": "agent_error", "error": "Stop signal received. Attempting to halt..."})
+        emit("ai_response", {"type": "agent_error", "error": "Stop signal received. Attempting to halt..."}, room=conversation_id)
 
 
 @socketio.on("load_conversations")
 @login_required
-def load_conversations():
+def load_conversations_socket():
+    """Loads all conversations for the current user via WebSocket."""
     conversations = get_all_conversations_for_user(current_app.instance_path, current_user.id)
     emit("conversations_loaded", conversations)
 
@@ -264,53 +318,83 @@ def load_conversations():
 @socketio.on("load_conversation")
 @login_required
 def load_conversation_socket(data):
+    """Loads a specific conversation's messages via WebSocket."""
     conversation_id = data.get("conversation_id")
-    owner_id = find_conversation_owner(conversation_id)
-    if owner_id:
-        path = _get_conversation_path(owner_id, conversation_id)
-        found_convo = load_conversation(path)
-        if found_convo and check_permission(found_convo, current_user):
-            role = 'owner' if found_convo['owner_id'] == current_user.id else 'participant'
-            emit("conversation_loaded", {"id": found_convo['id'], "messages": found_convo['messages'], "role": role})
-            return
-    emit("agent_error", {"error": "Conversation not found or access denied."})
+    index_path = get_conversation_index_path()
+    owner_id = find_conversation_owner(index_path, conversation_id)
+
+    if not owner_id:
+        emit("agent_error", {"error": "Conversation not found"})
+        return
+
+    conversation_path = get_conversation_path(owner_id, conversation_id)
+    conversation = load_conversation(conversation_path)
+
+    if conversation and check_permission(conversation, current_user):
+        participant = next((p for p in conversation.get("participants", []) if p["user_id"] == current_user.id), None)
+        emit("conversation_loaded", {"id": conversation["id"], "messages": conversation.get("messages", []), "role": participant["role"] if participant else "participant"})
+    else:
+        emit("agent_error", {"error": "You don't have access to this conversation"})
 
 
-@chat.route("/api/settings", methods=["GET", "POST"])
+@chat.route("/api/settings", methods=["GET"])
 @login_required
-def settings_route():
-    users_path = os.path.join(current_app.instance_path, 'users.json')
-    if request.method == "GET":
-        persona_names = {key: value["name"] for key, value in PERSONAS.items()}
-        return jsonify({
-            "model": current_user.selected_model,
-            "persona": current_user.selected_persona,
-            "available_personas": persona_names,
-        })
+def get_settings():
+    """Gets user settings."""
+    persona_names = {key: value["name"] for key, value in PERSONAS.items()}
+    return jsonify({
+        "model": current_user.selected_model,
+        "persona": current_user.selected_persona,
+        "available_personas": persona_names,
+    })
 
+
+@chat.route("/api/settings", methods=["POST"])
+@login_required
+def update_settings():
+    """Updates user settings in the file-based system."""
     data = request.get_json()
-    users = _load_users(users_path)
+    path = get_users_path()
+    users = _load_users(path)
     user_data = users.get(str(current_user.id))
+
     if user_data:
-        user_data['selected_model'] = data.get("model")
-        user_data['selected_persona'] = data.get("persona")
-        _save_users(users_path, users)
-        current_user.selected_model = data.get("model")
-        current_user.selected_persona = data.get("persona")
-    return jsonify({"message": "Settings updated successfully"}), 200
+        user_data['selected_model'] = data.get('model', user_data.get('selected_model'))
+        user_data['selected_persona'] = data.get('persona', user_data.get('selected_persona'))
+        _save_users(path, users)
+        return jsonify({"message": "Settings updated successfully"}), 200
+
+    return jsonify({"message": "User not found"}), 404
 
 
-@chat.route("/api/models", methods=["GET"])
+@chat.route("/api/models")
 @login_required
 def get_models():
-    """Fetches the list of available models from the Ollama API."""
+    """Fetches available models from the Ollama host."""
     try:
         ollama_host = current_app.config["OLLAMA_HOST"]
-        response = requests.get(f"{ollama_host}/api/tags")
+        response = requests.get(f"{ollama_host}/api/tags", timeout=10)
         response.raise_for_status()
-        models = response.json().get("models", [])
-        return jsonify([m["name"] for m in models])
+        return jsonify(response.json().get("models", []))
     except requests.exceptions.RequestException as e:
-        return jsonify({"error": f"Could not connect to Ollama: {e}"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e)}), 502
+
+
+@chat.route("/api/chat")
+@login_required
+def chat_proxy():
+    """(DEPRECATED) Orchestrates the AI response loop via HTTP streaming."""
+    data = {
+        "messages": request.args.get("messages", "[]"),
+        "model": request.args.get("model"),
+        "conversation_id": request.args.get("conversation_id"),
+        "agent_mode": request.args.get("agent_mode", "false").lower() == 'true',
+        "canvas_mode": request.args.get("canvas_mode", "false").lower() == 'true',
+    }
+
+    def event_stream():
+        with current_app.app_context():
+            for event in handle_ai_response(data):
+                yield f"data: {json.dumps(event)}\n\n"
+
+    return Response(event_stream(), mimetype="text/event-stream")

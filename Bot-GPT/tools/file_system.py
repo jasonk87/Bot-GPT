@@ -1,6 +1,6 @@
 import os
 from flask import current_app
-from extensions import socketio
+from app import socketio
 
 
 def get_workspace_path(conversation_id, owner_id):

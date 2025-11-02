@@ -1,8 +1,12 @@
 import os
 from flask import Flask, jsonify
 from flask_login import LoginManager
-from extensions import socketio
+from flask_socketio import SocketIO
 from config import config
+
+# Initialize extensions here to make them globally accessible
+socketio = SocketIO()
+
 from routes import main as main_blueprint
 from auth import auth as auth_blueprint
 from chat import chat as chat_blueprint
@@ -26,7 +30,7 @@ def create_app(config_name=None):
             raise
 
     # --- Initialize Extensions ---
-    socketio.init_app(app)
+    socketio.init_app(app, cors_allowed_origins="*")
 
     login_manager = LoginManager()
     login_manager.init_app(app)

@@ -7,7 +7,7 @@ import inspect
 import json
 import time
 from flask import current_app
-from extensions import socketio
+from app import socketio
 
 # --- Dependencies for Web Browsing ---
 try:

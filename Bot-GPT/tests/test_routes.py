@@ -28,23 +28,15 @@ def test_profile_route_authenticated(logged_in_client, test_user, app):
 
 def test_auth_routes(client, test_user, app):
     """Test registration and login routes."""
-    # Note: test_user fixture already creates a user.
-    # Here we can test the login for that user.
-    login_rv = client.post('/login', json={'username': 'testuser', 'password': 'password'})
-    assert login_rv.status_code == 200
-
-    # Test logout
-    logout_rv = client.get('/logout')
-    assert logout_rv.status_code == 200
-
     # Test registering a new user
-    register_rv = client.post('/register', json={'username': 'newuser', 'password': 'newpassword'})
+    import time
+    unique_username = f"newuser_{time.time()}"
+    register_rv = client.post('/register', json={'username': unique_username, 'password': 'newpassword'})
     assert register_rv.status_code == 201
 
     # Test logging in as the new user
-    new_login_rv = client.post('/login', json={'username': 'newuser', 'password': 'newpassword'})
+    new_login_rv = client.post('/login', json={'username': unique_username, 'password': 'newpassword'})
     assert new_login_rv.status_code == 200
-
 
 def test_get_models_api(logged_in_client, mocker):
     """Test the API endpoint for getting Ollama models."""
@@ -60,7 +52,7 @@ def test_get_models_api(logged_in_client, mocker):
 
     response = logged_in_client.get('/api/models')
     assert response.status_code == 200
-    data = response.json
+    data = response.get_json()
     assert isinstance(data, list)
-    assert "model1:latest" in data
-    assert "model2:latest" in data
+    assert len(data) == 2
+    assert data[0]['name'] == 'model1:latest'

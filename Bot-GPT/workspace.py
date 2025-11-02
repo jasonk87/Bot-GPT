@@ -4,7 +4,7 @@ import uuid
 from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
-from extensions import socketio
+from app import socketio
 from models import (
     load_conversation, save_conversation, check_permission,
     _load_users, get_user_by_id, add_to_conversation_index,
@@ -66,19 +66,15 @@ def handle_workspace_file():
     if not conversation_data:
         return jsonify({"error": "Conversation not found"}), 404
 
-    if request.method == 'GET':
-        if not check_permission(conversation_data, current_user):
-            return jsonify({"error": "Access denied"}), 403
-    else:
-        if not check_permission(conversation_data, current_user, level="owner"):
-            return jsonify({"error": "Access denied for this operation"}), 403
-
     workspace_path = get_workspace_path(conversation_id, owner_id)
     file_path = os.path.join(workspace_path, path)
+
     if not is_safe_path(workspace_path, file_path):
         return jsonify({"error": "Invalid path"}), 403
 
     if request.method == 'GET':
+        if not check_permission(conversation_data, current_user):
+            return jsonify({"error": "Access denied"}), 403
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -89,17 +85,21 @@ def handle_workspace_file():
             return jsonify({"error": str(e)}), 500
 
     if request.method == 'POST':
+        if not check_permission(conversation_data, current_user, level="owner"):
+            return jsonify({"error": "Access denied for this operation"}), 403
         content = data.get("content")
         try:
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=conversation_id)
+            socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=str(conversation_id))
             return jsonify({"success": True, "message": f"File '{path}' saved."})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
     if request.method == 'DELETE':
+        if not check_permission(conversation_data, current_user, level="owner"):
+            return jsonify({"error": "Access denied for this operation"}), 403
         try:
             if os.path.isfile(file_path):
                 os.remove(file_path)
@@ -107,11 +107,10 @@ def handle_workspace_file():
                 shutil.rmtree(file_path)
             else:
                 return jsonify({"error": "File or directory not found"}), 404
-            socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=conversation_id)
+            socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=str(conversation_id))
             return jsonify({"success": True, "message": f"Deleted '{path}'."})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
-
 
 @workspace.route("/api/conversations", methods=["GET", "DELETE"])
 @login_required
