@@ -16,10 +16,16 @@ def test_profile_route_authenticated(logged_in_client, test_user, app):
     """Test the profile route for an authenticated user."""
     with app.app_context():
         # Create some dummy conversations for the user
-        from models import save_conversation
+        from models import save_conversation, add_to_conversation_index, add_user_to_conversation_index
         import os
-        convo_path = os.path.join(app.instance_path, str(test_user.id), 'conversations', 'convo1.json')
-        save_conversation(convo_path, {'id': 'convo1', 'owner_id': test_user.id, 'title': 'Test Convo 1', 'participants': [], 'messages': []})
+        convo_id = 'convo1'
+        convo_path = os.path.join(app.instance_path, str(test_user.id), 'conversations', f'{convo_id}.json')
+        save_conversation(convo_path, {'id': convo_id, 'owner_id': test_user.id, 'title': 'Test Convo 1', 'participants': [{'user_id': test_user.id, 'role': 'owner'}], 'messages': []})
+
+        index_path = os.path.join(app.instance_path, 'conversation_index.json')
+        add_to_conversation_index(index_path, convo_id, test_user.id)
+        user_convo_index_path = os.path.join(app.instance_path, 'user_conversation_index.json')
+        add_user_to_conversation_index(user_convo_index_path, test_user.id, convo_id)
 
         response = logged_in_client.get('/profile')
         assert response.status_code == 200

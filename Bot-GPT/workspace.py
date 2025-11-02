@@ -8,6 +8,7 @@ from app import socketio
 from models import (
     load_conversation, save_conversation, check_permission,
     _load_users, get_user_by_id, add_to_conversation_index,
+    add_user_to_conversation_index, remove_user_from_conversation_index,
     find_conversation_owner as find_owner_from_index
 )
 from tools.file_system import get_workspace_path
@@ -27,6 +28,10 @@ def find_conversation_owner(conversation_id):
     """Finds the owner of a conversation using the index."""
     index_path = os.path.join(current_app.instance_path, 'conversation_index.json')
     return find_owner_from_index(index_path, conversation_id)
+
+def get_user_conversation_index_path():
+    """Helper to construct the path to the user-conversation index file."""
+    return os.path.join(current_app.instance_path, "user_conversation_index.json")
 
 @workspace.route("/api/workspace/files/<conversation_id>", methods=["GET"])
 @login_required
@@ -134,11 +139,25 @@ def handle_conversations():
             return jsonify({"error": "Access denied"}), 403
 
         try:
+            # Remove from user-conversation index for all participants
+            user_convo_index_path = get_user_conversation_index_path()
+            for participant in conversation_data.get('participants', []):
+                remove_user_from_conversation_index(user_convo_index_path, participant['user_id'], conversation_id)
+
             if os.path.exists(convo_path):
                 os.remove(convo_path)
             workspace_path = get_workspace_path(conversation_id, owner_id)
             if os.path.exists(workspace_path):
                 shutil.rmtree(workspace_path)
+
+            # Remove from the main conversation index
+            convo_index_path = os.path.join(current_app.instance_path, 'conversation_index.json')
+            from models import _load_conversation_index, _save_conversation_index
+            convo_index = _load_conversation_index(convo_index_path)
+            if conversation_id in convo_index:
+                del convo_index[conversation_id]
+                _save_conversation_index(convo_index_path, convo_index)
+
             return jsonify({"success": True})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -172,6 +191,9 @@ def share_conversation(conversation_id):
     participants.append({'user_id': user_id_to_share_with, 'role': 'participant'})
     conversation_data['participants'] = participants
     save_conversation(convo_path, conversation_data)
+
+    user_convo_index_path = get_user_conversation_index_path()
+    add_user_to_conversation_index(user_convo_index_path, user_id_to_share_with, conversation_id)
 
     return jsonify({"message": "Conversation shared successfully"}), 201
 

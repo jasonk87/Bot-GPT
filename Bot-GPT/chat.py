@@ -16,6 +16,7 @@ from models import (
     load_conversation,
     save_conversation,
     add_to_conversation_index,
+    add_user_to_conversation_index,
     find_conversation_owner,
     check_permission,
     get_all_conversations_for_user,
@@ -45,6 +46,9 @@ def get_conversation_index_path():
     """Helper to construct the path to the conversation index file."""
     return os.path.join(current_app.instance_path, "conversation_index.json")
 
+def get_user_conversation_index_path():
+    """Helper to construct the path to the user-conversation index file."""
+    return os.path.join(current_app.instance_path, "user_conversation_index.json")
 
 def get_users_path():
     """Helper to construct the path to the users file."""
@@ -87,6 +91,8 @@ def initialize_chat(data):
         }
         save_conversation(conversation_path, conversation)
         add_to_conversation_index(index_path, conversation_id, owner_id)
+        user_convo_index_path = get_user_conversation_index_path()
+        add_user_to_conversation_index(user_convo_index_path, owner_id, conversation_id)
 
     model = data.get("model") or current_user.selected_model
     persona_key = current_user.selected_persona or "default"
