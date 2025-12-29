@@ -7,10 +7,8 @@ from config import config
 # Initialize extensions here to make them globally accessible
 socketio = SocketIO()
 
-from routes import main as main_blueprint
-from auth import auth as auth_blueprint
-from chat import chat as chat_blueprint
-from workspace import workspace as workspace_blueprint
+# Import blueprints after initializing socketio to avoid circular imports
+# (Actually, standard practice is to import blueprints inside create_app or after socketio definition)
 
 def create_app(config_name=None):
     """Create and configure an instance of the Flask application."""
@@ -43,6 +41,11 @@ def create_app(config_name=None):
         return get_user_by_id(users_path, int(user_id))
 
     # --- Register Blueprints ---
+    from routes import main as main_blueprint
+    from auth import auth as auth_blueprint
+    from chat import chat as chat_blueprint
+    from workspace import workspace as workspace_blueprint
+
     app.register_blueprint(main_blueprint)
     app.register_blueprint(auth_blueprint)
     app.register_blueprint(chat_blueprint)

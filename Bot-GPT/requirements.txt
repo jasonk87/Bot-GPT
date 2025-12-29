@@ -11,3 +11,4 @@ faiss-cpu
 chromadb
 filelock
 google-generativeai
+Pillow

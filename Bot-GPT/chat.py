@@ -2,6 +2,7 @@ import json
 import re
 import time
 import os
+import base64
 import requests
 from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
@@ -200,6 +201,70 @@ def handle_ai_response(data):
 def handle_chat_message(data):
     """Handles a chat message received over WebSocket."""
     room = data.get("conversation_id") or request.sid
+
+    # Pre-process images in the latest message
+    try:
+        messages = json.loads(data.get("messages", "[]"))
+        if messages and "images" in messages[-1]:
+            # This is a new message with images
+            last_msg = messages[-1]
+            images_data = last_msg.pop("images", []) # Remove base64 data from memory/JSON
+
+            conversation_id = data.get("conversation_id")
+            if not conversation_id:
+                 # Should have been created by initialize_chat, but if new...
+                 # We can't save images easily without an ID.
+                 # Let's rely on handle_ai_response's initialize_chat to create it,
+                 # but we need to save images BEFORE that to clear base64.
+                 # Actually, handle_ai_response calls initialize_chat first.
+                 pass
+
+            # We need the owner ID to save files.
+            # Quick lookup or assume current user if new.
+            index_path = get_conversation_index_path()
+            owner_id = find_conversation_owner(index_path, conversation_id)
+            if not owner_id and not conversation_id:
+                 owner_id = current_user.id
+            elif not owner_id:
+                 owner_id = current_user.id # Fallback
+
+            # If conversation_id is empty, handle_ai_response will generate one.
+            # But we need to save images now.
+            # Strategy: if no ID, generate one now and pass it back to data.
+            if not conversation_id:
+                conversation_id = str(int(time.time() * 1000))
+                data["conversation_id"] = conversation_id
+
+            image_paths = []
+            images_dir = os.path.join(current_app.instance_path, str(owner_id), "conversations", conversation_id, "images")
+            os.makedirs(images_dir, exist_ok=True)
+
+            for idx, img_base64 in enumerate(images_data):
+                if "," in img_base64:
+                    header, encoded = img_base64.split(",", 1)
+                else:
+                    encoded = img_base64
+
+                file_ext = "png" # Default
+                if "image/jpeg" in img_base64: file_ext = "jpg"
+                if "image/webp" in img_base64: file_ext = "webp"
+
+                filename = f"img_{int(time.time())}_{idx}.{file_ext}"
+                filepath = os.path.join(images_dir, filename)
+
+                with open(filepath, "wb") as f:
+                    f.write(base64.b64decode(encoded))
+
+                image_paths.append(filepath)
+
+            last_msg["images"] = image_paths # Replace base64 with paths
+            data["messages"] = json.dumps(messages) # Update data payload
+
+    except Exception as e:
+        current_app.logger.error(f"Error processing images: {e}")
+        emit("ai_response", {"type": "agent_error", "error": f"Image upload failed: {e}"}, room=room)
+        return
+
     try:
         messages = json.loads(data["messages"])
         last_user_message = messages[-1]["content"] if messages else ""

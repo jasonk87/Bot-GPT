@@ -37,6 +37,11 @@ try:
 except ImportError:
     genai = None
 
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
 # Import tool functions from sub-modules
 from .web_search import web_search
 from .file_system import (
@@ -287,13 +292,13 @@ def call_gemini_chat_stream(model, messages, system_prompt):
 
         # Prepare history and current message
         history = []
-        last_user_message = ""
 
         formatted_messages = []
 
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content")
+            images = msg.get("images", [])
 
             if role == "system":
                 # System prompt is passed separately
@@ -306,11 +311,22 @@ def call_gemini_chat_stream(model, messages, system_prompt):
             elif role == "assistant":
                 role = "model"
 
+            parts = [content] if content else []
+
+            # Handle images
+            for img_path in images:
+                if os.path.exists(img_path) and Image:
+                    try:
+                        img = Image.open(img_path)
+                        parts.append(img)
+                    except Exception as e:
+                        print(f"Error loading image {img_path}: {e}")
+
             # Merge consecutive messages of the same role
             if formatted_messages and formatted_messages[-1]["role"] == role:
-                formatted_messages[-1]["parts"].append(content)
+                formatted_messages[-1]["parts"].extend(parts)
             else:
-                formatted_messages.append({"role": role, "parts": [content]})
+                formatted_messages.append({"role": role, "parts": parts})
 
         if not formatted_messages:
             yield "Error: No messages to send."
@@ -319,7 +335,8 @@ def call_gemini_chat_stream(model, messages, system_prompt):
         # Extract the last message if it's from the user
         if formatted_messages[-1]["role"] == "user":
             last_message = formatted_messages.pop()
-            last_user_message = "\n".join(last_message["parts"])
+            # If we popped the last message, we need to ensure the remaining history is valid
+            # Gemini chat history cannot be empty if we rely on start_chat(history=...)
         else:
             # If the last message is from the model, we can't really continue
             # unless we prompt it. This shouldn't happen in standard chat flow.
@@ -332,7 +349,9 @@ def call_gemini_chat_stream(model, messages, system_prompt):
         )
 
         chat_session = generative_model.start_chat(history=formatted_messages)
-        response = chat_session.send_message(last_user_message, stream=True)
+
+        # Send the last message content (text + images)
+        response = chat_session.send_message(last_message["parts"], stream=True)
 
         for chunk in response:
             if chunk.text:

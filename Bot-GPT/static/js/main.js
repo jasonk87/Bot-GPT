@@ -154,7 +154,16 @@ async function initializeApp(username) {
     toolsDropdownBtn = document.getElementById('tools-dropdown-btn');
     toolsDropdownMenu = document.getElementById('tools-dropdown-menu');
 
+    // Image Upload Elements
+    attachImageBtn = document.getElementById('attach-image-btn');
+    imageInput = document.getElementById('image-input');
+    imagePreviewContainer = document.getElementById('image-preview-container');
+
     welcomeUser.textContent = `Welcome, ${username}!`;
+
+    // --- Image Upload Logic ---
+    attachImageBtn.addEventListener('click', () => imageInput.click());
+    imageInput.addEventListener('change', handleImageSelection);
 
     // --- Tools Dropdown Logic ---
     toolsDropdownBtn.addEventListener('click', () => {
@@ -1025,19 +1034,72 @@ function setAgentRunning(isRunning, agentMode = false) {
     }
 }
 
+let pendingImages = [];
+
+function handleImageSelection() {
+    const files = Array.from(imageInput.files);
+    if (files.length === 0) return;
+
+    files.forEach(file => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const base64 = e.target.result;
+            pendingImages.push(base64);
+
+            const previewWrapper = document.createElement('div');
+            previewWrapper.className = "relative w-16 h-16 flex-shrink-0";
+
+            const img = document.createElement('img');
+            img.src = base64;
+            img.className = "w-full h-full object-cover rounded border border-gray-600";
+
+            const removeBtn = document.createElement('button');
+            removeBtn.innerHTML = "&times;";
+            removeBtn.className = "absolute -top-2 -right-2 bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs";
+            removeBtn.onclick = () => {
+                pendingImages = pendingImages.filter(p => p !== base64);
+                previewWrapper.remove();
+                if (pendingImages.length === 0) imagePreviewContainer.classList.add('hidden');
+            };
+
+            previewWrapper.appendChild(img);
+            previewWrapper.appendChild(removeBtn);
+            imagePreviewContainer.appendChild(previewWrapper);
+        };
+        reader.readAsDataURL(file);
+    });
+
+    imagePreviewContainer.classList.remove('hidden');
+    imageInput.value = ''; // Reset so same file can be selected again
+}
+
 function sendMessage() {
     const text = chatInput.value.trim();
-    if (!text || isAgentRunning) return;
+    if ((!text && pendingImages.length === 0) || isAgentRunning) return;
 
     const agentMode = agentModeToggle.checked;
     setAgentRunning(true, agentMode);
 
     welcomeMessage.style.display = 'none';
-    appendMessage(text, 'user');
-    conversationHistory.push({ role: 'user', content: text });
+
+    // Display user message with images if present
+    appendMessage(text, 'user', true, pendingImages);
+
+    // Prepare message for history/backend
+    const newMessage = { role: 'user', content: text };
+    if (pendingImages.length > 0) {
+        newMessage.images = [...pendingImages]; // Send images to backend
+    }
+
+    conversationHistory.push(newMessage);
 
     chatInput.value = '';
     chatInput.style.height = 'auto';
+
+    // Clear pending images
+    pendingImages = [];
+    imagePreviewContainer.innerHTML = '';
+    imagePreviewContainer.classList.add('hidden');
 
     currentAgentBubble = createBotMessageContainer();
     currentResponseContent = ""; // Reset the content for the new message
@@ -1382,7 +1444,7 @@ function startNewChat() {
     socket.emit('load_conversations'); // To update active state
 }
 
-function appendMessage(text, sender, animate = true) {
+function appendMessage(text, sender, animate = true, images = []) {
     const messageWrapper = document.createElement('div');
     let classes = `flex max-w-3xl w-full items-start self-${sender === 'user' ? 'end' : 'start'} mx-auto`;
     if (animate) {
@@ -1391,8 +1453,18 @@ function appendMessage(text, sender, animate = true) {
     messageWrapper.className = classes;
 
     if (sender === 'user') {
+        let imageGrid = '';
+        if (images && images.length > 0) {
+            imageGrid = `<div class="flex flex-wrap gap-2 mb-2">`;
+            images.forEach(imgSrc => {
+                 imageGrid += `<img src="${imgSrc}" class="max-w-[150px] max-h-[150px] rounded border border-gray-600">`;
+            });
+            imageGrid += `</div>`;
+        }
+
         messageWrapper.innerHTML = `
             <div class="flex-1 user-bubble">
+                ${imageGrid}
                 <div class="prose prose-invert max-w-none">${marked.parse(text)}</div>
             </div>
             <div class="w-8 h-8 rounded-full bg-blue-800 flex-shrink-0 ml-2 flex items-center justify-center">
