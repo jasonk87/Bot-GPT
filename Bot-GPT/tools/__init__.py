@@ -50,6 +50,7 @@ from .file_system import (
     list_directory_tree,
     get_file_tree,
     read_file,
+    read_codebase,
     write_file,
     get_workspace_path,
 )
@@ -481,6 +482,7 @@ def handle_tool_call(tool_call, conversation, user):
         "run_sql_query": run_sql_query,
         "run_shell_command": run_shell_command,
         "execute_python": execute_python,
+        "read_codebase": read_codebase,
         "pip": pip,
         "index_workspace": index_workspace,
         "query_workspace": query_workspace,
@@ -512,6 +514,7 @@ def handle_tool_call(tool_call, conversation, user):
         workspace_tools = [
             "list_files",
             "read_file",
+            "read_codebase",
             "write_file",
             "execute_python",
             "index_workspace",
@@ -549,6 +552,7 @@ __all__ = [
     "list_directory_tree",
     "get_file_tree",
     "read_file",
+    "read_codebase",
     "write_file",
     "get_workspace_path",
     "git_clone",

@@ -85,6 +85,10 @@ not make up parameters.
 - `list_files(path: str = '.')`: Lists files and directories in a single
   directory.
 - `read_file(path: str)`: Reads the content of a file.
+- `read_codebase(path: str = '.')`: Reads ALL text files in a directory (recursively)
+  and returns their concatenated content. Use this to load entire modules or
+  large parts of the codebase into your context when you need to understand
+  broad architecture. Preferred over `query_workspace` for deep analysis tasks.
 - `write_file(path: str, content: str)`: Writes content to a file. This will
   overwrite the file if it already exists. Use this for saving changes to
   existing files.
