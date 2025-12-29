@@ -32,6 +32,11 @@ try:
 except ImportError:
     chromadb = None
 
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
+
 # Import tool functions from sub-modules
 from .web_search import web_search
 from .file_system import (
@@ -266,65 +271,83 @@ def query_workspace(query, conversation_id, user_id, user, n_results=3):
         return f"Error during workspace query: {e}"
 
 
-def ask_debugger(failed_command, error_message, user=None, user_id=None):
-    """Delegates a debugging task to a specialist agent."""
-    debugger_prompt = (
-        f"Fix this failed command:\n{failed_command}\n"
-        f"Error:\n{error_message}\nReturn ONLY the corrected JSON."
-    )
+def call_gemini_chat_stream(model, messages, system_prompt):
+    """Calls Google's Gemini API and yields response chunks."""
+    if not genai:
+        yield "Error: google-generativeai library not installed."
+        return
+
+    api_key = current_app.config.get("GOOGLE_API_KEY")
+    if not api_key:
+        yield "Error: GOOGLE_API_KEY not found in configuration."
+        return
+
     try:
-        current_model = user.selected_model if user else "default_model_name"
-        response = requests.post(
-            f"{current_app.config['OLLAMA_HOST']}/api/chat",
-            json={
-                "model": current_model,
-                "messages": [{"role": "user", "content": debugger_prompt}],
-                "stream": False,
-            },
-            timeout=20,
-        )
-        response.raise_for_status()
-        content = response.json().get("message", {}).get("content", "")
-        json_match = re.search(r"{[\s\S]*}", content)
-        if json_match:
-            return f"Debugger agent suggests this fix: {json_match.group(0)}"
+        genai.configure(api_key=api_key)
+
+        # Prepare history and current message
+        history = []
+        last_user_message = ""
+
+        formatted_messages = []
+
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content")
+
+            if role == "system":
+                # System prompt is passed separately
+                continue
+
+            if role == "tool":
+                # Treat tool output as user message for now to simplify
+                role = "user"
+                content = f"Tool Output:\n{content}"
+            elif role == "assistant":
+                role = "model"
+
+            # Merge consecutive messages of the same role
+            if formatted_messages and formatted_messages[-1]["role"] == role:
+                formatted_messages[-1]["parts"].append(content)
+            else:
+                formatted_messages.append({"role": role, "parts": [content]})
+
+        if not formatted_messages:
+            yield "Error: No messages to send."
+            return
+
+        # Extract the last message if it's from the user
+        if formatted_messages[-1]["role"] == "user":
+            last_message = formatted_messages.pop()
+            last_user_message = "\n".join(last_message["parts"])
         else:
-            return f"Debugger agent could not find a fix. It responded: {content}"
-    except Exception as e:
-        return f"Error calling debugger agent: {e}"
+            # If the last message is from the model, we can't really continue
+            # unless we prompt it. This shouldn't happen in standard chat flow.
+             yield "Error: Last message was not from user."
+             return
 
-
-def ask_coder(task_description, user=None, user_id=None):
-    """Delegates a coding task to a specialist agent."""
-    coder_prompt = (
-        "Write Python code for the following task. Your code should be "
-        "clean, well-formatted, and include comments where necessary. "
-        "Return ONLY the raw code.\n"
-        f"Task: {task_description}\nCode:"
-    )
-    try:
-        current_model = user.selected_model if user else "default_model_name"
-        response = requests.post(
-            f"{current_app.config['OLLAMA_HOST']}/api/chat",
-            json={
-                "model": current_model,
-                "messages": [{"role": "user", "content": coder_prompt}],
-                "stream": False,
-            },
-            timeout=30,
+        generative_model = genai.GenerativeModel(
+            model,
+            system_instruction=system_prompt
         )
-        response.raise_for_status()
-        content = response.json().get("message", {}).get("content", "")
-        code_match = re.search(r"```(?:\w*\n)?([\s\S]+)```", content)
-        if code_match:
-            return code_match.group(1).strip()
-        return content.strip()
+
+        chat_session = generative_model.start_chat(history=formatted_messages)
+        response = chat_session.send_message(last_user_message, stream=True)
+
+        for chunk in response:
+            if chunk.text:
+                yield chunk.text
+
     except Exception as e:
-        return f"Error calling Coder agent: {e}"
+        yield f"Error calling Gemini: {str(e)}"
 
 
 def call_ollama_chat_stream(model, messages, system_prompt):
-    """Calls the Ollama chat API and yields response chunks."""
+    """Calls the AI chat API (Ollama or Gemini) and yields response chunks."""
+    if "gemini" in model.lower():
+        yield from call_gemini_chat_stream(model, messages, system_prompt)
+        return
+
     try:
         ollama_host = current_app.config["OLLAMA_HOST"]
         response = requests.post(
@@ -369,6 +392,53 @@ def call_ollama_chat_stream(model, messages, system_prompt):
         raise ConnectionError(f"Could not connect to Ollama: {e}") from e
     except Exception as e:
         raise ConnectionError(f"An unexpected error occurred: {e}") from e
+
+
+def ask_debugger(failed_command, error_message, user=None, user_id=None):
+    """Delegates a debugging task to a specialist agent."""
+    debugger_prompt = (
+        f"Fix this failed command:\n{failed_command}\n"
+        f"Error:\n{error_message}\nReturn ONLY the corrected JSON."
+    )
+    try:
+        current_model = user.selected_model if user else "gemini-2.0-flash"
+        messages = [{"role": "user", "content": debugger_prompt}]
+
+        content = ""
+        for chunk in call_ollama_chat_stream(current_model, messages, "You are a helpful debugger."):
+             content += chunk
+
+        json_match = re.search(r"{[\s\S]*}", content)
+        if json_match:
+            return f"Debugger agent suggests this fix: {json_match.group(0)}"
+        else:
+            return f"Debugger agent could not find a fix. It responded: {content}"
+    except Exception as e:
+        return f"Error calling debugger agent: {e}"
+
+
+def ask_coder(task_description, user=None, user_id=None):
+    """Delegates a coding task to a specialist agent."""
+    coder_prompt = (
+        "Write Python code for the following task. Your code should be "
+        "clean, well-formatted, and include comments where necessary. "
+        "Return ONLY the raw code.\n"
+        f"Task: {task_description}\nCode:"
+    )
+    try:
+        current_model = user.selected_model if user else "gemini-2.0-flash"
+        messages = [{"role": "user", "content": coder_prompt}]
+
+        content = ""
+        for chunk in call_ollama_chat_stream(current_model, messages, "You are an expert Python coder."):
+             content += chunk
+
+        code_match = re.search(r"```(?:\w*\n)?([\s\S]+)```", content)
+        if code_match:
+            return code_match.group(1).strip()
+        return content.strip()
+    except Exception as e:
+        return f"Error calling Coder agent: {e}"
 
 
 

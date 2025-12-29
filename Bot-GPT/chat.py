@@ -287,19 +287,21 @@ def update_conversation_title(conversation, conversation_path):
             cleaned_content = re.sub(r"<think>[\s\S]*?</think>", "", assistant_message).strip()
             title_prompt = f"Based on the following exchange, create a very short, concise title (5 words or less).\n\nUser: {user_message}\nAssistant: {cleaned_content}\n\nTitle:"
 
-            response = requests.post(
-                f"{current_app.config['OLLAMA_HOST']}/api/chat",
-                json={"model": "llama3:8b", "messages": [{"role": "user", "content": title_prompt}], "stream": False},
-                timeout=15,
-            )
-            response.raise_for_status()
-            raw_title = response.json().get("message", {}).get("content", "").strip()
+            # Use the shared function instead of direct requests
+            model = current_user.selected_model or "gemini-2.0-flash"
+            messages = [{"role": "user", "content": title_prompt}]
+
+            content = ""
+            for chunk in call_ollama_chat_stream(model, messages, "You are a helpful assistant."):
+                 content += chunk
+
+            raw_title = content.strip()
             cleaned_title = re.sub(r"<think>[\s\S]*?</think>", "", raw_title).strip().replace('"', "")
 
             if cleaned_title:
                 conversation["title"] = cleaned_title
                 save_conversation(conversation_path, conversation)
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             current_app.logger.warning(f"Could not auto-generate title: {e}")
 
 
@@ -376,14 +378,22 @@ def update_settings():
 @chat.route("/api/models")
 @login_required
 def get_models():
-    """Fetches available models from the Ollama host."""
+    """Fetches available models."""
+    models = []
+
+    # Add Google models
+    models.append({"name": "gemini-2.0-flash", "modified_at": "2024-01-01T00:00:00Z", "size": 0})
+
     try:
         ollama_host = current_app.config["OLLAMA_HOST"]
-        response = requests.get(f"{ollama_host}/api/tags", timeout=10)
-        response.raise_for_status()
-        return jsonify(response.json().get("models", []))
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+        response = requests.get(f"{ollama_host}/api/tags", timeout=2)
+        if response.status_code == 200:
+             ollama_models = response.json().get("models", [])
+             models.extend(ollama_models)
+    except Exception:
+        pass # Ollama might not be running
+
+    return jsonify(models)
 
 
 @chat.route("/api/chat")
