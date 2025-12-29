@@ -100,6 +100,10 @@ not make up parameters.
 - `ask_coder(task_description: str)`: Delegates a complex coding task to a
   specialist agent. Use this if you are asked to write a large or complex
   piece of code.
+- `implement_and_test_code(target_file: str, test_command: str, task_description: str)`:
+  Writes code to a file and runs a test command. If the test fails, it
+  automatically calls an AI agent to fix the code and retries (looping up to 3 times).
+  Use this for robust development when you have a test case or validation script.
 - `ask_debugger(failed_command: str, error_message: str)`: Asks a specialist
   agent for help with a failed tool call.
 - `index_workspace()`: Scans the entire workspace and creates vector embeddings

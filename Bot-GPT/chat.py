@@ -25,7 +25,7 @@ from models import (
     _save_users,
 )
 
-from tools import call_ollama_chat_stream, handle_tool_call
+from tools import call_ollama_chat_stream, call_gemini_chat_stream, handle_tool_call
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
 
 chat = Blueprint("chat", __name__)
