@@ -1,13 +1,14 @@
 # Bot-GPT/tools/__init__.py
 
 import os
+import sys
 import subprocess
 import re
 import inspect
 import json
 import time
 from flask import current_app
-from app import socketio
+from extensions import socketio
 
 # --- Dependencies for Web Browsing ---
 try:
@@ -32,10 +33,7 @@ try:
 except ImportError:
     chromadb = None
 
-try:
-    import google.generativeai as genai
-except ImportError:
-    genai = None
+# google.generativeai import removed (unused and deprecated)
 
 try:
     from PIL import Image
@@ -52,7 +50,10 @@ from .file_system import (
     read_file,
     read_codebase,
     write_file,
+    write_file,
     get_workspace_path,
+    list_core_files,
+    read_core_file,
 )
 from .git_integration import (
     git_clone,
@@ -61,6 +62,7 @@ from .git_integration import (
     git_commit,
     git_add,
 )
+from .senses import capture_screen
 from .database import get_db_schema
 from .sql_query import run_sql_query
 from .shell import run_shell_command
@@ -68,6 +70,79 @@ from .self_healing import implement_and_test_code
 
 
 # Functions moved from the old tools.py
+
+# --- Memory Tools ---
+def remember(scope, key, value, conversation_id=None, user_id=None, **kwargs):
+    """
+    Saves a fact to memory.
+    Args:
+        scope (str): 'user' for personal memory, 'project' for workspace memory.
+        key (str): The label/keyword for this memory.
+        value (str): The information to remember.
+    """
+    try:
+        from memory import MemoryManager
+        memory = MemoryManager(user_id=user_id)
+        
+        if scope == "project" and conversation_id:
+             # We need to resolve the owner_id to find the project path
+             # tools/__init__.py imports file_system which imports chat... circular import risk?
+             # Let's rely on context to pass owner_id if possible, or assume user_id is owner
+             # The context_params in handle_tool_call usually pass 'owner_id'
+             owner_id = kwargs.get("owner_id")
+             if owner_id:
+                 memory.set_project_memory_file(owner_id, conversation_id)
+             else:
+                 return "Error: Could not determine project owner for memory."
+
+        return memory.remember(scope, key, value)
+    except Exception as e:
+        return f"Error using remember tool: {e}"
+
+def recall(scope, key, conversation_id=None, user_id=None, **kwargs):
+    """
+    Retrieves a fact from memory.
+    Args:
+        scope (str): 'user' or 'project'.
+        key (str): The label/keyword to retrieve.
+    """
+    try:
+        from memory import MemoryManager
+        memory = MemoryManager(user_id=user_id)
+        
+        if scope == "project" and conversation_id:
+             owner_id = kwargs.get("owner_id")
+             if owner_id:
+                 memory.set_project_memory_file(owner_id, conversation_id)
+        
+        val = memory.recall(scope, key)
+        if val:
+            return f"Recalled ({scope}): {key} = {val}"
+        else:
+            return f"Nothing found for '{key}' in {scope} memory."
+    except Exception as e:
+        return f"Error using recall tool: {e}"
+
+def forget(scope, key, conversation_id=None, user_id=None, **kwargs):
+    """
+    Deletes a fact from memory.
+    Args:
+        scope (str): 'user' or 'project'.
+        key (str): The label/keyword to forget.
+    """
+    try:
+        from memory import MemoryManager
+        memory = MemoryManager(user_id=user_id)
+        
+        if scope == "project" and conversation_id:
+             owner_id = kwargs.get("owner_id")
+             if owner_id:
+                 memory.set_project_memory_file(owner_id, conversation_id)
+        
+        return memory.forget(scope, key)
+    except Exception as e:
+        return f"Error using forget tool: {e}"
+# --------------------
 
 def create_and_open_canvas(filename, content, conversation_id=None, user_id=None):
     """
@@ -151,8 +226,19 @@ def update_task_status(
     return f"Status of step {step_index} updated to {status}."
 
 
-def execute_python(path, conversation_id=None, user_id=None):
-    """Executes a Python script within the conversation's workspace."""
+def execute_python(path, conversation_id, user_id, timeout=10, run_in_background=False, **kwargs):
+    """
+    Executes a Python script within the conversation's workspace.
+    
+    Args:
+        path (str): The relative path to the Python script.
+        conversation_id (str): The ID of the conversation.
+        user_id (str): The ID of the user.
+        timeout (int): The time in seconds to wait for the script to complete (default: 10).
+        run_in_background (bool): If True, the script will continue running after the timeout
+                                  if it hasn't finished, and the function will return a success message.
+                                  If False (default), the script will be killed if it exceeds the timeout.
+    """
     workspace_path = get_workspace_path(conversation_id, user_id)
     if not workspace_path:
         return "Error: Could not determine workspace."
@@ -164,17 +250,71 @@ def execute_python(path, conversation_id=None, user_id=None):
         return "Error: Access denied or not a Python file."
 
     try:
-        process = subprocess.run(
-            ["python", file_path],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            cwd=workspace_path,
-        )
-        output = process.stdout
-        if process.stderr:
-            output += f"\n--- ERRORS ---\n{process.stderr}"
-        return output
+        # Use Popen to have more control over the process
+        if run_in_background:
+            # For background processes, we don't want to capture output in a way that blocks
+            # But we might want to see if it crashes immediately.
+            try:
+                # Start the process
+                process = subprocess.Popen(
+                    [sys.executable, file_path],
+                    cwd=workspace_path,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0 # Detach on Windows?
+                    # On Windows, CREATE_NEW_CONSOLE might open a new window, which might be what the user wants for GUIs.
+                    # But for now, let's keep it simple. If we want it "stuck on done" but not finishing,
+                    # we just want to NOT kill it.
+                )
+                
+                # Wait for the specified timeout to see if it crashes or finishes early
+                try:
+                    stdout, stderr = process.communicate(timeout=timeout)
+                    # If we get here, the process finished within the timeout
+                    output = stdout
+                    if stderr:
+                        output += f"\n--- ERRORS ---\n{stderr}"
+                    return output
+                except Exception as e:
+                    if isinstance(e, subprocess.TimeoutExpired):
+                         # Process is still running after timeout
+                        if run_in_background:
+                            # We leave it running.
+                            return f"Script '{path}' started successfully and is running in the background (PID: {process.pid}). Execution timed out after {timeout} seconds but process was left running as requested."
+                        else:
+                            raise e
+                    else:
+                        raise e
+
+            except Exception as e:
+                # If communicate raised TimeoutExpired and run_in_background is False, we re-raise or handle it
+                 if isinstance(e, subprocess.TimeoutExpired) and not run_in_background:
+                     process.kill()
+                     stdout, stderr = process.communicate()
+                     output = stdout if stdout else ""
+                     if stderr:
+                         output += f"\n--- ERRORS ---\n{stderr}"
+                     output += f"\n\nError: Execution timed out after {timeout} seconds. Process killed."
+                     return output
+                 raise e
+
+        else:
+            # Standard synchronous execution with timeout
+            process = subprocess.run(
+                [sys.executable, file_path],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=workspace_path,
+            )
+            output = process.stdout
+            if process.stderr:
+                output += f"\n--- ERRORS ---\n{process.stderr}"
+            return output
+
+    except subprocess.TimeoutExpired:
+        return f"Error: Execution timed out after {timeout} seconds. (Process killed)"
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -182,7 +322,7 @@ def execute_python(path, conversation_id=None, user_id=None):
 def pip(command, conversation_id=None, user_id=None):
     """Installs a Python package using pip."""
     try:
-        command_list = ["pip"] + command.split() + ["--disable-pip-version-check"]
+        command_list = [sys.executable, "-m", "pip"] + command.split() + ["--disable-pip-version-check"]
         process = subprocess.run(
             command_list, capture_output=True, text=True, timeout=120
         )
@@ -279,86 +419,142 @@ def query_workspace(query, conversation_id, user_id, user, n_results=3):
 
 
 def call_gemini_chat_stream(model, messages, system_prompt):
-    """Calls Google's Gemini API and yields response chunks."""
-    if not genai:
-        yield "Error: google-generativeai library not installed."
-        return
-
+    """Calls Google's Gemini API via REST and yields response chunks."""
+    print(f"DEBUG: Executing REST API call for model {model}")
     api_key = current_app.config.get("GOOGLE_API_KEY")
     if not api_key:
         yield "Error: GOOGLE_API_KEY not found in configuration."
         return
 
+    # Use REST API URL
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={api_key}"
+    
+    # Prepare contents
+    contents = []
+    
+    # Add system prompt as a user message at start (or system instruction if supported, but simpler to prepend)
+    # Gemini API supports system_instruction, let's use it properly
+    payload = {
+        "contents": [],
+        "system_instruction": {"parts": [{"text": system_prompt}]}
+    }
+
+    import base64
+
+    for msg in messages:
+        role = msg.get("role")
+        content = msg.get("content")
+        images = msg.get("images", [])
+
+        if role == "tool":
+            role = "user"
+            content = f"Tool Output:\n{content}"
+        elif role == "assistant":
+            role = "model"
+        
+        parts = []
+        if content:
+             parts.append({"text": content})
+
+        for img_path in images:
+            if os.path.exists(img_path):
+                try:
+                    with open(img_path, "rb") as img_f:
+                        img_data = base64.b64encode(img_f.read()).decode('utf-8')
+                        # Detect mime type roughly
+                        mime_type = "image/png"
+                        if img_path.lower().endswith(".jpg") or img_path.lower().endswith(".jpeg"):
+                            mime_type = "image/jpeg"
+                        elif img_path.lower().endswith(".webp"):
+                            mime_type = "image/webp"
+                            
+                        parts.append({
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": img_data
+                            }
+                        })
+                except Exception as e:
+                    print(f"Error reading image {img_path}: {e}")
+
+        if parts:
+             # Merge with previous if same role? Gemini API allows multiple turns.
+             # But let's just append.
+             payload["contents"].append({"role": role, "parts": parts})
+
     try:
-        genai.configure(api_key=api_key)
+        response = requests.post(
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            stream=True,
+            timeout=120
+        )
+        response.raise_for_status()
 
-        # Prepare history and current message
-        history = []
-
-        formatted_messages = []
-
-        for msg in messages:
-            role = msg.get("role")
-            content = msg.get("content")
-            images = msg.get("images", [])
-
-            if role == "system":
-                # System prompt is passed separately
+        buffer = ""
+        for line in response.iter_lines():
+            if not line:
+                continue
+            
+            # Gemini REST stream returns JSON list items separated by comma or just raw JSON objects
+            # The format typically is:
+            # [
+            # { ... },
+            # { ... }
+            # ]
+            # But line-by-line streaming might result in "  {" or ",".
+            # Usually better to strip [ ] ,
+            decoded_line = line.decode('utf-8').strip()
+            if not decoded_line:
                 continue
 
-            if role == "tool":
-                # Treat tool output as user message for now to simplify
-                role = "user"
-                content = f"Tool Output:\n{content}"
-            elif role == "assistant":
-                role = "model"
+            # Handle the array wrapping [ ... ] structure
+            # If our buffer is empty, we are looking for the start of a "candidate" object
+            if not buffer:
+                if decoded_line == '[': # Start of array
+                     continue
+                if decoded_line == ']': # End of array
+                     continue
+                if decoded_line == ',': # Separator between objects
+                     continue
+                if decoded_line.startswith('['): # Inline start like "[{"
+                     decoded_line = decoded_line[1:].strip()
+                elif decoded_line.startswith(','): # Inline separator like ",{"
+                     decoded_line = decoded_line[1:].strip()
 
-            parts = [content] if content else []
+            buffer += decoded_line
 
-            # Handle images
-            for img_path in images:
-                if os.path.exists(img_path) and Image:
-                    try:
-                        img = Image.open(img_path)
-                        parts.append(img)
-                    except Exception as e:
-                        print(f"Error loading image {img_path}: {e}")
+            try:
+                chunk_data = json.loads(buffer)
+                # If we get here, we have a complete JSON object
+                buffer = "" # Reset buffer for next object
 
-            # Merge consecutive messages of the same role
-            if formatted_messages and formatted_messages[-1]["role"] == role:
-                formatted_messages[-1]["parts"].extend(parts)
-            else:
-                formatted_messages.append({"role": role, "parts": parts})
+                candidates = chunk_data.get("candidates", [])
+                if candidates:
+                    content_parts = candidates[0].get("content", {}).get("parts", [])
+                    for part in content_parts:
+                        if "text" in part:
+                            # print(f"DEBUG: Yielding text chunk len={len(part['text'])}")
+                            yield part["text"]
+                
+                # Check for blocking
+                prompt_feedback = chunk_data.get("promptFeedback", {})
+                if prompt_feedback.get("blockReason"):
+                    yield f"\n[Blocked: {prompt_feedback['blockReason']}]"
+                    
+            except json.JSONDecodeError:
+                # Incomplete JSON, continue accumulating
+                continue
 
-        if not formatted_messages:
-            yield "Error: No messages to send."
-            return
-
-        # Extract the last message if it's from the user
-        if formatted_messages[-1]["role"] == "user":
-            last_message = formatted_messages.pop()
-            # If we popped the last message, we need to ensure the remaining history is valid
-            # Gemini chat history cannot be empty if we rely on start_chat(history=...)
-        else:
-            # If the last message is from the model, we can't really continue
-            # unless we prompt it. This shouldn't happen in standard chat flow.
-             yield "Error: Last message was not from user."
-             return
-
-        generative_model = genai.GenerativeModel(
-            model,
-            system_instruction=system_prompt
-        )
-
-        chat_session = generative_model.start_chat(history=formatted_messages)
-
-        # Send the last message content (text + images)
-        response = chat_session.send_message(last_message["parts"], stream=True)
-
-        for chunk in response:
-            if chunk.text:
-                yield chunk.text
-
+    except requests.exceptions.HTTPError as e:
+         error_msg = f"Error calling Gemini API: {e}"
+         if e.response is not None:
+             try:
+                 error_msg += f"\nDetails: {e.response.text}"
+             except:
+                 pass
+         yield error_msg
     except Exception as e:
         yield f"Error calling Gemini: {str(e)}"
 
@@ -418,18 +614,18 @@ def call_ollama_chat_stream(model, messages, system_prompt):
 def ask_debugger(failed_command, error_message, user=None, user_id=None):
     """Delegates a debugging task to a specialist agent."""
     debugger_prompt = (
-        f"Fix this failed command:\n{failed_command}\n"
-        f"Error:\n{error_message}\nReturn ONLY the corrected JSON."
+        f"Fix this failed command:\\n{failed_command}\\n"
+        f"Error:\\n{error_message}\\nReturn ONLY the corrected JSON."
     )
     try:
         current_model = user.selected_model if user else "gemini-2.0-flash"
         messages = [{"role": "user", "content": debugger_prompt}]
 
         content = ""
-        for chunk in call_ollama_chat_stream(current_model, messages, "You are a helpful debugger."):
+        for chunk in call_gemini_chat_stream(current_model, messages, "You are a helpful debugger."):
              content += chunk
 
-        json_match = re.search(r"{[\s\S]*}", content)
+        json_match = re.search(r"{[\\s\\S]*}", content)
         if json_match:
             return f"Debugger agent suggests this fix: {json_match.group(0)}"
         else:
@@ -443,18 +639,18 @@ def ask_coder(task_description, user=None, user_id=None):
     coder_prompt = (
         "Write Python code for the following task. Your code should be "
         "clean, well-formatted, and include comments where necessary. "
-        "Return ONLY the raw code.\n"
-        f"Task: {task_description}\nCode:"
+        "Return ONLY the raw code.\\n"
+        f"Task: {task_description}\\nCode:"
     )
     try:
         current_model = user.selected_model if user else "gemini-2.0-flash"
         messages = [{"role": "user", "content": coder_prompt}]
 
         content = ""
-        for chunk in call_ollama_chat_stream(current_model, messages, "You are an expert Python coder."):
+        for chunk in call_gemini_chat_stream(current_model, messages, "You are an expert Python coder."):
              content += chunk
 
-        code_match = re.search(r"```(?:\w*\n)?([\s\S]+)```", content)
+        code_match = re.search(r"```(?:\\w*\\n)?([\\s\\S]+)```", content)
         if code_match:
             return code_match.group(1).strip()
         return content.strip()
@@ -494,6 +690,13 @@ def handle_tool_call(tool_call, conversation, user):
         "set_current_plan_step": set_current_plan_step,
         "set_plan": set_plan,
         "update_task_status": update_task_status,
+        "list_core_files": list_core_files,
+        "read_core_file": read_core_file,
+        "read_core_file": read_core_file,
+        "capture_screen": capture_screen,
+        "remember": remember,
+        "recall": recall,
+        "forget": forget,
     }
 
     if tool_name in tool_map:
@@ -501,11 +704,11 @@ def handle_tool_call(tool_call, conversation, user):
             file_creation_tool_used = True
         tool_func = tool_map[tool_name]
         context_params = {
-            "conversation_id": conversation.id,
-            "owner_id": conversation.owner_id,
+            "conversation_id": conversation["id"],
+            "owner_id": conversation["owner_id"],
             "user_id": user.id,
             "user_data_dir": current_app.config["USER_DATA_DIR"],
-            "ollama_host": current_app.config["OLLAMA_HOST"],
+            "ollama_host": current_app.config.get("OLLAMA_HOST"), # Keeping distinct for now but could be removed
             "user": user,
             "api_key": current_app.config["GOOGLE_API_KEY"],
             "cse_id": current_app.config["GOOGLE_CSE_ID"],
@@ -531,7 +734,7 @@ def handle_tool_call(tool_call, conversation, user):
             "run_shell_command",
         ]
         if tool_name in workspace_tools:
-            context_params["user_id"] = conversation.owner_id
+            context_params["user_id"] = conversation["owner_id"]
 
         tool_params = {}
         sig = inspect.signature(tool_func)
@@ -557,6 +760,9 @@ __all__ = [
     "read_codebase",
     "write_file",
     "get_workspace_path",
+    "list_core_files",
+    "read_core_file",
+    "capture_screen",
     "git_clone",
     "git_pull",
     "git_push",
@@ -577,6 +783,9 @@ __all__ = [
     "query_workspace",
     "ask_debugger",
     "ask_coder",
-    "call_ollama_chat_stream",
+    "call_gemini_chat_stream",
     "handle_tool_call",
+    "remember",
+    "recall",
+    "forget",
 ]
