@@ -36,7 +36,8 @@ let isCanvasMode = false;
 let currentAgentBubble = null;
 let fullAgentResponse = "";
 let currentResponseContent = "";
-let lastOpenedCanvasPath = null;
+let openTabs = [];
+let activeTabIndex = -1;
 
 document.addEventListener('DOMContentLoaded', async () => {
     const response = await fetch(`${window.location.origin}/check_auth`);
@@ -271,14 +272,20 @@ async function initializeApp(username) {
                         populateFileExplorer();
                     }
                     break;
-                case 'file_updated':
-                    if (editor) {
-                        const currentPath = document.querySelector('#canvas-panel .canvas-header-title')?.title;
-                        if (currentPath === data.path) {
-                            editor.setValue(data.content);
+                case 'file_updated': {
+                    // Update content in tabs if open
+                    const tabIndex = openTabs.findIndex(t => t.path === data.path);
+                    if (tabIndex !== -1) {
+                        openTabs[tabIndex].content = data.content;
+                        // If it's the active tab and editor is initialized, update it
+                        if (tabIndex === activeTabIndex && editor) {
+                            if (editor.getValue() !== data.content) {
+                                editor.setValue(data.content);
+                            }
                         }
                     }
                     break;
+                }
             }
             smartScroll(chatContainer);
         } catch (e) {
@@ -470,14 +477,20 @@ async function initializeApp(username) {
                 if (isCurrentlyVisible) {
                     hideCanvasPanel();
                 } else {
-                    if (lastOpenedCanvasPath) {
-                        openFileCanvas(lastOpenedCanvasPath);
+                    if (openTabs.length > 0) {
+                        renderCanvasPanel();
                     } else {
-                        // Show a blank canvas if none was opened before
-                        showCanvasPanel('Untitled', '// Start typing here...', 'javascript');
-                        isCanvasMode = true; // Manually set state
-                        canvasToggleBtn.classList.add('toggled'); // Manually set toggle
+                        // Create a default scratchpad
+                        openTabs.push({
+                            path: 'Scratchpad',
+                            content: '// Start typing here...',
+                            mode: 'javascript'
+                        });
+                        activeTabIndex = 0;
+                        renderCanvasPanel();
                     }
+                    isCanvasMode = true;
+                    canvasToggleBtn.classList.add('toggled');
                 }
             });
 
@@ -782,22 +795,44 @@ async function handleRename(oldPath) {
     }
 }
 
-        function showCanvasPanel(path, content, mode) {
+        function renderCanvasPanel() {
             const canvasPanel = document.getElementById('canvas-panel');
             const resizer = document.getElementById('resizer');
             const mainContentWrapper = document.getElementById('main-content-wrapper');
+
+            if (openTabs.length === 0) {
+                hideCanvasPanel();
+                return;
+            }
 
             if (window.innerWidth < 640) {
                 mainContentWrapper.style.display = 'none';
             }
 
+            // Build Tabs HTML
+            let tabsHtml = '<div class="canvas-tabs-row">';
+            openTabs.forEach((tab, index) => {
+                const isActive = index === activeTabIndex ? 'active' : '';
+                const filename = tab.path.split('/').pop();
+                tabsHtml += `
+                    <div class="canvas-tab ${isActive}" data-index="${index}" title="${tab.path}">
+                        <span class="tab-name text-sm">${filename}</span>
+                        <span class="canvas-tab-close" data-index="${index}">&times;</span>
+                    </div>
+                `;
+            });
+            tabsHtml += '</div>';
+
+            const activeTab = openTabs[activeTabIndex];
+
             canvasPanel.innerHTML = `
+                ${tabsHtml}
                 <div class="canvas-header">
-                    <h3 class="canvas-header-title" title="${path}">${path}</h3>
+                    <h3 class="canvas-header-title text-sm" title="${activeTab.path}">${activeTab.path}</h3>
                     <div class="canvas-header-buttons">
                         <button id="canvas-copy-btn">Copy</button>
                         <button id="canvas-save-btn">Save</button>
-                        <button id="canvas-close-btn">&times;</button>
+                        <button id="canvas-close-btn">Close Panel</button>
                     </div>
                 </div>
                 <div id="file-viewer" class="flex-1"></div>
@@ -807,20 +842,48 @@ async function handleRename(oldPath) {
             canvasPanel.classList.add('flex');
             resizer.classList.remove('hidden');
 
-            // Attach event listeners for the new buttons
+            // Attach Tab Listeners
+            document.querySelectorAll('.canvas-tab').forEach(tabEl => {
+                tabEl.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('canvas-tab-close')) return;
+                    const index = parseInt(tabEl.dataset.index);
+                    if (index !== activeTabIndex) {
+                         if (editor) {
+                             openTabs[activeTabIndex].content = editor.getValue();
+                         }
+                         activeTabIndex = index;
+                         renderCanvasPanel();
+                    }
+                });
+            });
+
+            document.querySelectorAll('.canvas-tab-close').forEach(closeBtn => {
+                closeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const index = parseInt(closeBtn.dataset.index);
+                    closeTab(index);
+                });
+            });
+
+            // Attach Header Listeners
             document.getElementById('canvas-copy-btn').addEventListener('click', () => {
                 if (editor) navigator.clipboard.writeText(editor.getValue());
             });
+
             document.getElementById('canvas-save-btn').addEventListener('click', async () => {
                 if (editor) {
-                    const path = document.querySelector('#canvas-panel .canvas-header-title').title;
                     const newContent = editor.getValue();
+                    openTabs[activeTabIndex].content = newContent;
+
+                    const saveBtn = document.getElementById('canvas-save-btn');
+                    saveBtn.textContent = 'Saving...';
+
                     try {
                         const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                path: path,
+                                path: activeTab.path,
                                 content: newContent,
                                 conversation_id: currentConversationId
                             })
@@ -829,20 +892,46 @@ async function handleRename(oldPath) {
                             const data = await response.json();
                             throw new Error(data.error);
                         }
-                        const saveBtn = document.getElementById('canvas-save-btn');
                         saveBtn.textContent = 'Saved!';
                         setTimeout(() => { saveBtn.textContent = 'Save'; }, 2000);
                     } catch (error) {
                         alert(`Error saving file: ${error.message}`);
+                        saveBtn.textContent = 'Save';
                     }
                 }
             });
+
             document.getElementById('canvas-close-btn').addEventListener('click', hideCanvasPanel);
 
-            initializeEditor(content, mode);
+            initializeEditor(activeTab.content, activeTab.mode);
+        }
+
+        function closeTab(index) {
+            if (editor && activeTabIndex === index) {
+                // If closing active tab, save content first? No, closing means discard unsaved UI state.
+            }
+
+            openTabs.splice(index, 1);
+
+            if (openTabs.length === 0) {
+                activeTabIndex = -1;
+                hideCanvasPanel();
+            } else {
+                if (index === activeTabIndex) {
+                    activeTabIndex = Math.max(0, index - 1);
+                } else if (index < activeTabIndex) {
+                    activeTabIndex--;
+                }
+                renderCanvasPanel();
+            }
         }
 
         function hideCanvasPanel() {
+            // Save state of active editor
+            if (editor && activeTabIndex !== -1 && openTabs[activeTabIndex]) {
+                openTabs[activeTabIndex].content = editor.getValue();
+            }
+
             const canvasPanel = document.getElementById('canvas-panel');
             const resizer = document.getElementById('resizer');
             const mainContentWrapper = document.getElementById('main-content-wrapper');
@@ -856,7 +945,6 @@ async function handleRename(oldPath) {
             resizer.classList.add('hidden');
 
             if (editor) {
-                // This is a bit of a hack to ensure CodeMirror instance is destroyed
                 editor.getWrapperElement().remove();
                 editor = null;
             }
@@ -866,7 +954,15 @@ async function handleRename(oldPath) {
         }
 
         async function openFileCanvas(path) {
-            lastOpenedCanvasPath = path; // Store the path
+            const existingIndex = openTabs.findIndex(t => t.path === path);
+            if (existingIndex !== -1) {
+                activeTabIndex = existingIndex;
+                renderCanvasPanel();
+                isCanvasMode = true;
+                canvasToggleBtn.classList.add('toggled');
+                return;
+            }
+
             try {
                 const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file?path=${encodeURIComponent(path)}&conversation_id=${currentConversationId}`);
                 const data = await response.json();
@@ -875,8 +971,18 @@ async function handleRename(oldPath) {
                 let mode = 'text/plain';
                 if (path.endsWith('.py')) mode = 'python';
                 if (path.endsWith('.js')) mode = 'javascript';
+                if (path.endsWith('.html')) mode = 'xml';
+                if (path.endsWith('.css')) mode = 'css';
+                if (path.endsWith('.json')) mode = 'javascript';
 
-                showCanvasPanel(path, data.content, mode);
+                openTabs.push({
+                    path: path,
+                    content: data.content,
+                    mode: mode
+                });
+                activeTabIndex = openTabs.length - 1;
+
+                renderCanvasPanel();
 
                 isCanvasMode = true;
                 canvasToggleBtn.classList.add('toggled');
