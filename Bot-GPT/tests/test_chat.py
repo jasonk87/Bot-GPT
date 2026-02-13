@@ -64,6 +64,10 @@ def test_write_file_emits_open_canvas(socketio_test_client, test_user, mocker, a
     mock_handle_tool = mocker.patch("chat.handle_tool_call")
     mocker.patch("chat.update_conversation_title")
 
+    # Mock initialize_chat to bypass conversation lookups
+    mock_init = mocker.patch("chat.initialize_chat")
+    mock_init.return_value = ("test-model", "sys-prompt", {"id": "test_convo_123", "owner_id": 1, "messages": []}, "path/to/convo.json")
+
     tool_call_response = '```json\n{"tool": "write_file", "parameters": {"path": "test.txt", "content": "hello"}}\n```'
     final_answer = "I have written the file."
     mock_stream.side_effect = [iter([tool_call_response]), iter([final_answer])]

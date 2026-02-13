@@ -2,13 +2,18 @@ import json
 import re
 import time
 import os
+import base64
 import requests
 from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
 from flask_socketio import emit, join_room, leave_room
 
 # Import from app, not extensions
-from app import socketio
+from extensions import socketio
+
+import logging
+logging.basicConfig(filename='chat_debug.log', level=logging.DEBUG)
+
 
 # Import file-based model functions
 from models import (
@@ -24,8 +29,10 @@ from models import (
     _save_users,
 )
 
-from tools import call_ollama_chat_stream, handle_tool_call
+from tools import call_gemini_chat_stream, handle_tool_call
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
+from utils import PLAN_APPROVALS, sanitize_json
+
 
 chat = Blueprint("chat", __name__)
 
@@ -65,7 +72,7 @@ def initialize_chat(data):
     conversation = None
     conversation_path = None
 
-    if conversation_id:
+    if conversation_id and not data.get("is_new_conversation"):
         owner_id = find_conversation_owner(index_path, conversation_id)
         if not owner_id:
             raise ValueError("Conversation not found.")
@@ -77,7 +84,8 @@ def initialize_chat(data):
             raise ValueError("Conversation not found or you don't have access.")
 
     else:  # New conversation
-        conversation_id = str(int(time.time() * 1000))
+        if not conversation_id:
+             conversation_id = str(int(time.time() * 1000))
         owner_id = current_user.id
         conversation_path = get_conversation_path(owner_id, conversation_id)
 
@@ -100,11 +108,29 @@ def initialize_chat(data):
     if data.get("agent_mode", False):
         system_prompt = AGENT_SYSTEM_PROMPT
 
+    # --- Memory Injection ---
+    try:
+        from memory import MemoryManager
+        memory = MemoryManager(user_id=current_user.id)
+        # We need to set the project memory file path.
+        # initialize_chat provides conversation and conversation_path.
+        # conversation["owner_id"] is available.
+        if conversation:
+            memory.set_project_memory_file(conversation["owner_id"], conversation["id"])
+            
+        memory_context = memory.get_all_context()
+        if memory_context:
+            system_prompt += f"\n\n=== RECALLED MEMORY ===\n{memory_context}\n=======================\n"
+    except Exception as e:
+        print(f"Error injecting memory: {e}")
+    # ------------------------
+
     return model, system_prompt, conversation, conversation_path
 
 
 def handle_ai_response(data):
     """Handles the AI response loop and yields events."""
+    print("DEBUG: handle_ai_response triggered")
     try:
         model, system_prompt, conversation, conversation_path = initialize_chat(data)
         messages = json.loads(data.get("messages", "[]"))
@@ -130,12 +156,13 @@ def handle_ai_response(data):
             assistant_message = {"role": "assistant", "content": ""}
 
             try:
-                stream = call_ollama_chat_stream(model, conversation["messages"], system_prompt)
+                print(f"DEBUG: Calling Gemini Stream with model {model}")
+                stream = call_gemini_chat_stream(model, conversation["messages"], system_prompt)
                 for chunk in stream:
                     full_response_content += chunk
                     yield {"type": "assistant_chunk", "content": chunk}
-            except requests.exceptions.ConnectionError as e:
-                yield {"type": "agent_error", "error": f"Could not connect to Ollama: {e}"}
+            except Exception as e:
+                yield {"type": "agent_error", "error": f"Could not connect to AI: {e}"}
                 break
 
             assistant_message["content"] = full_response_content
@@ -150,6 +177,7 @@ def handle_ai_response(data):
             for tool_call_str in tool_calls:
                 tool_call_id = f"tool_{int(time.time() * 1000)}"
                 try:
+                    tool_call_str = sanitize_json(tool_call_str)
                     tool_call = json.loads(tool_call_str)
                     yield {"type": "tool_call", "tool_call_id": tool_call_id, "name": tool_call.get("tool"), "params": tool_call.get("parameters")}
 
@@ -172,6 +200,11 @@ def handle_ai_response(data):
 
             tool_response_message = "TOOL RESPONSES:\n---\n" + "\n---\n".join(aggregated_tool_results) + "\n---"
             conversation["messages"].append({"role": "tool", "content": tool_response_message})
+
+            # Capture screen after tools to see the effect
+            # --- AUTOMATIC SCREEN CAPTURE AFTER TOOLS REMOVED ---
+            # The agent can now decide to call capture_screen if it needs to see the result.
+            pass
 
         else: # This else belongs to the for loop, executes if loop finishes without break
             if agent_mode:
@@ -199,7 +232,92 @@ def handle_ai_response(data):
 @login_required
 def handle_chat_message(data):
     """Handles a chat message received over WebSocket."""
+    print("DEBUG: handle_chat_message triggered")
     room = data.get("conversation_id") or request.sid
+    
+    room = data.get("conversation_id") or request.sid
+    
+    # --- AUTOMATIC SCREEN CAPTURE REMOVED ---
+    captured_screen_path = None 
+    # ----------------------------------------
+
+    # Pre-process images in the latest message
+    try:
+        messages = json.loads(data.get("messages", "[]"))
+        if messages:
+            # Always enter this block to handle potential screen capture even if no user-uploaded images
+            # This is a change from: if messages and "images" in messages[-1]:
+            
+            # This is a new message with images
+            last_msg = messages[-1]
+            images_data = last_msg.pop("images", []) # Remove base64 data from memory/JSON
+
+            conversation_id = data.get("conversation_id")
+            if not conversation_id:
+                 # Should have been created by initialize_chat, but if new...
+                 # We can't save images easily without an ID.
+                 # Let's rely on handle_ai_response's initialize_chat to create it,
+                 # but we need to save images BEFORE that to clear base64.
+                 # Actually, handle_ai_response calls initialize_chat first.
+                 pass
+
+            # We need the owner ID to save files.
+            # Quick lookup or assume current user if new.
+            index_path = get_conversation_index_path()
+            owner_id = find_conversation_owner(index_path, conversation_id)
+            if not owner_id and not conversation_id:
+                 owner_id = current_user.id
+            elif not owner_id:
+                 owner_id = current_user.id # Fallback
+
+            # If conversation_id is empty, handle_ai_response will generate one.
+            # But we need to save images now.
+            # Strategy: if no ID, generate one now and pass it back to data.
+            if not conversation_id:
+                conversation_id = str(int(time.time() * 1000))
+                data["conversation_id"] = conversation_id
+                data["is_new_conversation"] = True
+            
+            # If there was no image data in the message, we still need to process the screen capture
+            # But the block above (lines 217-270) only runs if "images" is in messages[-1]. 
+            # We need to handle the case where the user sent TEXT only, but we still want to attach our screenshot.
+            pass # Continue to image processing (loop below will handle empty images_data)
+
+            image_paths = []
+            images_dir = os.path.join(current_app.instance_path, str(owner_id), "conversations", conversation_id, "images")
+            os.makedirs(images_dir, exist_ok=True)
+
+            for idx, img_base64 in enumerate(images_data):
+                if "," in img_base64:
+                    header, encoded = img_base64.split(",", 1)
+                else:
+                    encoded = img_base64
+
+                file_ext = "png" # Default
+                if "image/jpeg" in img_base64: file_ext = "jpg"
+                if "image/webp" in img_base64: file_ext = "webp"
+
+                filename = f"img_{int(time.time())}_{idx}.{file_ext}"
+                filepath = os.path.join(images_dir, filename)
+
+                with open(filepath, "wb") as f:
+                    f.write(base64.b64decode(encoded))
+
+                image_paths.append(filepath)
+
+            last_msg["images"] = image_paths # Replace base64 with paths
+            
+            # --- AUTOMATIC SCREEN CAPTURE REMOVED ---
+            # (Logic for merging captured_screen_path was here)
+            # ----------------------------------------
+            
+            data["messages"] = json.dumps(messages) # Update data payload
+
+    except Exception as e:
+        current_app.logger.error(f"Error processing images: {e}")
+        emit("ai_response", {"type": "agent_error", "error": f"Image upload failed: {e}"}, room=room)
+        return
+
     try:
         messages = json.loads(data["messages"])
         last_user_message = messages[-1]["content"] if messages else ""
@@ -213,6 +331,7 @@ def handle_chat_message(data):
     done_sent = False
     try:
         for event in handle_ai_response(data):
+            print(f"DEBUG: Emitting event: {event}")
             emit("ai_response", event, room=room)
             if event.get("type") == "done":
                 done_sent = True
@@ -240,6 +359,11 @@ def handle_leave_room(data):
     room = data.get("room")
     if room:
         leave_room(room)
+
+
+@socketio.on("connect")
+def handle_connect():
+    print(f"DEBUG: Socket client connected: {request.sid}")
 
 
 def process_final_answer(conversation, conversation_path, canvas_mode):
@@ -287,19 +411,21 @@ def update_conversation_title(conversation, conversation_path):
             cleaned_content = re.sub(r"<think>[\s\S]*?</think>", "", assistant_message).strip()
             title_prompt = f"Based on the following exchange, create a very short, concise title (5 words or less).\n\nUser: {user_message}\nAssistant: {cleaned_content}\n\nTitle:"
 
-            response = requests.post(
-                f"{current_app.config['OLLAMA_HOST']}/api/chat",
-                json={"model": "llama3:8b", "messages": [{"role": "user", "content": title_prompt}], "stream": False},
-                timeout=15,
-            )
-            response.raise_for_status()
-            raw_title = response.json().get("message", {}).get("content", "").strip()
+            # Use the shared function instead of direct requests
+            model = current_user.selected_model or "gemini-2.0-flash"
+            messages = [{"role": "user", "content": title_prompt}]
+
+            content = ""
+            for chunk in call_gemini_chat_stream(model, messages, "You are a helpful assistant."):
+                 content += chunk
+
+            raw_title = content.strip()
             cleaned_title = re.sub(r"<think>[\s\S]*?</think>", "", raw_title).strip().replace('"', "")
 
             if cleaned_title:
                 conversation["title"] = cleaned_title
                 save_conversation(conversation_path, conversation)
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             current_app.logger.warning(f"Could not auto-generate title: {e}")
 
 
@@ -311,6 +437,20 @@ def handle_stop_agent(data):
     if conversation_id and conversation_id in AGENT_SESSIONS:
         AGENT_SESSIONS[conversation_id]["stop_requested"] = True
         emit("ai_response", {"type": "agent_error", "error": "Stop signal received. Attempting to halt..."}, room=conversation_id)
+
+
+@socketio.on("user_response")
+@login_required
+def handle_user_response(data):
+    """Handles user approval/rejection of plans."""
+    conversation_id = data.get("conversation_id")
+    response = data.get("response")
+
+    if conversation_id and response:
+        # Update the shared state dictionary to unblock the set_plan tool
+        PLAN_APPROVALS[conversation_id] = response
+        print(f"DEBUG: Received user response '{response}' for conversation {conversation_id}")
+
 
 
 @socketio.on("load_conversations")
@@ -376,14 +516,15 @@ def update_settings():
 @chat.route("/api/models")
 @login_required
 def get_models():
-    """Fetches available models from the Ollama host."""
-    try:
-        ollama_host = current_app.config["OLLAMA_HOST"]
-        response = requests.get(f"{ollama_host}/api/tags", timeout=10)
-        response.raise_for_status()
-        return jsonify(response.json().get("models", []))
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    """Fetches available models."""
+    models = []
+
+    # Add Gemini models
+    models.append({"name": "gemini-2.0-flash", "modified_at": "2024-01-01T00:00:00Z", "size": 0})
+    models.append({"name": "gemini-1.5-pro", "modified_at": "2024-01-01T00:00:00Z", "size": 0})
+    models.append({"name": "gemini-1.5-flash", "modified_at": "2024-01-01T00:00:00Z", "size": 0})
+
+    return jsonify(models)
 
 
 @chat.route("/api/chat")
@@ -404,3 +545,23 @@ def chat_proxy():
                 yield f"data: {json.dumps(event)}\n\n"
 
     return Response(event_stream(), mimetype="text/event-stream")
+
+
+@chat.route('/api/plan_response', methods=['POST'])
+@login_required
+def handle_plan_response_api():
+    """
+    HTTP Endpoint to handle plan approval.
+    Bypasses Socket.IO to avoid deadlocking the single-client event loop.
+    """
+    data = request.get_json()
+    conversation_id = data.get("conversation_id")
+    response = data.get("response")
+
+    if conversation_id and response:
+        # Update the shared state dictionary directly
+        PLAN_APPROVALS[conversation_id] = response
+        print(f"DEBUG: Received HTTP plan response '{response}' for {conversation_id}")
+        return jsonify({"status": "success"})
+
+    return jsonify({"error": "Invalid parameters"}), 400

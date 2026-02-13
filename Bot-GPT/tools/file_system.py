@@ -154,3 +154,111 @@ def write_file(path, content, conversation_id=None, user_id=None):
         }
     except Exception as e:
         return {"status": "error", "message": f"Error: {str(e)}"}
+
+
+def read_codebase(path=".", conversation_id=None, user_id=None):
+    """
+    Reads all text files in a directory and returns their content concatenated.
+    Useful for loading large parts of the codebase into context.
+    """
+    workspace_path = get_workspace_path(conversation_id, user_id)
+    if not workspace_path:
+        return "Error: Could not determine workspace."
+
+    base_path = os.path.abspath(workspace_path)
+    start_path = os.path.abspath(os.path.join(base_path, path))
+
+    if not start_path.startswith(base_path):
+        return "Error: Access denied."
+
+    if not os.path.exists(start_path):
+        return f"Error: Path '{path}' does not exist."
+
+    ignore_dirs = {
+        ".git",
+        "__pycache__",
+        "node_modules",
+        "venv",
+        "env",
+        ".idea",
+        ".vscode",
+        "dist",
+        "build",
+        "instance",
+        "images",
+    }
+    ignore_extensions = {
+        ".pyc",
+        ".pyo",
+        ".pyd",
+        ".so",
+        ".dll",
+        ".exe",
+        ".bin",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".ico",
+        ".svg",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".mp3",
+        ".mp4",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".db",
+        ".sqlite",
+    }
+
+    result = []
+    file_count = 0
+    total_size = 0
+    MAX_FILES = 200
+    MAX_SIZE = 5 * 1024 * 1024  # 5 MB safety limit
+
+    for root, dirs, files in os.walk(start_path):
+        # Filter directories in-place
+        dirs[:] = [d for d in dirs if d not in ignore_dirs]
+
+        for file in files:
+            if any(file.endswith(ext) for ext in ignore_extensions):
+                continue
+
+            file_path = os.path.join(root, file)
+            # Skip if file is too large (e.g. > 1MB) to avoid choking on massive logs
+            try:
+                if os.path.getsize(file_path) > 1024 * 1024:
+                    continue
+            except OSError:
+                continue
+
+            if file_count >= MAX_FILES:
+                result.append(
+                    f"\n--- WARNING: File limit ({MAX_FILES}) reached. Stopping. ---\n"
+                )
+                return "".join(result)
+
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                    total_size += len(content)
+                    if total_size > MAX_SIZE:
+                        result.append(
+                            f"\n--- WARNING: Size limit ({MAX_SIZE} bytes) reached. Stopping. ---\n"
+                        )
+                        return "".join(result)
+
+                    rel_path = os.path.relpath(file_path, base_path)
+                    result.append(f"\n<file path=\"{rel_path}\">\n{content}\n</file>\n")
+                    file_count += 1
+            except Exception as e:
+                result.append(f"\n--- Error reading {file}: {str(e)} ---\n")
+
+    if not result:
+        return "No readable text files found in this directory."
+
+    return "".join(result)
