@@ -35,7 +35,7 @@ def create_app(config_name=None):
     @login_manager.user_loader
     def load_user(user_id):
         from models import get_user_by_id
-        users_path = os.path.join(app.instance_path, 'users.json')
+        users_path = os.path.join(app.config["USER_DATA_DIR"], 'users.json')
         return get_user_by_id(users_path, int(user_id))
 
     # --- Register Blueprints ---

@@ -190,6 +190,9 @@ async function initializeApp(username) {
         planActions.style.display = 'none';
     });
 
+    // --- Session Persistence ---
+    // (See loadTabState and saveTabState at the bottom of the file)
+
     // --- Socket.IO Connection ---
     socket = io();
     socket.on('connect', () => {
@@ -208,6 +211,7 @@ async function initializeApp(username) {
                 case 'conversation_id':
                     if (!currentConversationId) {
                         currentConversationId = data.id;
+                        localStorage.setItem('botgpt_current_conversation_id', currentConversationId);
                         addConversationToList(data.id, "New Chat");
                         socket.emit('join', {room: currentConversationId});
                     }
@@ -492,6 +496,7 @@ async function initializeApp(username) {
                     isCanvasMode = true;
                     canvasToggleBtn.classList.add('toggled');
                 }
+                saveTabState();
             });
 
             // The old copy/save listeners are removed as their functionality
@@ -527,7 +532,19 @@ async function initializeApp(username) {
 
     await populateModels();
     await loadUserSettings();
-    await populateFileExplorer();
+
+    const savedConvoId = localStorage.getItem('botgpt_current_conversation_id');
+    if (savedConvoId) {
+        // We'll let the socket 'load_conversation' event handle the full restore of messages
+        // But we can eagerly load the tabs.
+        currentConversationId = savedConvoId;
+        await populateFileExplorer();
+        await loadTabState();
+        socket.emit('load_conversation', { conversation_id: savedConvoId });
+    } else {
+        await populateFileExplorer();
+    }
+
     socket.emit('load_conversations');
 
     // --- Resizer Logic ---
@@ -853,6 +870,7 @@ async function handleRename(oldPath) {
                          }
                          activeTabIndex = index;
                          renderCanvasPanel();
+                         saveTabState();
                     }
                 });
             });
@@ -924,6 +942,7 @@ async function handleRename(oldPath) {
                 }
                 renderCanvasPanel();
             }
+            saveTabState();
         }
 
         function hideCanvasPanel() {
@@ -951,6 +970,7 @@ async function handleRename(oldPath) {
 
             isCanvasMode = false;
             canvasToggleBtn.classList.remove('toggled');
+            saveTabState();
         }
 
         async function openFileCanvas(path) {
@@ -960,6 +980,7 @@ async function handleRename(oldPath) {
                 renderCanvasPanel();
                 isCanvasMode = true;
                 canvasToggleBtn.classList.add('toggled');
+                saveTabState();
                 return;
             }
 
@@ -986,6 +1007,7 @@ async function handleRename(oldPath) {
 
                 isCanvasMode = true;
                 canvasToggleBtn.classList.add('toggled');
+                saveTabState();
 
             } catch (error) {
                 alert(`Error opening file: ${error.message}`);
@@ -1496,10 +1518,27 @@ async function openShareModal(conversationId) {
 }
 
 function loadConversation(data) {
-    if (currentConversationId) {
+    if (currentConversationId && currentConversationId !== data.id) {
         socket.emit('leave', { room: currentConversationId });
+        // Switching conversation, so clear current tabs unless we want global tabs?
+        // Tabs should be conversation-scoped.
+        // But if we are reloading page, we already loaded tabs for THIS conversation.
+        // If we are clicking a new conversation in the list, we should clear/load new tabs.
     }
+
+    // Check if we switched conversations
+    if (currentConversationId !== data.id) {
+         currentConversationId = data.id;
+         openTabs = [];
+         activeTabIndex = -1;
+         hideCanvasPanel();
+         localStorage.setItem('botgpt_current_conversation_id', currentConversationId);
+         loadTabState(); // Load tabs for the NEW conversation
+    }
+
     currentConversationId = data.id;
+    localStorage.setItem('botgpt_current_conversation_id', currentConversationId);
+
     currentConversationRole = data.role;
     chatContainer.innerHTML = '';
     welcomeMessage.style.display = 'none';
@@ -1592,4 +1631,86 @@ function appendMessage(text, sender, animate = true, images = []) {
 
     chatContainer.appendChild(messageWrapper);
     smartScroll(chatContainer);
+}
+
+function saveTabState() {
+    if (!currentConversationId) return;
+
+    const tabsToSave = openTabs.map(tab => ({
+        path: tab.path,
+        mode: tab.mode
+    }));
+
+    const state = {
+        tabs: tabsToSave,
+        activeTabIndex: activeTabIndex,
+        isCanvasMode: isCanvasMode
+    };
+
+    localStorage.setItem(`botgpt_tabs_${currentConversationId}`, JSON.stringify(state));
+}
+
+async function loadTabState() {
+    if (!currentConversationId) return;
+
+    const savedState = localStorage.getItem(`botgpt_tabs_${currentConversationId}`);
+    if (!savedState) return;
+
+    try {
+        const state = JSON.parse(savedState);
+        const tabsToLoad = state.tabs || [];
+        const savedActiveIndex = state.activeTabIndex;
+        const savedCanvasMode = state.isCanvasMode;
+
+        // Reset tabs
+        openTabs = [];
+
+        // We need to fetch content for each tab to ensure it's up to date
+        // Use Promise.all for parallel fetching
+        const promises = tabsToLoad.map(async (tab) => {
+            if (tab.path === 'Scratchpad') {
+                 return {
+                    path: 'Scratchpad',
+                    content: '// Start typing here...', // Or maybe persist scratchpad content too?
+                    mode: tab.mode
+                };
+            }
+            try {
+                const response = await fetch(`${window.location.origin}${API_BASE}/workspace/file?path=${encodeURIComponent(tab.path)}&conversation_id=${currentConversationId}`);
+                if (!response.ok) throw new Error('Failed');
+                const data = await response.json();
+                return {
+                    path: tab.path,
+                    content: data.content,
+                    mode: tab.mode
+                };
+            } catch (e) {
+                console.warn(`Could not load tab content for ${tab.path}:`, e);
+                return null; // Filter out later
+            }
+        });
+
+        const loadedTabs = await Promise.all(promises);
+        openTabs = loadedTabs.filter(t => t !== null);
+
+        // Restore active index within bounds
+        if (openTabs.length > 0) {
+            if (savedActiveIndex >= 0 && savedActiveIndex < openTabs.length) {
+                activeTabIndex = savedActiveIndex;
+            } else {
+                activeTabIndex = 0;
+            }
+
+            // Only render/show if it was open before or we have tabs
+            // If savedCanvasMode was true, we show it.
+            if (savedCanvasMode) {
+                 renderCanvasPanel();
+                 isCanvasMode = true;
+                 canvasToggleBtn.classList.add('toggled');
+            }
+        }
+
+    } catch (e) {
+        console.error("Error loading tab state:", e);
+    }
 }
