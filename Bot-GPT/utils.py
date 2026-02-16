@@ -7,3 +7,15 @@ from flask import current_app
 
 # Example of a shared state dictionary (used by the 'set_plan' tool)
 PLAN_APPROVALS = {}
+
+import re
+
+def sanitize_json(json_str):
+    """
+    Cleans up a JSON string by removing markdown code blocks and
+    other common AI formatting artifacts.
+    """
+    # Remove markdown code blocks
+    json_str = re.sub(r"```json\s*", "", json_str)
+    json_str = re.sub(r"```\s*", "", json_str)
+    return json_str.strip()

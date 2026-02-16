@@ -261,6 +261,49 @@
         .canvas-header-buttons button:hover {
             background-color: #4b5563;
         }
+
+        /* Styles for Tabbed Canvas Layout */
+        .canvas-tabs-row {
+            display: flex;
+            background-color: #1f2937; /* gray-800 */
+            overflow-x: auto;
+            border-bottom: 1px solid #374151; /* gray-700 */
+        }
+        .canvas-tab {
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            background-color: #111827; /* gray-900 */
+            color: #9ca3af; /* gray-400 */
+            border-right: 1px solid #374151;
+            display: flex;
+            align-items: center;
+            white-space: nowrap;
+            user-select: none;
+            flex-shrink: 0;
+            transition: background-color 0.2s;
+        }
+        .canvas-tab:hover {
+            background-color: #1f2937;
+            color: #e5e7eb; /* gray-200 */
+        }
+        .canvas-tab.active {
+            background-color: #374151; /* gray-700 */
+            color: white;
+            border-top: 2px solid #3b82f6; /* blue-500 */
+        }
+        .canvas-tab-close {
+            margin-left: 0.5rem;
+            opacity: 0.6;
+            cursor: pointer;
+            padding: 0.1rem;
+            border-radius: 0.25rem;
+            transition: all 0.2s;
+        }
+        .canvas-tab-close:hover {
+            opacity: 1;
+            color: #ef4444; /* red-500 */
+            background-color: #4b5563; /* gray-600 */
+        }
         #file-viewer {
             flex-grow: 1;
             overflow: hidden;

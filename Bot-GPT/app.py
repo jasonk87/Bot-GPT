@@ -3,9 +3,7 @@ from flask import Flask, jsonify
 from flask_login import LoginManager
 from flask_socketio import SocketIO
 from config import config
-
-# Initialize extensions here to make them globally accessible
-socketio = SocketIO()
+from extensions import socketio
 
 # Import blueprints after initializing socketio to avoid circular imports
 # (Actually, standard practice is to import blueprints inside create_app or after socketio definition)
@@ -37,7 +35,7 @@ def create_app(config_name=None):
     @login_manager.user_loader
     def load_user(user_id):
         from models import get_user_by_id
-        users_path = os.path.join(app.instance_path, 'users.json')
+        users_path = os.path.join(app.config["USER_DATA_DIR"], 'users.json')
         return get_user_by_id(users_path, int(user_id))
 
     # --- Register Blueprints ---

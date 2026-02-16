@@ -262,3 +262,30 @@ def read_codebase(path=".", conversation_id=None, user_id=None):
         return "No readable text files found in this directory."
 
     return "".join(result)
+
+def list_core_files(path="."):
+    """Lists files in the application's core directory."""
+    try:
+        # current_app.root_path points to the Bot-GPT folder
+        target_path = os.path.abspath(os.path.join(current_app.root_path, path))
+
+        if not target_path.startswith(current_app.root_path):
+             return "Error: Access denied."
+
+        files = os.listdir(target_path)
+        return "\n".join(files)
+    except Exception as e:
+        return f"Error: {e}"
+
+def read_core_file(path):
+    """Reads a file from the application's core directory."""
+    try:
+        target_path = os.path.abspath(os.path.join(current_app.root_path, path))
+
+        if not target_path.startswith(current_app.root_path):
+             return "Error: Access denied."
+
+        with open(target_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        return f"Error: {e}"
