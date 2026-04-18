@@ -2,7 +2,6 @@
 import os
 import subprocess
 import re
-from flask import current_app
 from .file_system import get_workspace_path, write_file
 
 def implement_and_test_code(target_file, test_command, task_description, conversation_id=None, user_id=None, user=None, max_iterations=3):

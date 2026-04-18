@@ -1,6 +1,6 @@
 import os
 from flask import current_app
-from app import socketio
+from extensions import socketio
 
 
 def get_workspace_path(conversation_id, owner_id):
@@ -9,7 +9,7 @@ def get_workspace_path(conversation_id, owner_id):
     The path is always based on the conversation's owner.
     """
     if not owner_id or not conversation_id:
-        from chat import find_conversation_owner
+        from workspace import find_conversation_owner
         owner_id = find_conversation_owner(conversation_id)
         if not owner_id:
             return None

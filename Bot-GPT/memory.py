@@ -1,12 +1,9 @@
 import os
-import json
 import time
-from filelock import FileLock
 from flask import current_app
 
 try:
     import chromadb
-    from chromadb.config import Settings
 except ImportError:
     chromadb = None
 
