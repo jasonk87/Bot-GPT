@@ -50,11 +50,11 @@ from .file_system import (
     read_file,
     read_codebase,
     write_file,
-    write_file,
     get_workspace_path,
     list_core_files,
     read_core_file,
 )
+from utils import get_best_default_model
 from .git_integration import (
     git_clone,
     git_pull,
@@ -178,7 +178,7 @@ def set_plan(
     if not conversation_id:
         return "Error: conversation_id is required to set a plan."
 
-    from utils import PLAN_APPROVALS, get_best_default_model
+    from utils import PLAN_APPROVALS
 
     PLAN_APPROVALS[conversation_id] = None  # Reset approval state
 
@@ -504,7 +504,6 @@ def handle_tool_call(tool_call, conversation, user):
         "set_plan": set_plan,
         "update_task_status": update_task_status,
         "list_core_files": list_core_files,
-        "read_core_file": read_core_file,
         "read_core_file": read_core_file,
         "capture_screen": capture_screen,
         "remember": remember,

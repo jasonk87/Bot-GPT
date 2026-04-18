@@ -1,7 +1,6 @@
 import os
 from flask import Flask, jsonify
 from flask_login import LoginManager
-from flask_socketio import SocketIO
 from config import config
 from extensions import socketio
 

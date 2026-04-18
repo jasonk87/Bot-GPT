@@ -1,9 +1,7 @@
 import os
-import json
 from flask import Blueprint, request, jsonify, current_app, session
 from flask_login import login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash
-from filelock import FileLock
 
 from models import User, get_user_by_username, _load_users, _save_users
 from utils import get_best_default_model

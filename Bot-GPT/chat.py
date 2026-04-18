@@ -17,7 +17,6 @@ logging.basicConfig(filename='chat_debug.log', level=logging.DEBUG)
 
 # Import file-based model functions
 from models import (
-    User,
     load_conversation,
     save_conversation,
     add_to_conversation_index,
