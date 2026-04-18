@@ -488,7 +488,7 @@ def call_gemini_chat_stream(model, messages, system_prompt):
             json=payload,
             headers={"Content-Type": "application/json"},
             stream=True,
-            timeout=120
+            timeout=300
         )
         response.raise_for_status()
 
@@ -559,14 +559,17 @@ def call_gemini_chat_stream(model, messages, system_prompt):
         yield f"Error calling Gemini: {str(e)}"
 
 
-def call_ollama_chat_stream(model, messages, system_prompt):
+def call_chat_stream(model, messages, system_prompt):
     """Calls the AI chat API (Ollama or Gemini) and yields response chunks."""
     if "gemini" in model.lower():
         yield from call_gemini_chat_stream(model, messages, system_prompt)
         return
 
     try:
-        ollama_host = current_app.config["OLLAMA_HOST"]
+        ollama_host = current_app.config["OLLAMA_HOST"].rstrip("/")
+        if not ollama_host.startswith("http"):
+            ollama_host = f"http://{ollama_host}"
+
         response = requests.post(
             f"{ollama_host}/api/chat",
             json={
@@ -575,7 +578,7 @@ def call_ollama_chat_stream(model, messages, system_prompt):
                 "stream": True,
             },
             stream=True,
-            timeout=120,
+            timeout=300,
         )
         response.raise_for_status()
 
@@ -783,7 +786,7 @@ __all__ = [
     "query_workspace",
     "ask_debugger",
     "ask_coder",
-    "call_gemini_chat_stream",
+    "call_chat_stream",
     "handle_tool_call",
     "remember",
     "recall",

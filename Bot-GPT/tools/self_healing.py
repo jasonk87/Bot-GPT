@@ -7,7 +7,7 @@ from .file_system import get_workspace_path, write_file
 
 def implement_and_test_code(target_file, test_command, task_description, conversation_id=None, user_id=None, user=None, max_iterations=3):
     # Import locally to avoid circular dependency
-    from . import call_ollama_chat_stream
+    from . import call_chat_stream
     """
     Implements code in a file and iteratively tests and fixes it until the test passes.
 
@@ -49,7 +49,7 @@ def implement_and_test_code(target_file, test_command, task_description, convers
     code = ""
     messages = [{"role": "user", "content": initial_prompt}]
     try:
-        for chunk in call_ollama_chat_stream(current_model, messages, "You are an expert Python coder."):
+        for chunk in call_chat_stream(current_model, messages, "You are an expert Python coder."):
             code += chunk
     except Exception as e:
         return f"Error communicating with AI: {e}"
@@ -102,7 +102,7 @@ def implement_and_test_code(target_file, test_command, task_description, convers
         new_code_response = ""
         messages = [{"role": "user", "content": fix_prompt}]
         try:
-            for chunk in call_ollama_chat_stream(current_model, messages, "You are an expert Python debugger."):
+            for chunk in call_chat_stream(current_model, messages, "You are an expert Python debugger."):
                 new_code_response += chunk
         except Exception as e:
             return f"Error getting fix from AI: {e}"

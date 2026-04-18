@@ -1,6 +1,7 @@
 import os
 import subprocess
 import shlex
+import shutil
 from .file_system import get_workspace_path
 
 # A safelist of allowed shell commands to prevent arbitrary execution
@@ -43,10 +44,26 @@ def run_shell_command(command, conversation_id, user_id, user):
         # This prevents shell injection attacks where commands are chained with ';', '&&', '|', etc.
         args = shlex.split(command)
         cmd = args[0]
+        executable = shutil.which(cmd)
 
         # 2. Command Safelist: Check if the command is in our allowed list.
         if cmd not in ALLOWED_COMMANDS:
             return f"Error: Command '{cmd}' is not allowed."
+
+        if cmd == "cat" and executable is None:
+            if len(args) < 2:
+                return "Error: 'cat' requires at least one file path."
+            output_chunks = []
+            for arg in args[1:]:
+                if not is_safe_path(arg, workspace_path):
+                    return f"Error: Path '{arg}' is outside the allowed workspace."
+                resolved_path = os.path.abspath(os.path.join(workspace_path, arg))
+                if not os.path.isfile(resolved_path):
+                    return f"Error: File '{arg}' not found."
+                with open(resolved_path, "r", encoding="utf-8") as handle:
+                    output_chunks.append(handle.read())
+            combined = "\n".join(output_chunks).strip()
+            return f"--- STDOUT ---\n{combined}" if combined else "Command executed with no output."
 
         # 3. Path Jailing: Check every argument. If it looks like a path, verify it's inside the workspace.
         for arg in args[1:]:
@@ -59,7 +76,7 @@ def run_shell_command(command, conversation_id, user_id, user):
         # Execute the command with a timeout.
         # `cwd` ensures the command runs inside the workspace directory.
         process = subprocess.run(
-            args,
+            args if executable else [cmd, *args[1:]],
             capture_output=True,
             text=True,
             timeout=15,  # Hard timeout of 15 seconds

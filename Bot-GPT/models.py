@@ -13,7 +13,7 @@ class User(UserMixin):
         self.id = int(id)
         self.username = username
         self.password_hash = password_hash
-        self.selected_model = kwargs.get('selected_model', 'qwen3:8b')
+        self.selected_model = kwargs.get('selected_model', '')
         self.selected_persona = kwargs.get('selected_persona', 'default')
 
     def to_dict(self):
@@ -61,9 +61,10 @@ def get_user_by_id(path, user_id):
 
 def get_user_by_username(path, username):
     """Gets a user by their username from the given path."""
+    normalized_username = username.strip().lower()
     users = _load_users(path)
     for user_data in users.values():
-        if user_data['username'] == username:
+        if user_data['username'].strip().lower() == normalized_username:
             return User(**user_data)
     return None
 

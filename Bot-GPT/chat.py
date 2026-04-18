@@ -29,7 +29,7 @@ from models import (
     _save_users,
 )
 
-from tools import call_gemini_chat_stream, handle_tool_call
+from tools import call_chat_stream, handle_tool_call
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
 from utils import PLAN_APPROVALS, sanitize_json
 
@@ -37,6 +37,23 @@ from utils import PLAN_APPROVALS, sanitize_json
 chat = Blueprint("chat", __name__)
 
 AGENT_SESSIONS = {}
+call_ollama_chat_stream = call_chat_stream
+
+
+def serialize_agent_session(session):
+    """Create a frontend-safe snapshot of an active agent run."""
+    if not session or not session.get("running"):
+        return None
+
+    return {
+        "is_running": True,
+        "agent_mode": session.get("agent_mode", False),
+        "partial_response": session.get("partial_response", ""),
+        "stage": session.get("stage", "thinking"),
+        "tool_name": session.get("tool_name"),
+        "tool_params": session.get("tool_params"),
+        "error": session.get("error"),
+    }
 
 
 def get_conversation_path(owner_id, conversation_id):
@@ -136,6 +153,7 @@ def handle_ai_response(data):
         messages = json.loads(data.get("messages", "[]"))
         # Ensure the conversation's message history is in sync with the client
         conversation["messages"] = messages
+        save_conversation(conversation_path, conversation)
     except (ValueError, json.JSONDecodeError) as exc:
         yield {"type": "agent_error", "error": str(exc)}
         return
@@ -143,8 +161,18 @@ def handle_ai_response(data):
     yield {"type": "conversation_id", "id": conversation["id"]}
 
     agent_mode = data.get("agent_mode", False)
-    AGENT_SESSIONS[conversation["id"]] = {"stop_requested": False}
+    AGENT_SESSIONS[conversation["id"]] = {
+        "stop_requested": False,
+        "running": True,
+        "agent_mode": agent_mode,
+        "partial_response": "",
+        "stage": "thinking",
+        "tool_name": None,
+        "tool_params": None,
+        "error": None,
+    }
     max_iterations = 100 if agent_mode else 15
+    tool_calls = []
 
     try:
         for i in range(max_iterations):
@@ -156,17 +184,23 @@ def handle_ai_response(data):
             assistant_message = {"role": "assistant", "content": ""}
 
             try:
-                print(f"DEBUG: Calling Gemini Stream with model {model}")
-                stream = call_gemini_chat_stream(model, conversation["messages"], system_prompt)
+                print(f"DEBUG: Calling AI Stream with model {model}")
+                stream = call_ollama_chat_stream(model, conversation["messages"], system_prompt)
                 for chunk in stream:
                     full_response_content += chunk
+                    AGENT_SESSIONS[conversation["id"]]["partial_response"] = full_response_content
+                    AGENT_SESSIONS[conversation["id"]]["stage"] = "answering"
                     yield {"type": "assistant_chunk", "content": chunk}
             except Exception as e:
+                AGENT_SESSIONS[conversation["id"]]["stage"] = "error"
+                AGENT_SESSIONS[conversation["id"]]["error"] = str(e)
                 yield {"type": "agent_error", "error": f"Could not connect to AI: {e}"}
                 break
 
             assistant_message["content"] = full_response_content
             conversation["messages"].append(assistant_message)
+            AGENT_SESSIONS[conversation["id"]]["partial_response"] = full_response_content
+            AGENT_SESSIONS[conversation["id"]]["stage"] = "thinking"
             yield {"type": "assistant_end"}
 
             tool_calls = re.findall(r"```json\s*(\{[\s\S]*?\})\s*```", full_response_content)
@@ -179,6 +213,9 @@ def handle_ai_response(data):
                 try:
                     tool_call_str = sanitize_json(tool_call_str)
                     tool_call = json.loads(tool_call_str)
+                    AGENT_SESSIONS[conversation["id"]]["stage"] = "tool_call"
+                    AGENT_SESSIONS[conversation["id"]]["tool_name"] = tool_call.get("tool")
+                    AGENT_SESSIONS[conversation["id"]]["tool_params"] = tool_call.get("parameters")
                     yield {"type": "tool_call", "tool_call_id": tool_call_id, "name": tool_call.get("tool"), "params": tool_call.get("parameters")}
 
                     tool_result, _ = handle_tool_call(tool_call, conversation, current_user)
@@ -191,11 +228,14 @@ def handle_ai_response(data):
                             yield {"type": "file_updated", "path": tool_result.get("path"), "content": tool_result.get("content")}
 
                     aggregated_tool_results.append(str(tool_result))
+                    AGENT_SESSIONS[conversation["id"]]["stage"] = "after_tool"
                     yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": tool_result}
 
                 except Exception as e:
                     error_message = f"Error processing tool: {e}"
                     aggregated_tool_results.append(error_message)
+                    AGENT_SESSIONS[conversation["id"]]["stage"] = "tool_error"
+                    AGENT_SESSIONS[conversation["id"]]["error"] = error_message
                     yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": error_message}
 
             tool_response_message = "TOOL RESPONSES:\n---\n" + "\n---\n".join(aggregated_tool_results) + "\n---"
@@ -212,6 +252,7 @@ def handle_ai_response(data):
 
     finally:
         if conversation["id"] in AGENT_SESSIONS:
+            AGENT_SESSIONS[conversation["id"]]["running"] = False
             del AGENT_SESSIONS[conversation["id"]]
 
     # Process final answer only if no tool calls were made in the last iteration
@@ -225,7 +266,7 @@ def handle_ai_response(data):
 
     save_conversation(conversation_path, conversation)
 
-    yield {"type": "done", "title": conversation["title"]}
+    yield {"type": "done", "title": conversation.get("title", "New Chat")}
 
 
 @socketio.on("chat_message")
@@ -373,7 +414,14 @@ def process_final_answer(conversation, conversation_path, canvas_mode):
     if not conversation.get("messages"):
         return
 
-    final_answer_content = conversation["messages"][-1]["content"]
+    final_assistant_message = next(
+        (msg for msg in reversed(conversation["messages"]) if msg.get("role") == "assistant"),
+        None,
+    )
+    if not final_assistant_message:
+        return
+
+    final_answer_content = final_assistant_message["content"]
     if not canvas_mode:
         yield {"type": "final_answer", "content": final_answer_content}
         return
@@ -416,7 +464,7 @@ def update_conversation_title(conversation, conversation_path):
             messages = [{"role": "user", "content": title_prompt}]
 
             content = ""
-            for chunk in call_gemini_chat_stream(model, messages, "You are a helpful assistant."):
+            for chunk in call_ollama_chat_stream(model, messages, "You are a helpful assistant."):
                  content += chunk
 
             raw_title = content.strip()
@@ -478,7 +526,15 @@ def load_conversation_socket(data):
 
     if conversation and check_permission(conversation, current_user):
         participant = next((p for p in conversation.get("participants", []) if p["user_id"] == current_user.id), None)
-        emit("conversation_loaded", {"id": conversation["id"], "messages": conversation.get("messages", []), "role": participant["role"] if participant else "participant"})
+        emit(
+            "conversation_loaded",
+            {
+                "id": conversation["id"],
+                "messages": conversation.get("messages", []),
+                "role": participant["role"] if participant else "participant",
+                "active_run": serialize_agent_session(AGENT_SESSIONS.get(conversation_id)),
+            },
+        )
     else:
         emit("agent_error", {"error": "You don't have access to this conversation"})
 
@@ -516,15 +572,37 @@ def update_settings():
 @chat.route("/api/models")
 @login_required
 def get_models():
-    """Fetches available models."""
+    """Fetches available models from local Ollama."""
     models = []
+    try:
+        # Fetch from local Ollama API
+        ollama_host = current_app.config.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+        if not ollama_host.startswith("http"):
+            ollama_host = f"http://{ollama_host}"
+            
+        print(f"DEBUG: Fetching models from {ollama_host}/api/tags")
+        response = requests.get(f"{ollama_host}/api/tags", timeout=10)
+        if response.ok:
+            ollama_data = response.json()
+            for model_info in ollama_data.get("models", []):
+                models.append({
+                    "name": model_info.get("name"),
+                    "modified_at": model_info.get("modified_at"),
+                    "size": model_info.get("size")
+                })
+    except Exception as e:
+        current_app.logger.warning(f"Could not reach Ollama: {e}")
 
-    # Add Gemini models
-    models.append({"name": "gemini-2.0-flash", "modified_at": "2024-01-01T00:00:00Z", "size": 0})
-    models.append({"name": "gemini-1.5-pro", "modified_at": "2024-01-01T00:00:00Z", "size": 0})
-    models.append({"name": "gemini-1.5-flash", "modified_at": "2024-01-01T00:00:00Z", "size": 0})
+    # Fallback to current selected model if no models found to ensure picker isn't empty
+    if not models and current_user.selected_model:
+        models.append({
+            "name": current_user.selected_model,
+            "modified_at": "unknown",
+            "size": 0
+        })
 
     return jsonify(models)
+
 
 
 @chat.route("/api/chat")

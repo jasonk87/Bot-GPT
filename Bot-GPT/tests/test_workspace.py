@@ -125,3 +125,28 @@ def test_get_all_conversations_for_user(client, two_users, app):
         assert len(user2_convos) == 1
         assert user2_convos[0]['id'] == convo_id
         assert user2_convos[0]['role'] == 'participant'
+
+
+def test_delete_conversation_via_collection_endpoint(client, test_user, app):
+    """Test deleting a conversation via DELETE /api/conversations."""
+    convo_id = str(uuid.uuid4())
+
+    with app.app_context():
+        convo_data = {
+            "id": convo_id,
+            "owner_id": test_user.id,
+            "title": "Delete Me",
+            "participants": [{"user_id": test_user.id, "role": "owner"}],
+            "messages": []
+        }
+        convo_path = os.path.join(app.instance_path, str(test_user.id), 'conversations', f'{convo_id}.json')
+        save_conversation(convo_path, convo_data)
+        index_path = os.path.join(app.instance_path, 'conversation_index.json')
+        add_to_conversation_index(index_path, convo_id, test_user.id)
+        user_convo_index_path = os.path.join(app.instance_path, 'user_conversation_index.json')
+        add_user_to_conversation_index(user_convo_index_path, test_user.id, convo_id)
+
+    login(client, test_user.username, 'password')
+    response = client.delete('/api/conversations', json={'conversation_id': convo_id})
+    assert response.status_code == 200
+    assert response.get_json()['success'] is True

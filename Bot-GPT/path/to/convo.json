@@ -1,0 +1,19 @@
+{
+    "id": "test_convo_123",
+    "owner_id": 1,
+    "messages": [
+        {
+            "role": "user",
+            "content": "write a file",
+            "images": []
+        },
+        {
+            "role": "assistant",
+            "content": "```json\n{\"tool\": \"write_file\", \"parameters\": {\"path\": \"test.txt\", \"content\": \"hello\"}}\n```"
+        },
+        {
+            "role": "assistant",
+            "content": "I have written the file."
+        }
+    ]
+}

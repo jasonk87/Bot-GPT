@@ -5,7 +5,7 @@ def test_index_route(client):
     """Test the main index route."""
     response = client.get('/')
     assert response.status_code == 200
-    assert b'Ollama Agent' in response.data
+    assert b'BotGPT Workspace' in response.data
 
 def test_profile_route_unauthenticated(client):
     """Test that the profile route requires login."""
@@ -29,7 +29,7 @@ def test_profile_route_authenticated(logged_in_client, test_user, app):
 
         response = logged_in_client.get('/profile')
         assert response.status_code == 200
-        assert b'User Profile' in response.data
+        assert b'BotGPT Profile' in response.data
         assert b'Test Convo 1' in response.data
 
 def test_auth_routes(client, test_user, app):

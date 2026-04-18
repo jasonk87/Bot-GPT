@@ -5,6 +5,9 @@ const loginForm = document.getElementById('login-form');
 const registerForm = document.getElementById('register-form');
 const authTabs = document.querySelectorAll('.auth-tab-btn');
 const authError = document.getElementById('auth-error');
+const lastUserRow = document.getElementById('last-user-row');
+const continueLastUserBtn = document.getElementById('continue-last-user-btn');
+const lastUserName = document.getElementById('last-user-name');
 
 // App-specific elements, to be initialized after login
 let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
@@ -17,6 +20,8 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     copyFileBtn, saveFileBtn, canvasToggleBtn,
     participantList,
     summarizeBtn, summaryModal, summaryContent, closeSummaryBtn,
+    agentModeToggle, toolsDropdownBtn, toolsDropdownMenu,
+    attachImageBtn, imageInput, imagePreviewContainer,
     planToggleBtn, planPanel, planContent, planActions, approvePlanBtn, rejectPlanBtn;
 
 const API_BASE = '/api';
@@ -25,6 +30,7 @@ let currentConversationId = null;
 let currentConversationRole = null;
 let deleteResolver = null;
 let userModel = null;
+let currentUsername = null;
 let editor = null;
 let socket = null;
 let debounceTimer = null;
@@ -38,35 +44,106 @@ let fullAgentResponse = "";
 let currentResponseContent = "";
 let openTabs = [];
 let activeTabIndex = -1;
+let conversationRunStates = {};
+let pendingNewConversationRun = null;
+
+function getCurrentConversationStorageKey() {
+    return currentUsername ? `botgpt_current_conversation_id_${currentUsername}` : 'botgpt_current_conversation_id';
+}
+
+function getTabsStorageKey(conversationId) {
+    return currentUsername ? `botgpt_tabs_${currentUsername}_${conversationId}` : `botgpt_tabs_${conversationId}`;
+}
+
+function saveCurrentConversationId(conversationId) {
+    localStorage.setItem(getCurrentConversationStorageKey(), conversationId);
+}
+
+function clearCurrentConversationId() {
+    localStorage.removeItem(getCurrentConversationStorageKey());
+}
+
+function getSavedCurrentConversationId() {
+    return localStorage.getItem(getCurrentConversationStorageKey());
+}
+
+function clearConversationSessionState(conversationId) {
+    if (!conversationId) return;
+    localStorage.removeItem(getTabsStorageKey(conversationId));
+    clearConversationRunState(conversationId);
+    if (currentConversationId === conversationId) {
+        currentConversationId = null;
+        currentConversationRole = 'owner';
+        conversationHistory = [];
+        currentAgentBubble = null;
+        currentResponseContent = '';
+        setAgentRunning(false);
+        clearCurrentConversationId();
+    }
+}
+
+function switchAuthTab(tabName) {
+    authTabs.forEach(tab => {
+        const isActive = tab.dataset.tab === tabName;
+        tab.classList.toggle('border-blue-500', isActive);
+        tab.classList.toggle('text-white', isActive);
+        tab.classList.toggle('text-gray-400', !isActive);
+    });
+
+    if (tabName === 'login') {
+        loginForm.classList.remove('hidden');
+        registerForm.classList.add('hidden');
+    } else {
+        loginForm.classList.add('hidden');
+        registerForm.classList.remove('hidden');
+    }
+    authError.textContent = '';
+}
+
+function updateLastUserUI(username) {
+    if (username) {
+        lastUserName.textContent = username;
+        lastUserRow.classList.remove('hidden');
+    } else {
+        lastUserName.textContent = '';
+        lastUserRow.classList.add('hidden');
+    }
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
+    const savedUsername = localStorage.getItem('botgpt_last_username') || '';
+    if (savedUsername) {
+        const loginUsername = document.getElementById('login-username');
+        const registerUsername = document.getElementById('register-username');
+        if (loginUsername && !loginUsername.value) loginUsername.value = savedUsername;
+        if (registerUsername && !registerUsername.value) registerUsername.value = savedUsername;
+    }
+    updateLastUserUI(savedUsername);
+
     const response = await fetch(`${window.location.origin}/check_auth`);
     if (response.ok) {
         const user = await response.json();
-        initializeApp(user.username);
-    } else {
-        authScreen.style.display = 'flex';
-        mainApp.style.display = 'none';
+        if (user.authenticated) {
+            initializeApp(user.username);
+            return;
+        }
     }
+    authScreen.style.display = 'flex';
+    mainApp.style.display = 'none';
 });
 
 authTabs.forEach(tab => {
     tab.addEventListener('click', () => {
-        authTabs.forEach(t => {
-            t.classList.remove('border-blue-500', 'text-white');
-            t.classList.add('text-gray-400');
-        });
-        tab.classList.add('border-blue-500', 'text-white');
-        tab.classList.remove('text-gray-400');
-        if (tab.dataset.tab === 'login') {
-            loginForm.classList.remove('hidden');
-            registerForm.classList.add('hidden');
-        } else {
-            loginForm.classList.add('hidden');
-            registerForm.classList.remove('hidden');
-        }
-        authError.textContent = '';
+        switchAuthTab(tab.dataset.tab);
     });
+});
+
+continueLastUserBtn.addEventListener('click', () => {
+    const savedUsername = localStorage.getItem('botgpt_last_username') || '';
+    if (!savedUsername) return;
+    document.getElementById('login-username').value = savedUsername;
+    switchAuthTab('login');
+    document.getElementById('login-password').focus();
 });
 
 loginForm.addEventListener('submit', handleAuthFormSubmit);
@@ -76,7 +153,7 @@ async function handleAuthFormSubmit(e) {
     e.preventDefault();
     const isLogin = e.target.id === 'login-form';
     const url = isLogin ? '/login' : '/register';
-    const username = document.getElementById(`${isLogin ? 'login' : 'register'}-username`).value;
+    const username = document.getElementById(`${isLogin ? 'login' : 'register'}-username`).value.trim();
     const password = document.getElementById(`${isLogin ? 'login' : 'register'}-password`).value;
 
     const response = await fetch(`${window.location.origin}${url}`, {
@@ -86,13 +163,29 @@ async function handleAuthFormSubmit(e) {
     });
     const data = await response.json();
     if (response.ok) {
+        localStorage.setItem('botgpt_last_username', data.username);
+        updateLastUserUI(data.username);
         initializeApp(data.username);
     } else {
-        authError.textContent = data.message;
+        if (!isLogin && response.status === 409) {
+            document.getElementById('login-username').value = username;
+            switchAuthTab('login');
+            authError.textContent = `That account already exists. Sign in as ${username}.`;
+            document.getElementById('login-password').focus();
+            return;
+        }
+
+        if (isLogin && response.status === 401) {
+            authError.textContent = 'That username/password combination did not match. Check the password or register a new account.';
+        } else {
+            authError.textContent = data.message;
+        }
     }
 }
 
 async function initializeApp(username) {
+    currentUsername = username;
+    localStorage.setItem('botgpt_last_username', username);
     authScreen.style.display = 'none';
     mainApp.style.display = 'flex';
 
@@ -211,7 +304,11 @@ async function initializeApp(username) {
                 case 'conversation_id':
                     if (!currentConversationId) {
                         currentConversationId = data.id;
-                        localStorage.setItem('botgpt_current_conversation_id', currentConversationId);
+                        saveCurrentConversationId(currentConversationId);
+                        if (pendingNewConversationRun) {
+                            conversationRunStates[currentConversationId] = { ...pendingNewConversationRun };
+                            pendingNewConversationRun = null;
+                        }
                         addConversationToList(data.id, "New Chat");
                         socket.emit('join', {room: currentConversationId});
                     }
@@ -227,13 +324,20 @@ async function initializeApp(username) {
                     break;
                 case 'assistant_chunk':
                     // This is the main event for streaming content
+                    markConversationRunState(currentConversationId, { isRunning: true, stage: 'answering' });
                     currentResponseContent += data.content;
                     updateBotBubble(currentAgentBubble, currentResponseContent, false);
                     break;
                 case 'assistant_end':
                     // This signals the end of a single thought-act-observe loop from the AI
                     // We add the full response to history here to ensure it's available for the next loop
-                    conversationHistory.push({ role: 'assistant', content: currentResponseContent });
+                    if (currentResponseContent) {
+                        const lastMessage = conversationHistory[conversationHistory.length - 1];
+                        if (!(lastMessage && lastMessage.role === 'assistant' && lastMessage.content === currentResponseContent)) {
+                            conversationHistory.push({ role: 'assistant', content: currentResponseContent });
+                        }
+                    }
+                    markConversationRunState(currentConversationId, { isRunning: true, partialResponse: currentResponseContent, stage: 'thinking' });
                     // Final render of this loop's output, with code highlighting
                     updateBotBubble(currentAgentBubble, currentResponseContent, true);
                     // Reset for the next potential stream of thought from the AI
@@ -241,24 +345,40 @@ async function initializeApp(username) {
                     break;
                 case 'tool_call':
                      // A tool call is part of the assistant's response, so we display it.
+                    markConversationRunState(currentConversationId, {
+                        isRunning: true,
+                        stage: 'tool_call',
+                        toolName: data.name,
+                        toolParams: data.params,
+                        partialResponse: currentResponseContent,
+                    });
                     updateBotBubble(currentAgentBubble, currentResponseContent, true);
                     showToolCall(currentAgentBubble, data.name, data.params);
                     break;
                 case 'tool_result':
+                    markConversationRunState(currentConversationId, { isRunning: true, stage: 'after_tool' });
                     updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
                     break;
                 case 'tool_error':
+                    markConversationRunState(currentConversationId, { isRunning: true, stage: 'tool_error', error: data.error });
                     updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);
                     break;
                 case 'final_answer':
                     // This is now the definitive final answer from the agent.
                     // The content here is the complete, final conversational response.
                     currentResponseContent = data.content;
-                    conversationHistory.push({ role: 'assistant', content: currentResponseContent });
+                    if (currentResponseContent) {
+                        const lastMessage = conversationHistory[conversationHistory.length - 1];
+                        if (!(lastMessage && lastMessage.role === 'assistant' && lastMessage.content === currentResponseContent)) {
+                            conversationHistory.push({ role: 'assistant', content: currentResponseContent });
+                        }
+                    }
+                    markConversationRunState(currentConversationId, { isRunning: true, partialResponse: currentResponseContent, stage: 'final_answer' });
                     updateBotBubble(currentAgentBubble, currentResponseContent, true);
                     break;
                 case 'done':
                     // The 'done' event now signifies the absolute end of the agent's work.
+                    clearConversationRunState(currentConversationId);
                     setAgentRunning(false);
                     const conversationItem = document.querySelector(`.conversation-item[data-id='${currentConversationId}'] .truncate`);
                     if (conversationItem && data.title) {
@@ -268,6 +388,12 @@ async function initializeApp(username) {
                     currentResponseContent = "";
                     break;
                 case 'agent_error':
+                    if (data.error === 'Conversation not found.') {
+                        clearConversationSessionState(currentConversationId);
+                        startNewChat();
+                        break;
+                    }
+                    markConversationRunState(currentConversationId, { isRunning: true, stage: 'error', error: data.error });
                     updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);
                     setAgentRunning(false);
                     break;
@@ -533,7 +659,7 @@ async function initializeApp(username) {
     await populateModels();
     await loadUserSettings();
 
-    const savedConvoId = localStorage.getItem('botgpt_current_conversation_id');
+    const savedConvoId = getSavedCurrentConversationId();
     if (savedConvoId) {
         // We'll let the socket 'load_conversation' event handle the full restore of messages
         // But we can eagerly load the tabs.
@@ -671,6 +797,11 @@ async function populateFileExplorer() {
     fileExplorer.innerHTML = '<p class="text-gray-400">Loading files...</p>';
     try {
         const response = await fetch(`${window.location.origin}${API_BASE}/workspace/files/${currentConversationId}`);
+        if (response.status === 404) {
+            clearConversationSessionState(currentConversationId);
+            fileExplorer.innerHTML = '<p class="text-gray-400">No active conversation. Start a new chat to see files.</p>';
+            return;
+        }
         const files = await response.json();
 
         let header = '';
@@ -1055,15 +1186,25 @@ async function confirmDeletion(id, type, itemType) {
                 url = `${API_BASE}/workspace/file`;
                 body = { path: id, conversation_id: currentConversationId };
             } else {
-                url = `${API_BASE}/conversation/${id}`;
-                body = {};
+                url = `${API_BASE}/conversations`;
+                body = { conversation_id: id };
             }
             const response = await fetch(url, {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),
             });
-            if (!response.ok) throw new Error(await response.text());
+            let responseData = null;
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                responseData = await response.json();
+            } else {
+                const text = await response.text();
+                responseData = { error: text };
+            }
+            if (!response.ok) {
+                throw new Error(responseData.error || responseData.message || `Request failed with status ${response.status}`);
+            }
 
             if (itemType === 'file' || itemType === 'directory') {
                 await populateFileExplorer();
@@ -1075,7 +1216,11 @@ async function confirmDeletion(id, type, itemType) {
             }
         } catch (error) {
             console.error(`Failed to delete ${id}:`, error);
-            alert(`Error deleting ${itemType}: ${error.message}`);
+            const cleanedMessage = String(error.message || 'Unknown error')
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            alert(`Error deleting ${itemType}: ${cleanedMessage}`);
             if (itemType === 'file' || itemType === 'directory') {
                 await populateFileExplorer();
             }
@@ -1162,6 +1307,68 @@ function setAgentRunning(isRunning, agentMode = false) {
     }
 }
 
+function markConversationRunState(conversationId, patch) {
+    if (!conversationId) return;
+    conversationRunStates[conversationId] = {
+        ...(conversationRunStates[conversationId] || {}),
+        ...patch,
+    };
+}
+
+function clearConversationRunState(conversationId) {
+    if (!conversationId) return;
+    delete conversationRunStates[conversationId];
+}
+
+function getConversationRunState(conversationId) {
+    return conversationId ? conversationRunStates[conversationId] || null : null;
+}
+
+function showRecoveredRunIndicator(bubbleElement, text = 'Still working...') {
+    if (!bubbleElement) return;
+    const agentStatus = bubbleElement.querySelector('.agent-status');
+    agentStatus.textContent = text;
+    agentStatus.style.display = 'block';
+    agentStatus.classList.remove('text-red-400');
+}
+
+function restoreActiveRun(activeRun) {
+    if (!activeRun || !activeRun.is_running) {
+        currentAgentBubble = null;
+        currentResponseContent = '';
+        setAgentRunning(false);
+        return;
+    }
+
+    currentAgentBubble = createBotMessageContainer(false);
+    currentResponseContent = activeRun.partial_response || '';
+
+    if (currentResponseContent) {
+        updateBotBubble(currentAgentBubble, currentResponseContent, false);
+        showRecoveredRunIndicator(currentAgentBubble);
+    }
+
+    switch (activeRun.stage) {
+        case 'tool_call':
+            showToolCall(currentAgentBubble, activeRun.tool_name, activeRun.tool_params);
+            break;
+        case 'after_tool':
+            updateAgentStatus(currentAgentBubble, 'Tool finished. Analyzing results...');
+            break;
+        case 'tool_error':
+        case 'error':
+            updateAgentStatus(currentAgentBubble, `An error occurred: ${activeRun.error || 'Unknown error'}`, true);
+            break;
+        default:
+            if (!currentResponseContent) {
+                showRecoveredRunIndicator(currentAgentBubble);
+            }
+            break;
+    }
+
+    setAgentRunning(true, !!activeRun.agent_mode);
+}
+
 let pendingImages = [];
 
 function handleImageSelection() {
@@ -1203,7 +1410,7 @@ function handleImageSelection() {
 
 function sendMessage() {
     const text = chatInput.value.trim();
-    if ((!text && pendingImages.length === 0) || isAgentRunning) return;
+    if ((!text && pendingImages.length === 0) || getConversationRunState(currentConversationId)?.isRunning) return;
 
     const agentMode = agentModeToggle.checked;
     setAgentRunning(true, agentMode);
@@ -1231,6 +1438,11 @@ function sendMessage() {
 
     currentAgentBubble = createBotMessageContainer();
     currentResponseContent = ""; // Reset the content for the new message
+    if (currentConversationId) {
+        markConversationRunState(currentConversationId, { isRunning: true, agentMode, stage: 'thinking', partialResponse: '' });
+    } else {
+        pendingNewConversationRun = { isRunning: true, agentMode, stage: 'thinking', partialResponse: '' };
+    }
 
     const params = {
         messages: JSON.stringify(conversationHistory),
@@ -1337,6 +1549,7 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
 
     if (conversationalContent) {
         agentStatus.style.display = 'none';
+        toolActivity.style.display = 'none';
         answerContent.style.display = 'block';
         answerContent.innerHTML = marked.parse(conversationalContent);
     } else {
@@ -1350,6 +1563,9 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     if (isFinal) {
         // Hide the main thinking indicator when the turn is truly over
         agentStatus.style.display = 'none';
+        if (conversationalContent || thinkContent) {
+            toolActivity.style.display = 'none';
+        }
         if (!conversationalContent && !thinkContent) {
             // If there's no content at all in the end, don't show an empty bubble.
             // This can happen if the AI only calls a tool.
@@ -1416,8 +1632,8 @@ function addConversationToList(id, title) {
     item.innerHTML = `<span class="truncate flex-1">${title}</span><div class="flex items-center">${buttons}</div>`;
 
     item.addEventListener('click', () => {
-        if (item.dataset.id !== currentConversationId && !isAgentRunning) {
-            loadConversation(item.dataset.id);
+        if (item.dataset.id !== currentConversationId) {
+            socket.emit('load_conversation', { conversation_id: item.dataset.id });
         }
     });
 
@@ -1458,7 +1674,7 @@ function populateConversations(convos) {
         item.innerHTML = `<span class="truncate flex-1">${convo.title}</span><div class="flex items-center">${buttons}</div>`;
 
         item.addEventListener('click', () => {
-            if (!isActive && !isAgentRunning) {
+            if (convo.id !== currentConversationId) {
                 socket.emit('load_conversation', { conversation_id: convo.id });
             }
         });
@@ -1532,16 +1748,18 @@ function loadConversation(data) {
          openTabs = [];
          activeTabIndex = -1;
          hideCanvasPanel();
-         localStorage.setItem('botgpt_current_conversation_id', currentConversationId);
+         saveCurrentConversationId(currentConversationId);
          loadTabState(); // Load tabs for the NEW conversation
     }
 
     currentConversationId = data.id;
-    localStorage.setItem('botgpt_current_conversation_id', currentConversationId);
+    saveCurrentConversationId(currentConversationId);
 
     currentConversationRole = data.role;
     chatContainer.innerHTML = '';
     welcomeMessage.style.display = 'none';
+    currentAgentBubble = null;
+    currentResponseContent = '';
 
     conversationHistory = data.messages || [];
     // Re-render history
@@ -1553,6 +1771,22 @@ function loadConversation(data) {
             updateBotBubble(botBubble, msg.content, true);
         }
     });
+
+    if (data.active_run && data.active_run.is_running) {
+        markConversationRunState(data.id, {
+            isRunning: true,
+            agentMode: !!data.active_run.agent_mode,
+            partialResponse: data.active_run.partial_response || '',
+            stage: data.active_run.stage || 'thinking',
+            toolName: data.active_run.tool_name || null,
+            toolParams: data.active_run.tool_params || null,
+            error: data.active_run.error || null,
+        });
+        restoreActiveRun(data.active_run);
+    } else {
+        clearConversationRunState(data.id);
+        setAgentRunning(false);
+    }
 
     chatContainer.scrollTop = chatContainer.scrollHeight;
     socket.emit('join', { room: data.id });
@@ -1576,15 +1810,27 @@ function smartScroll(element) {
 }
 
 function startNewChat() {
-    if (isAgentRunning) return;
+    if (currentConversationId) {
+        socket.emit('leave', { room: currentConversationId });
+    }
     currentConversationId = null;
     currentConversationRole = 'owner';
     conversationHistory = [];
+    openTabs = [];
+    activeTabIndex = -1;
+    pendingImages = [];
+    imagePreviewContainer.innerHTML = '';
+    imagePreviewContainer.classList.add('hidden');
+    clearCurrentConversationId();
     chatContainer.innerHTML = '';
     welcomeMessage.style.display = 'flex';
     planContent.innerHTML = '';
     planPanel.classList.add('hidden');
     planPanel.classList.remove('flex');
+    hideCanvasPanel();
+    currentAgentBubble = null;
+    currentResponseContent = '';
+    setAgentRunning(false);
     populateFileExplorer();
     socket.emit('load_conversations'); // To update active state
 }
@@ -1647,13 +1893,13 @@ function saveTabState() {
         isCanvasMode: isCanvasMode
     };
 
-    localStorage.setItem(`botgpt_tabs_${currentConversationId}`, JSON.stringify(state));
+    localStorage.setItem(getTabsStorageKey(currentConversationId), JSON.stringify(state));
 }
 
 async function loadTabState() {
     if (!currentConversationId) return;
 
-    const savedState = localStorage.getItem(`botgpt_tabs_${currentConversationId}`);
+    const savedState = localStorage.getItem(getTabsStorageKey(currentConversationId));
     if (!savedState) return;
 
     try {

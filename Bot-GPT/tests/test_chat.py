@@ -4,6 +4,8 @@ import threading
 from unittest.mock import MagicMock, call
 from app import socketio
 import chat
+import os
+from models import save_conversation, add_to_conversation_index, add_user_to_conversation_index
 
 def test_chat_message_handling(socketio_test_client, test_user, mocker):
     """Test sending a message and receiving a simple AI response."""
@@ -90,3 +92,42 @@ def test_write_file_emits_open_canvas(socketio_test_client, test_user, mocker, a
     open_canvas_events = [r for r in ai_responses if r.get('type') == 'open_canvas']
     assert len(open_canvas_events) == 1
     assert open_canvas_events[0]['filename'] == 'test.txt'
+
+
+def test_load_conversation_includes_active_run(socketio_test_client, test_user, app):
+    """Test that reloading a conversation includes active run state for the UI."""
+    convo_id = "active_run_convo"
+
+    with app.app_context():
+        convo_path = os.path.join(app.instance_path, str(test_user.id), 'conversations', f'{convo_id}.json')
+        save_conversation(convo_path, {
+            'id': convo_id,
+            'owner_id': test_user.id,
+            'title': 'Running Chat',
+            'participants': [{'user_id': test_user.id, 'role': 'owner'}],
+            'messages': [{'role': 'user', 'content': 'keep going'}],
+        })
+        index_path = os.path.join(app.instance_path, 'conversation_index.json')
+        add_to_conversation_index(index_path, convo_id, test_user.id)
+        user_index_path = os.path.join(app.instance_path, 'user_conversation_index.json')
+        add_user_to_conversation_index(user_index_path, test_user.id, convo_id)
+
+    chat.AGENT_SESSIONS[convo_id] = {
+        'running': True,
+        'agent_mode': False,
+        'partial_response': 'Still working',
+        'stage': 'answering',
+        'tool_name': None,
+        'tool_params': None,
+        'error': None,
+    }
+
+    socketio_test_client.emit('load_conversation', {'conversation_id': convo_id})
+    received = socketio_test_client.get_received()
+    payloads = [event['args'][0] for event in received if event['name'] == 'conversation_loaded']
+
+    assert len(payloads) == 1
+    assert payloads[0]['active_run']['is_running'] is True
+    assert payloads[0]['active_run']['partial_response'] == 'Still working'
+
+    chat.AGENT_SESSIONS.pop(convo_id, None)
