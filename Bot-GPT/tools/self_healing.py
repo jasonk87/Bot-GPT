@@ -6,8 +6,8 @@ from flask import current_app
 from .file_system import get_workspace_path, write_file
 
 def implement_and_test_code(target_file, test_command, task_description, conversation_id=None, user_id=None, user=None, max_iterations=3):
-    # Import locally to avoid circular dependency
-    from . import call_chat_stream
+    # Import from ai_service to avoid circular dependency
+    from .ai_service import call_chat_stream
     """
     Implements code in a file and iteratively tests and fixes it until the test passes.
 
@@ -25,7 +25,9 @@ def implement_and_test_code(target_file, test_command, task_description, convers
 
     # 1. Initial Implementation
     # Using the same logic as ask_coder but specialized for this loop
-    current_model = user.selected_model if user else "gemini-2.0-flash"
+    from utils import get_best_default_model
+    current_model = user.selected_model if user and user.selected_model else get_best_default_model()
+
 
     # Check if file exists to determine if we are creating or editing
     existing_content = ""

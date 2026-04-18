@@ -6,6 +6,8 @@ from werkzeug.security import generate_password_hash
 from filelock import FileLock
 
 from models import User, get_user_by_username, _load_users, _save_users
+from utils import get_best_default_model
+
 
 auth = Blueprint("auth", __name__)
 
@@ -36,7 +38,9 @@ def register():
 
     # Create new user object
     password_hash = generate_password_hash(password)
-    new_user = User(id=new_user_id, username=username, password_hash=password_hash)
+    default_model = get_best_default_model()
+    new_user = User(id=new_user_id, username=username, password_hash=password_hash, selected_model=default_model)
+
 
     # Add to users dictionary and save
     users[str(new_user_id)] = new_user.to_dict()

@@ -40,22 +40,16 @@ def scrape_text_from_url(url):
         return f"--- Could not get {url}: {e} ---\n\n"
 
 
-def summarize_text(text, query, model, ollama_host):
+def summarize_text(text, query, model):
     """Summarizes text using an AI model."""
     summarization_prompt = f"Based on the following web content, please provide a comprehensive answer to the user's query: '{query}'. Synthesize the information from the sources into a single, coherent response. Do not just list the content from each source. Your answer should be well-structured, easy to understand, and directly address the user's question. Format the response using Markdown for readability.\n\n--- WEB CONTENT ---\n{text}"
     try:
-        response = requests.post(
-            f"{ollama_host}/api/chat",
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": summarization_prompt}],
-                "stream": False,
-            },
-            timeout=120,
-        )
-        response.raise_for_status()
-        return response.json().get("message", {}).get("content", "")
-    except requests.exceptions.RequestException as e:
+        from .ai_service import call_chat_stream
+        content = ""
+        for chunk in call_chat_stream(model, [{"role": "user", "content": summarization_prompt}], "You are a helpful assistant."):
+            content += chunk
+        return content
+    except Exception as e:
         raise ConnectionError(
             f"Could not connect to the AI model to summarize: {e}"
         ) from e
@@ -101,10 +95,9 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
             consolidated_content = consolidated_content[:max_length] + "..."
 
         current_model = user.selected_model if user else "default_model_name"
-        ollama_host = current_app.config["OLLAMA_HOST"]
 
         summary = summarize_text(
-            consolidated_content, query, current_model, ollama_host
+            consolidated_content, query, current_model
         )
         return f"Based on my web search, here is the answer to your query about '{query}':\n\n{summary}"
 

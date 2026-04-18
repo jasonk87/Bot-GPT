@@ -26,7 +26,12 @@ def create_app(config_name=None):
             raise
 
     # --- Initialize Extensions ---
-    socketio.init_app(app, cors_allowed_origins="*")
+    socketio.init_app(
+        app, 
+        cors_allowed_origins="*",
+        ping_timeout=120,    # Allow longer pauses for localized LLM thinking/reasoning
+        ping_interval=25
+    )
 
     login_manager = LoginManager()
     login_manager.init_app(app)
@@ -65,5 +70,6 @@ if __name__ == "__main__":
         debug=True,
         allow_unsafe_werkzeug=True,
         use_reloader=True,
+        reloader_type='stat', # More stable than watchdog in this environment
     )
 

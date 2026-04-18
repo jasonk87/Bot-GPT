@@ -17,3 +17,7 @@ user_data/
 
 # Virtual environment
 venv/
+
+# Environment variables
+.env
+Bot-GPT/.env

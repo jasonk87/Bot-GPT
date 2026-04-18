@@ -4,9 +4,15 @@ import time
 from filelock import FileLock
 from flask import current_app
 
+try:
+    import chromadb
+    from chromadb.config import Settings
+except ImportError:
+    chromadb = None
+
 class MemoryManager:
     """
-    Manages persistent memory for the AI agent.
+    Manages persistent memory for the AI agent using ChromaDB for vectorized recall.
     Scopes:
     - user: Memory specific to a user (across all their projects).
     - project: Memory specific to a project/workspace (shared by all users in that project).
@@ -15,143 +21,130 @@ class MemoryManager:
     def __init__(self, user_id=None, project_id=None):
         self.user_id = user_id
         self.project_id = project_id
-        self.user_memory_file = None
-        self.project_memory_file = None
-
-        if current_app:
+        self.chroma_client = None
+        self.user_collection = None
+        self.project_collection = None
+        
+        if current_app and chromadb:
+            persist_directory = os.path.join(current_app.instance_path, "user_data", "chroma")
+            os.makedirs(persist_directory, exist_ok=True)
+            self.chroma_client = chromadb.PersistentClient(path=persist_directory)
+            
+            # Initialize Collections
             if user_id:
-                self.user_memory_file = os.path.join(current_app.config["USER_DATA_DIR"], "user_memory.json")
+                self.user_collection = self.chroma_client.get_or_create_collection(
+                    name=f"user_memory_{user_id}"
+                )
+            
+            # project_id is conversation_id here
             if project_id:
-                # Assuming project_id maps to conversation_id for now, or a workspace ID.
-                # In this app, workspace is by owner_id/conversation_id.
-                # Let's verify how project_id is passed. If it's conversation_id, we need owner_id to find path.
-                # For simplicity, let's assume project_id IS the absolute path to the workspace memory file
-                # OR we handle path construction outside.
-                # Actually, let's look at how get_workspace_path works.
-                pass
-
-    def _get_file_path(self, scope):
-        if scope == "user":
-            return self.user_memory_file
-        elif scope == "project":
-            return self.project_memory_file
-        return None
-
-    def _load_memory(self, path):
-        if not path:
-            return {}
-        lock = FileLock(f"{path}.lock")
-        with lock:
-            if not os.path.exists(path):
-                return {}
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                return {}
-
-    def _save_memory(self, path, data):
-        if not path:
-            return
-        lock = FileLock(f"{path}.lock")
-        with lock:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
+                self.project_collection = self.chroma_client.get_or_create_collection(
+                    name=f"project_memory_{project_id}"
+                )
 
     def set_project_memory_file(self, owner_id, conversation_id):
-        """Sets the path for project-specific memory."""
-        if current_app and owner_id and conversation_id:
-             self.project_memory_file = os.path.join(
-                current_app.instance_path,
-                str(owner_id),
-                "workspaces",
-                str(conversation_id),
-                ".agent",
-                "memory.json"
+        """Sets the project memory collection based on conversation ID."""
+        if self.chroma_client and conversation_id:
+            self.project_collection = self.chroma_client.get_or_create_collection(
+                name=f"project_memory_{conversation_id}"
             )
 
     def remember(self, scope, key, value):
-        """Saves a fact to memory."""
-        path = self._get_file_path(scope)
-        if not path:
-             return f"Error: No memory file configured for scope '{scope}'."
-        
-        memory = self._load_memory(path)
-        
-        # User memory is keyed by user_id
-        if scope == "user":
-            if str(self.user_id) not in memory:
-                memory[str(self.user_id)] = {}
-            memory[str(self.user_id)][key] = {
-                "value": value,
-                "timestamp": time.time()
-            }
-        else:
-            # Project memory is flat for the project
-            memory[key] = {
-                "value": value,
-                "timestamp": time.time()
-            }
+        """Saves a fact to vectorized memory."""
+        collection = self.user_collection if scope == "user" else self.project_collection
+        if not collection:
+            return f"Error: No collection available for scope '{scope}'."
 
-        self._save_memory(path, memory)
+        # Use the key as the ID for easy exact lookups/overwrites
+        # The value is the document for semantic search
+        timestamp = time.time()
+        collection.upsert(
+            ids=[key],
+            documents=[value],
+            metadatas=[{"key": key, "timestamp": timestamp, "scope": scope}]
+        )
         return f"Successfully remembered ({scope}): {key} = {value}"
 
     def recall(self, scope, key):
-        """Retrieves a specific fact."""
-        path = self._get_file_path(scope)
-        if not path:
+        """Retrieves a specific fact by key."""
+        collection = self.user_collection if scope == "user" else self.project_collection
+        if not collection:
             return None
             
-        memory = self._load_memory(path)
-        
-        if scope == "user":
-            user_mem = memory.get(str(self.user_id), {})
-            item = user_mem.get(key)
-        else:
-            item = memory.get(key)
-            
-        return item.get("value") if item else None
+        result = collection.get(ids=[key])
+        if result and result["documents"]:
+            return result["documents"][0]
+        return None
 
-    def get_all_context(self):
-        """Retrieves all relevant context for the current user and project."""
-        context = []
+    def query_memory(self, query, scope="user", n_results=3):
+        """Perform semantic search over memory."""
+        collection = self.user_collection if scope == "user" else self.project_collection
+        if not collection:
+            return []
+            
+        results = collection.query(
+            query_texts=[query],
+            n_results=n_results
+        )
         
-        # User Memory
-        if self.user_memory_file:
-            u_mem = self._load_memory(self.user_memory_file).get(str(self.user_id), {})
-            if u_mem:
-                context.append("--- USER MEMORY ---")
-                for k, v in u_mem.items():
-                    context.append(f"{k}: {v['value']}")
+        items = []
+        if results and results["documents"] and results["documents"][0]:
+            for i in range(len(results["documents"][0])):
+                items.append({
+                    "content": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i]
+                })
+        return items
+
+    def get_all_context(self, query=None):
+        """
+        Retrieves relevant context. If query is provided, performs semantic search.
+        Otherwise, returns recent facts.
+        """
+        context_parts = []
         
+        # User Memory (Semantic first, then recent if no query)
+        if self.user_collection:
+            u_mem_parts = []
+            if query:
+                results = self.query_memory(query, scope="user")
+                for item in results:
+                    u_mem_parts.append(f"- {item['metadata']['key']}: {item['content']}")
+            else:
+                # Just get some recent ones
+                results = self.user_collection.get(limit=10)
+                if results and results["documents"]:
+                    for i in range(len(results["documents"])):
+                        u_mem_parts.append(f"- {results['metadatas'][i]['key']}: {results['documents'][i]}")
+            
+            if u_mem_parts:
+                context_parts.append("--- USER MEMORY ---")
+                context_parts.extend(u_mem_parts)
+
         # Project Memory
-        if self.project_memory_file:
-            p_mem = self._load_memory(self.project_memory_file)
-            if p_mem:
-                context.append("--- PROJECT MEMORY ---")
-                for k, v in p_mem.items():
-                    context.append(f"{k}: {v['value']}")
+        if self.project_collection:
+            p_mem_parts = []
+            if query:
+                results = self.query_memory(query, scope="project")
+                for item in results:
+                    p_mem_parts.append(f"- {item['metadata']['key']}: {item['content']}")
+            else:
+                results = self.project_collection.get(limit=10)
+                if results and results["documents"]:
+                    for i in range(len(results["documents"])):
+                        p_mem_parts.append(f"- {results['metadatas'][i]['key']}: {results['documents'][i]}")
+            
+            if p_mem_parts:
+                context_parts.append("--- PROJECT MEMORY ---")
+                context_parts.extend(p_mem_parts)
                     
-        return "\n".join(context)
+        return "\n".join(context_parts)
 
     def forget(self, scope, key):
-        """Deletes a fact."""
-        path = self._get_file_path(scope)
-        if not path:
+        """Deletes a fact by key."""
+        collection = self.user_collection if scope == "user" else self.project_collection
+        if not collection:
             return "Error: Invalid scope."
             
-        memory = self._load_memory(path)
-        
-        if scope == "user":
-            if str(self.user_id) in memory and key in memory[str(self.user_id)]:
-                del memory[str(self.user_id)][key]
-                self._save_memory(path, memory)
-                return f"Forgot ({scope}): {key}"
-        else:
-            if key in memory:
-                del memory[key]
-                self._save_memory(path, memory)
-                return f"Forgot ({scope}): {key}"
-                
-        return f"Key '{key}' not found in {scope} memory."
+        collection.delete(ids=[key])
+        return f"Forgot ({scope}): {key}"

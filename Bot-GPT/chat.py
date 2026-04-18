@@ -29,9 +29,10 @@ from models import (
     _save_users,
 )
 
-from tools import call_chat_stream, handle_tool_call
+from tools import handle_tool_call
+from tools.ai_service import call_chat_stream
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
-from utils import PLAN_APPROVALS, sanitize_json
+from utils import PLAN_APPROVALS, sanitize_json, get_best_default_model
 
 
 chat = Blueprint("chat", __name__)
@@ -125,28 +126,36 @@ def initialize_chat(data):
     if data.get("agent_mode", False):
         system_prompt = AGENT_SYSTEM_PROMPT
 
-    # --- Memory Injection ---
+    # --- Memory Injection (Autonomous RAG) ---
     try:
         from memory import MemoryManager
         memory = MemoryManager(user_id=current_user.id)
-        # We need to set the project memory file path.
-        # initialize_chat provides conversation and conversation_path.
-        # conversation["owner_id"] is available.
         if conversation:
             memory.set_project_memory_file(conversation["owner_id"], conversation["id"])
             
-        memory_context = memory.get_all_context()
+        # Extract the latest user query for semantic retrieval
+        latest_query = None
+        messages_raw = data.get("messages")
+        if messages_raw:
+            try:
+                msgs = json.loads(messages_raw)
+                if msgs and msgs[-1].get("role") == "user":
+                    latest_query = msgs[-1].get("content")
+            except:
+                pass
+
+        memory_context = memory.get_all_context(query=latest_query)
         if memory_context:
             system_prompt += f"\n\n=== RECALLED MEMORY ===\n{memory_context}\n=======================\n"
     except Exception as e:
         print(f"Error injecting memory: {e}")
-    # ------------------------
+    # -----------------------------------------
+
 
     return model, system_prompt, conversation, conversation_path
 
 
 def handle_ai_response(data):
-    """Handles the AI response loop and yields events."""
     print("DEBUG: handle_ai_response triggered")
     try:
         model, system_prompt, conversation, conversation_path = initialize_chat(data)
@@ -187,6 +196,7 @@ def handle_ai_response(data):
                 print(f"DEBUG: Calling AI Stream with model {model}")
                 stream = call_ollama_chat_stream(model, conversation["messages"], system_prompt)
                 for chunk in stream:
+                    # chunk is guaranteed to be a string here due to ai_service implementation
                     full_response_content += chunk
                     AGENT_SESSIONS[conversation["id"]]["partial_response"] = full_response_content
                     AGENT_SESSIONS[conversation["id"]]["stage"] = "answering"
@@ -259,7 +269,8 @@ def handle_ai_response(data):
     if not tool_calls:
         yield from process_final_answer(conversation, conversation_path, data.get("canvas_mode", False))
 
-    update_conversation_title(conversation, conversation_path)
+    update_conversation_title(conversation, conversation_path, model)
+
 
     messages_to_save = [msg for msg in conversation["messages"] if msg.get("role") in ["user", "assistant"]]
     conversation["messages"] = messages_to_save
@@ -449,7 +460,8 @@ def process_final_answer(conversation, conversation_path, canvas_mode):
     yield {"type": "final_answer", "content": final_answer_content}
 
 
-def update_conversation_title(conversation, conversation_path):
+def update_conversation_title(conversation, conversation_path, model=None):
+
     """Updates the conversation title if it's a new chat."""
     if conversation.get("title") == "New Chat" and len(conversation.get("messages", [])) >= 2:
         try:
@@ -460,12 +472,19 @@ def update_conversation_title(conversation, conversation_path):
             title_prompt = f"Based on the following exchange, create a very short, concise title (5 words or less).\n\nUser: {user_message}\nAssistant: {cleaned_content}\n\nTitle:"
 
             # Use the shared function instead of direct requests
-            model = current_user.selected_model or "gemini-2.0-flash"
+            if not model:
+                model = current_user.selected_model or get_best_default_model()
+
             messages = [{"role": "user", "content": title_prompt}]
 
             content = ""
             for chunk in call_ollama_chat_stream(model, messages, "You are a helpful assistant."):
                  content += chunk
+
+            # Sanity check: If the content is an error message, don't use it as a title
+            if content.startswith("Error"):
+                current_app.logger.warning(f"AI returned error instead of title: {content}")
+                return
 
             raw_title = content.strip()
             cleaned_title = re.sub(r"<think>[\s\S]*?</think>", "", raw_title).strip().replace('"', "")
