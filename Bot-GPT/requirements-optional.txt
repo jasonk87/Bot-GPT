@@ -1,0 +1,16 @@
+# Search/AI integrations
+google-api-python-client
+
+# Memory/vector features
+sentence-transformers
+faiss-cpu
+chromadb
+
+# Media
+Pillow
+
+# Legacy optional SDK (not required by core runtime)
+google-generativeai
+
+# Optional SQL tools
+SQLAlchemy

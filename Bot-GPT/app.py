@@ -24,6 +24,10 @@ def create_app(config_name=None):
         if not os.path.isdir(app.instance_path):
             raise
 
+    from shared_paths import migrate_legacy_users_file
+
+    migrate_legacy_users_file(app)
+
     # --- Initialize Extensions ---
     socketio.init_app(
         app, 
@@ -39,8 +43,9 @@ def create_app(config_name=None):
     @login_manager.user_loader
     def load_user(user_id):
         from models import get_user_by_id
-        users_path = os.path.join(app.config["USER_DATA_DIR"], 'users.json')
-        return get_user_by_id(users_path, int(user_id))
+        from shared_paths import get_users_path
+
+        return get_user_by_id(get_users_path(), int(user_id))
 
     # --- Register Blueprints ---
     from routes import main as main_blueprint

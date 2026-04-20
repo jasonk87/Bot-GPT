@@ -4,12 +4,18 @@ import uuid
 from flask import Blueprint, request, jsonify, current_app, Response
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
-from app import socketio
+from extensions import socketio
 from models import (
     load_conversation, save_conversation, check_permission,
     _load_users, get_user_by_id, add_to_conversation_index,
     add_user_to_conversation_index, remove_user_from_conversation_index,
     find_conversation_owner as find_owner_from_index
+)
+from shared_paths import (
+    get_users_path,
+    get_conversation_path as _get_conversation_path,
+    get_conversation_index_path,
+    get_user_conversation_index_path,
 )
 from tools.file_system import get_workspace_path
 from tools import (
@@ -22,23 +28,11 @@ from tools import (
 workspace = Blueprint("workspace", __name__)
 call_ollama_chat_stream = call_chat_stream
 
-def _get_conversation_path(owner_id, conversation_id):
-    """Constructs the file path for a given conversation."""
-    return os.path.join(current_app.instance_path, str(owner_id), 'conversations', f'{conversation_id}.json')
-
 def find_conversation_owner(conversation_id):
     """Finds the owner of a conversation using the index."""
-    index_path = os.path.join(current_app.instance_path, 'conversation_index.json')
+    index_path = get_conversation_index_path()
     return find_owner_from_index(index_path, conversation_id)
 
-def get_user_conversation_index_path():
-    """Helper to construct the path to the user-conversation index file."""
-    return os.path.join(current_app.instance_path, "user_conversation_index.json")
-
-
-def get_users_path():
-    """Constructs the path to the registered users file."""
-    return os.path.join(current_app.config["USER_DATA_DIR"], "users.json")
 
 @workspace.route("/api/workspace/files/<conversation_id>", methods=["GET"])
 @login_required
@@ -161,7 +155,7 @@ def delete_conversation_logic(conversation_id):
             shutil.rmtree(workspace_path)
 
         # Remove from the main conversation index
-        convo_index_path = os.path.join(current_app.instance_path, 'conversation_index.json')
+        convo_index_path = get_conversation_index_path()
         from models import _load_conversation_index, _save_conversation_index
         convo_index = _load_conversation_index(convo_index_path)
         if conversation_id in convo_index:
@@ -289,7 +283,7 @@ def upload_file():
         save_conversation(convo_path, conversation_data)
 
         # Add to the new index
-        index_path = os.path.join(current_app.instance_path, 'conversation_index.json')
+        index_path = get_conversation_index_path()
         add_to_conversation_index(index_path, conversation_id, owner_id)
         add_user_to_conversation_index(get_user_conversation_index_path(), owner_id, conversation_id)
 

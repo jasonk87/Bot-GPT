@@ -1,18 +1,13 @@
-import os
-from flask import Blueprint, request, jsonify, current_app, session
+from flask import Blueprint, request, jsonify, session
 from flask_login import login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash
 
 from models import User, get_user_by_username, _load_users, _save_users
 from utils import get_best_default_model
+from shared_paths import get_users_path
 
 
 auth = Blueprint("auth", __name__)
-
-def get_users_path():
-    """Constructs the path to the users.json file."""
-    return os.path.join(current_app.config["USER_DATA_DIR"], 'users.json')
-
 @auth.route("/register", methods=["POST"])
 def register():
     """Handles user registration using a file-based system."""
