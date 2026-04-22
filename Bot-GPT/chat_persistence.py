@@ -42,6 +42,7 @@ def initialize_chat(data):
             "id": conversation_id,
             "title": "New Chat",
             "owner_id": owner_id,
+            "project_id": data.get("project_id"),
             "participants": [{"user_id": owner_id, "role": "owner"}],
             "messages": [],
             "created_at": time.time(),
@@ -61,7 +62,11 @@ def initialize_chat(data):
 
         memory = MemoryManager(user_id=current_user.id)
         if conversation:
-            memory.set_project_memory_file(conversation["owner_id"], conversation["id"])
+            memory.set_project_memory_file(
+                conversation["owner_id"],
+                conversation["id"],
+                project_id=conversation.get("project_id"),
+            )
 
         latest_query = None
         messages_raw = data.get("messages")

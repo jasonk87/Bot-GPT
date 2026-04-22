@@ -1,28 +1,21 @@
 import os
 import sys
 import pytest
-import shutil
 from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app import create_app, socketio as _socketio
-from models import User, _save_users, _load_users
+from models import User, _save_users
 
 @pytest.fixture(scope='session')
-def app():
+def app(tmp_path_factory):
     """Create and configure a new app instance for the test session."""
-    app = create_app('testing')
-    instance_path = app.instance_path
-    if os.path.exists(instance_path):
-        shutil.rmtree(instance_path)
-    os.makedirs(instance_path)
+    instance_path = tmp_path_factory.mktemp("instance")
+    app = create_app('testing', instance_path=str(instance_path))
 
     with app.app_context():
         yield app
-
-    if os.path.exists(instance_path):
-        shutil.rmtree(instance_path)
 
 
 @pytest.fixture(scope='function')

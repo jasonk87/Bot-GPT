@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 
 from app import create_app
@@ -14,15 +13,11 @@ def test_legacy_users_file_migrates(tmp_path):
 
     original_dir = TestConfig.USER_DATA_DIR
     TestConfig.USER_DATA_DIR = str(legacy_dir)
-    app = None
     try:
-        app = create_app("testing")
+        app = create_app("testing", instance_path=str(tmp_path / "instance"))
         migrated = Path(app.instance_path) / "users.json"
         assert migrated.exists()
         payload = json.loads(migrated.read_text())
         assert payload["1"]["username"] == "legacy"
     finally:
         TestConfig.USER_DATA_DIR = original_dir
-        if app and os.path.exists(app.instance_path):
-            import shutil
-            shutil.rmtree(app.instance_path)

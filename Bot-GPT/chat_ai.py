@@ -2,6 +2,7 @@ import logging
 import json
 import re
 import time
+from flask import current_app
 from flask_login import current_user
 from models import save_conversation
 
@@ -141,5 +142,12 @@ def handle_ai_response(
     update_conversation_title(conversation, conversation_path, model)
     conversation["messages"] = [m for m in conversation["messages"] if m.get("role") in ["user", "assistant"]]
     save_conversation(conversation_path, conversation)
+    try:
+        from memory import MemoryManager
+
+        memory = MemoryManager(user_id=current_user.id)
+        memory.archive_conversation(conversation)
+    except Exception as exc:
+        current_app.logger.warning("Error archiving conversation memory: %s", exc)
     logger.info("chat_run_done conversation_id=%s title=%s", conversation["id"], conversation.get("title", "New Chat"))
     yield {"type": "done", "title": conversation.get("title", "New Chat")}

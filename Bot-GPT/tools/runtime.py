@@ -67,7 +67,7 @@ def remember(scope, key, value, conversation_id=None, user_id=None, **kwargs):
              # The context_params in handle_tool_call usually pass 'owner_id'
              owner_id = kwargs.get("owner_id")
              if owner_id:
-                 memory.set_project_memory_file(owner_id, conversation_id)
+                 memory.set_project_memory_file(owner_id, conversation_id, project_id=kwargs.get("project_id"))
              else:
                  return "Error: Could not determine project owner for memory."
 
@@ -89,7 +89,7 @@ def recall(scope, key, conversation_id=None, user_id=None, **kwargs):
         if scope == "project" and conversation_id:
              owner_id = kwargs.get("owner_id")
              if owner_id:
-                 memory.set_project_memory_file(owner_id, conversation_id)
+                 memory.set_project_memory_file(owner_id, conversation_id, project_id=kwargs.get("project_id"))
         
         val = memory.recall(scope, key)
         if val:
@@ -113,7 +113,7 @@ def forget(scope, key, conversation_id=None, user_id=None, **kwargs):
         if scope == "project" and conversation_id:
              owner_id = kwargs.get("owner_id")
              if owner_id:
-                 memory.set_project_memory_file(owner_id, conversation_id)
+                 memory.set_project_memory_file(owner_id, conversation_id, project_id=kwargs.get("project_id"))
         
         return memory.forget(scope, key)
     except Exception as e:
@@ -494,6 +494,7 @@ def handle_tool_call(tool_call, conversation, user):
         context_params = {
             "conversation_id": conversation["id"],
             "owner_id": conversation["owner_id"],
+            "project_id": conversation.get("project_id"),
             "user_id": user.id,
             "user_data_dir": current_app.config["USER_DATA_DIR"],
             "ollama_host": current_app.config.get("OLLAMA_HOST"), # Keeping distinct for now but could be removed

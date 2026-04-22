@@ -1,5 +1,7 @@
 import os
+import re
 import time
+import hashlib
 from flask import current_app
 
 try:
@@ -36,15 +38,109 @@ class MemoryManager:
             # project_id is conversation_id here
             if project_id:
                 self.project_collection = self.chroma_client.get_or_create_collection(
-                    name=f"project_memory_{project_id}"
+                    name=self._project_collection_name(f"project:{project_id}")
                 )
 
-    def set_project_memory_file(self, owner_id, conversation_id):
-        """Sets the project memory collection based on conversation ID."""
-        if self.chroma_client and conversation_id:
+    @staticmethod
+    def _sanitize_collection_suffix(value):
+        return re.sub(r"[^a-zA-Z0-9_-]", "_", value)
+
+    @classmethod
+    def _project_collection_name(cls, project_key):
+        safe_key = cls._sanitize_collection_suffix(project_key)
+        if len(safe_key) <= 48:
+            suffix = safe_key
+        else:
+            digest = hashlib.sha1(project_key.encode("utf-8")).hexdigest()[:12]
+            suffix = f"{safe_key[:35]}_{digest}"
+        return f"project_memory_{suffix}"
+
+    @staticmethod
+    def _read_git_remote(workspace_path):
+        for root, dirs, files in os.walk(workspace_path):
+            if ".git" in dirs:
+                config_path = os.path.join(root, ".git", "config")
+                if os.path.exists(config_path):
+                    try:
+                        with open(config_path, "r", encoding="utf-8", errors="ignore") as handle:
+                            config_content = handle.read()
+                        match = re.search(
+                            r'\[remote\s+"origin"\][\s\S]*?url\s*=\s*(.+)',
+                            config_content,
+                            re.IGNORECASE,
+                        )
+                        if match:
+                            return match.group(1).strip()
+                    except OSError:
+                        return None
+                dirs[:] = []
+        return None
+
+    @classmethod
+    def resolve_project_key(cls, owner_id, conversation_id, explicit_project_id=None):
+        if explicit_project_id:
+            return f"project:{explicit_project_id}"
+
+        if owner_id and conversation_id and current_app:
+            try:
+                from tools.file_system import get_workspace_path
+
+                workspace_path = get_workspace_path(conversation_id, owner_id)
+                remote_url = cls._read_git_remote(workspace_path)
+                if remote_url:
+                    digest = hashlib.sha1(remote_url.lower().encode("utf-8")).hexdigest()[:16]
+                    return f"repo:{digest}"
+            except Exception:
+                pass
+
+        return f"user-default:{owner_id}"
+
+    def set_project_memory_file(self, owner_id, conversation_id, project_id=None):
+        """Sets the project memory collection using a stable project key."""
+        if self.chroma_client and (conversation_id or project_id):
+            project_key = self.resolve_project_key(owner_id, conversation_id, explicit_project_id=project_id)
             self.project_collection = self.chroma_client.get_or_create_collection(
-                name=f"project_memory_{conversation_id}"
+                name=self._project_collection_name(project_key)
             )
+
+    @staticmethod
+    def _clean_content(value):
+        if not value:
+            return ""
+        value = re.sub(r"<think>[\s\S]*?</think>", "", value)
+        return " ".join(value.split()).strip()
+
+    def archive_conversation(self, conversation):
+        """Persist conversation turns into user memory for cross-chat recall."""
+        if not self.user_collection or not conversation:
+            return 0
+
+        conversation_id = conversation.get("id")
+        archived = 0
+        for index, message in enumerate(conversation.get("messages", [])):
+            role = message.get("role")
+            if role not in {"user", "assistant"}:
+                continue
+
+            content = self._clean_content(message.get("content"))
+            if not content:
+                continue
+
+            memory_id = f"conversation:{conversation_id}:{index}:{role}"
+            self.user_collection.upsert(
+                ids=[memory_id],
+                documents=[f"{role}: {content}"],
+                metadatas=[{
+                    "key": memory_id,
+                    "timestamp": time.time(),
+                    "scope": "user",
+                    "type": "conversation_turn",
+                    "conversation_id": str(conversation_id),
+                    "role": role,
+                }]
+            )
+            archived += 1
+        return archived
 
     def remember(self, scope, key, value):
         """Saves a fact to vectorized memory."""

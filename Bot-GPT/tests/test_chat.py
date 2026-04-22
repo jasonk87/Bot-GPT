@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, call
 from app import socketio
 import chat
 import os
+from flask_login import login_user
 from models import save_conversation, add_to_conversation_index, add_user_to_conversation_index
 
 def test_chat_message_handling(socketio_test_client, test_user, mocker):
@@ -131,3 +132,22 @@ def test_load_conversation_includes_active_run(socketio_test_client, test_user, 
     assert payloads[0]['active_run']['partial_response'] == 'Still working'
 
     chat.AGENT_SESSIONS.pop(convo_id, None)
+
+
+def test_handle_ai_response_archives_memory(app, test_user, mocker):
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream")
+    mock_stream.return_value = iter(["Cross-session memory should persist."])
+    mocker.patch("chat.update_conversation_title")
+    memory_cls = mocker.patch("memory.MemoryManager")
+
+    with app.test_request_context("/"):
+        login_user(test_user)
+        events = list(chat.handle_ai_response({
+            "messages": json.dumps([{"role": "user", "content": "Please remember I prefer concise answers."}]),
+            "model": "test-model",
+            "conversation_id": "",
+        }))
+
+    done_events = [event for event in events if event.get("type") == "done"]
+    assert len(done_events) == 1
+    memory_cls.return_value.archive_conversation.assert_called_once()

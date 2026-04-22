@@ -7,12 +7,19 @@ from extensions import socketio
 # Import blueprints after initializing socketio to avoid circular imports
 # (Actually, standard practice is to import blueprints inside create_app or after socketio definition)
 
-def create_app(config_name=None):
+def create_app(config_name=None, instance_path=None):
     """Create and configure an instance of the Flask application."""
     if config_name is None:
         config_name = os.getenv("FLASK_CONFIG", "default")
 
-    app = Flask(__name__, instance_relative_config=True, template_folder="templates")
+    flask_kwargs = {
+        "instance_relative_config": True,
+        "template_folder": "templates",
+    }
+    if instance_path is not None:
+        flask_kwargs["instance_path"] = os.path.abspath(instance_path)
+
+    app = Flask(__name__, **flask_kwargs)
 
     # --- Configuration ---
     app.config.from_object(config[config_name])
