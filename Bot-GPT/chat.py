@@ -7,7 +7,14 @@ from extensions import socketio
 from models import _load_users, _save_users
 from prompts import PERSONAS
 from shared_paths import get_users_path
-from tools import handle_tool_call, call_chat_stream, write_file
+from tools import (
+    handle_tool_call,
+    call_chat_stream,
+    write_file,
+    normalize_and_prepare_tool_calls,
+    execute_normalized_tool_call,
+    execute_tool_call_batch,
+)
 from utils import PLAN_APPROVALS, sanitize_json
 
 from chat_state import AGENT_SESSIONS, serialize_agent_session
@@ -31,6 +38,9 @@ def handle_ai_response(data):
         initialize_chat=initialize_chat,
         call_stream=call_ollama_chat_stream,
         handle_tool_call=handle_tool_call,
+        normalize_and_prepare_tool_calls=normalize_and_prepare_tool_calls,
+        execute_normalized_tool_call=execute_normalized_tool_call,
+        execute_tool_call_batch=execute_tool_call_batch,
         sanitize_json=sanitize_json,
         agent_sessions=AGENT_SESSIONS,
         update_conversation_title=update_conversation_title,
