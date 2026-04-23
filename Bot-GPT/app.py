@@ -4,6 +4,7 @@ from flask_login import LoginManager
 from config import config
 from extensions import socketio
 from health_checks import dependency_health_report
+from task_runner import BackgroundTaskRunner
 
 # Import blueprints after initializing socketio to avoid circular imports
 # (Actually, standard practice is to import blueprints inside create_app or after socketio definition)
@@ -93,6 +94,16 @@ def create_app(config_name=None, instance_path=None):
             "Required dependencies missing: %s",
             ", ".join(dep_report["missing_required"]),
         )
+
+    if app.config.get("BACKGROUND_TASKS_ENABLED", True):
+        runner = BackgroundTaskRunner(
+            app,
+            socketio,
+            poll_interval_seconds=int(app.config.get("BACKGROUND_TASK_POLL_SECONDS", 5)),
+            max_concurrent_tasks=int(app.config.get("BACKGROUND_TASK_MAX_CONCURRENCY", 2)),
+        )
+        runner.start()
+        app.extensions["background_task_runner"] = runner
 
     return app
 

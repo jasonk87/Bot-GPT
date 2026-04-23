@@ -26,6 +26,11 @@ class Config:
     )
     GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
     GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID", "")
+    BACKGROUND_TASKS_ENABLED = True
+    BACKGROUND_TASK_POLL_SECONDS = 5
+    BACKGROUND_TASK_MAX_CONCURRENCY = 2
+    PROACTIVE_IDLE_THRESHOLD_SECONDS = 90
+    ADMIN_USER_IDS = [1]
 
 
 class DevelopmentConfig(Config):
@@ -60,6 +65,7 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
+    BACKGROUND_TASKS_ENABLED = False
 
 
 config = {
