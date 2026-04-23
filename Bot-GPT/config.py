@@ -26,6 +26,16 @@ class Config:
     )
     GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
     GOOGLE_CSE_ID = os.environ.get("GOOGLE_CSE_ID", "")
+    BACKGROUND_TASKS_ENABLED = True
+    BACKGROUND_TASK_POLL_SECONDS = 5
+    BACKGROUND_TASK_MAX_CONCURRENCY = 2
+    PROACTIVE_IDLE_THRESHOLD_SECONDS = 90
+    ADMIN_USER_IDS = [1]
+    TELEGRAM_ENABLED = os.environ.get("TELEGRAM_ENABLED", "0") == "1"
+    TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_POLL_INTERVAL = float(os.environ.get("TELEGRAM_POLL_INTERVAL", "2.0"))
+    TELEGRAM_PAIRING_EXPIRY = int(os.environ.get("TELEGRAM_PAIRING_EXPIRY", "300"))
+    TELEGRAM_DEFAULT_ROUTE = os.environ.get("TELEGRAM_DEFAULT_ROUTE", "stored")
 
 
 class DevelopmentConfig(Config):
@@ -60,6 +70,8 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
+    BACKGROUND_TASKS_ENABLED = False
+    TELEGRAM_ENABLED = False
 
 
 config = {

@@ -4,6 +4,8 @@ from flask_login import LoginManager
 from config import config
 from extensions import socketio
 from health_checks import dependency_health_report
+from task_runner import BackgroundTaskRunner
+from telegram_bot import TelegramBotBridge
 
 # Import blueprints after initializing socketio to avoid circular imports
 # (Actually, standard practice is to import blueprints inside create_app or after socketio definition)
@@ -43,6 +45,7 @@ def create_app(config_name=None, instance_path=None):
         ping_timeout=120,    # Allow longer pauses for localized LLM thinking/reasoning
         ping_interval=25
     )
+    app.extensions["socketio"] = socketio
 
     login_manager = LoginManager()
     login_manager.init_app(app)
@@ -93,6 +96,25 @@ def create_app(config_name=None, instance_path=None):
             "Required dependencies missing: %s",
             ", ".join(dep_report["missing_required"]),
         )
+
+    if app.config.get("BACKGROUND_TASKS_ENABLED", True):
+        runner = BackgroundTaskRunner(
+            app,
+            socketio,
+            poll_interval_seconds=int(app.config.get("BACKGROUND_TASK_POLL_SECONDS", 5)),
+            max_concurrent_tasks=int(app.config.get("BACKGROUND_TASK_MAX_CONCURRENCY", 2)),
+        )
+        runner.start()
+        app.extensions["background_task_runner"] = runner
+
+    if app.config.get("TELEGRAM_ENABLED", False) and app.config.get("TELEGRAM_BOT_TOKEN"):
+        telegram_bridge = TelegramBotBridge(
+            app,
+            token=app.config["TELEGRAM_BOT_TOKEN"],
+            poll_interval=float(app.config.get("TELEGRAM_POLL_INTERVAL", 2.0)),
+        )
+        telegram_bridge.start()
+        app.extensions["telegram_bridge"] = telegram_bridge
 
     return app
 
