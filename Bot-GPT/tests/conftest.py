@@ -49,7 +49,8 @@ def logged_in_client(client, test_user):
 @pytest.fixture
 def socketio_test_client(app, logged_in_client):
     """A Socket.IO test client."""
-    from flask_socketio import SocketIOTestClient
+    flask_socketio = pytest.importorskip("flask_socketio")
+    SocketIOTestClient = flask_socketio.SocketIOTestClient
     return SocketIOTestClient(app, socketio=_socketio, flask_test_client=logged_in_client)
 
 class SimpleMocker:
