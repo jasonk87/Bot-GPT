@@ -8,6 +8,8 @@ import re
 import inspect
 import json
 import time
+from dataclasses import dataclass
+from typing import Any, Dict, List
 from flask import current_app
 from extensions import socketio
 
@@ -446,98 +448,235 @@ def ask_coder(task_description, user=None, user_id=None):
         return f"Error calling Coder agent: {e}"
 
 
+@dataclass(frozen=True)
+class ToolDefinition:
+    name: str
+    description: str
+    parameter_schema: Dict[str, str]
+    required_fields: List[str]
+    optional_fields: List[str]
+    allow_unknown_fields: bool
+    handler: Any
 
-def handle_tool_call(tool_call, conversation, user):
-    """Handles a tool call from the AI."""
-    tool_name = tool_call.get("tool")
-    raw_params = tool_call.get("parameters", {})
-    file_creation_tool_used = False
 
-    tool_map = {
-        "web_search": web_search,
-        "list_files": list_files,
-        "read_file": read_file,
-        "write_file": write_file,
-        "git_clone": git_clone,
-        "git_pull": git_pull,
-        "git_push": git_push,
-        "git_commit": git_commit,
-        "git_add": git_add,
-        "get_db_schema": get_db_schema,
-        "run_sql_query": run_sql_query,
-        "run_shell_command": run_shell_command,
-        "execute_python": execute_python,
-        "read_codebase": read_codebase,
-        "implement_and_test_code": implement_and_test_code,
-        "pip": pip,
-        "index_workspace": index_workspace,
-        "query_workspace": query_workspace,
-        "ask_debugger": ask_debugger,
-        "ask_coder": ask_coder,
-        "create_and_open_canvas": create_and_open_canvas,
-        "set_current_plan_step": set_current_plan_step,
-        "set_plan": set_plan,
-        "update_task_status": update_task_status,
-        "list_core_files": list_core_files,
-        "read_core_file": read_core_file,
-        "capture_screen": capture_screen,
-        "remember": remember,
-        "recall": recall,
-        "forget": forget,
+@dataclass
+class NormalizedToolCall:
+    tool_name: str
+    raw_params: Any
+    normalized_params: Dict[str, Any]
+    validation_status: str
+    validation_errors: List[str]
+    source_metadata: Dict[str, Any]
+
+
+def _build_tool_registry():
+    return {
+        "web_search": ToolDefinition("web_search", "Search the web", {"query": "str"}, ["query"], [], False, web_search),
+        "list_files": ToolDefinition("list_files", "List files", {}, [], [], False, list_files),
+        "read_file": ToolDefinition("read_file", "Read a file", {"path": "str"}, ["path"], [], False, read_file),
+        "write_file": ToolDefinition("write_file", "Write a file", {"path": "str", "content": "str"}, ["path", "content"], [], False, write_file),
+        "git_clone": ToolDefinition("git_clone", "Clone a repository", {"repo_url": "str"}, ["repo_url"], ["target_folder"], False, git_clone),
+        "git_pull": ToolDefinition("git_pull", "Pull from git", {}, [], ["branch"], False, git_pull),
+        "git_push": ToolDefinition("git_push", "Push to git", {}, [], ["branch"], False, git_push),
+        "git_commit": ToolDefinition("git_commit", "Commit to git", {"message": "str"}, ["message"], [], False, git_commit),
+        "git_add": ToolDefinition("git_add", "Stage files", {"pathspec": "str"}, ["pathspec"], [], False, git_add),
+        "get_db_schema": ToolDefinition("get_db_schema", "Get DB schema", {}, [], [], False, get_db_schema),
+        "run_sql_query": ToolDefinition("run_sql_query", "Run SQL", {"query": "str"}, ["query"], [], False, run_sql_query),
+        "run_shell_command": ToolDefinition("run_shell_command", "Run shell command", {"command": "str"}, ["command"], ["timeout"], False, run_shell_command),
+        "execute_python": ToolDefinition("execute_python", "Execute python", {"path": "str"}, ["path"], ["timeout", "run_in_background"], False, execute_python),
+        "read_codebase": ToolDefinition("read_codebase", "Read codebase", {}, [], ["max_files", "file_extensions"], False, read_codebase),
+        "implement_and_test_code": ToolDefinition("implement_and_test_code", "Self-healing coding flow", {"task_description": "str"}, ["task_description"], [], False, implement_and_test_code),
+        "pip": ToolDefinition("pip", "Install a pip package", {"package_name": "str"}, ["package_name"], [], False, pip),
+        "index_workspace": ToolDefinition("index_workspace", "Index workspace", {}, [], [], False, index_workspace),
+        "query_workspace": ToolDefinition("query_workspace", "Query workspace index", {"query": "str"}, ["query"], [], False, query_workspace),
+        "ask_debugger": ToolDefinition("ask_debugger", "Delegate debugging", {"error_message": "str"}, ["error_message"], [], False, ask_debugger),
+        "ask_coder": ToolDefinition("ask_coder", "Delegate coding", {"task_description": "str"}, ["task_description"], [], False, ask_coder),
+        "create_and_open_canvas": ToolDefinition("create_and_open_canvas", "Create canvas file", {"filename": "str", "content": "str"}, ["filename", "content"], [], False, create_and_open_canvas),
+        "set_current_plan_step": ToolDefinition("set_current_plan_step", "Plan step update", {"step_number": "int", "step_description": "str"}, ["step_number", "step_description"], [], False, set_current_plan_step),
+        "set_plan": ToolDefinition("set_plan", "Set plan", {"steps": "list"}, ["steps"], ["requires_approval"], False, set_plan),
+        "update_task_status": ToolDefinition("update_task_status", "Task status update", {"step_index": "int", "status": "str"}, ["step_index", "status"], ["message"], False, update_task_status),
+        "list_core_files": ToolDefinition("list_core_files", "List core files", {}, [], [], False, list_core_files),
+        "read_core_file": ToolDefinition("read_core_file", "Read core file", {"path": "str"}, ["path"], [], False, read_core_file),
+        "capture_screen": ToolDefinition("capture_screen", "Capture screenshot", {}, [], [], False, capture_screen),
+        "remember": ToolDefinition("remember", "Save memory", {"scope": "str", "key": "str", "value": "str"}, ["scope", "key", "value"], [], False, remember),
+        "recall": ToolDefinition("recall", "Load memory", {"scope": "str", "key": "str"}, ["scope", "key"], [], False, recall),
+        "forget": ToolDefinition("forget", "Delete memory", {"scope": "str", "key": "str"}, ["scope", "key"], [], False, forget),
     }
 
-    if tool_name in tool_map:
-        logger.info("tool_dispatch tool=%s conversation_id=%s", tool_name, conversation.get("id"))
-        if tool_name in ["create_and_open_canvas", "write_file"]:
-            file_creation_tool_used = True
-        tool_func = tool_map[tool_name]
-        context_params = {
-            "conversation_id": conversation["id"],
-            "owner_id": conversation["owner_id"],
-            "project_id": conversation.get("project_id"),
-            "user_id": user.id,
-            "user_data_dir": current_app.config["USER_DATA_DIR"],
-            "ollama_host": current_app.config.get("OLLAMA_HOST"), # Keeping distinct for now but could be removed
-            "user": user,
-            "api_key": current_app.config["GOOGLE_API_KEY"],
-            "cse_id": current_app.config["GOOGLE_CSE_ID"],
+
+TOOL_REGISTRY = _build_tool_registry()
+
+
+def _type_matches(expected_type, value):
+    expected = {
+        "str": str,
+        "int": int,
+        "float": (int, float),
+        "bool": bool,
+        "list": list,
+        "dict": dict,
+    }.get(expected_type)
+    if expected is None:
+        return True
+    return isinstance(value, expected)
+
+
+def normalize_tool_call(candidate_tool_call, source_metadata=None):
+    source_metadata = source_metadata or {}
+    tool_name = candidate_tool_call.get("tool")
+    raw_params = candidate_tool_call.get("parameters", {})
+    validation_errors = []
+
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        validation_errors.append("Invalid tool name.")
+        return NormalizedToolCall("", raw_params, {}, "invalid", validation_errors, source_metadata)
+    tool_name = tool_name.strip()
+
+    definition = TOOL_REGISTRY.get(tool_name)
+    if definition is None:
+        validation_errors.append(f"Unknown tool '{tool_name}'.")
+        return NormalizedToolCall(tool_name, raw_params, {}, "invalid", validation_errors, source_metadata)
+
+    if not isinstance(raw_params, dict):
+        validation_errors.append("Tool parameters must be an object.")
+        return NormalizedToolCall(tool_name, raw_params, {}, "invalid", validation_errors, source_metadata)
+
+    if not definition.allow_unknown_fields:
+        unknown_keys = sorted(set(raw_params.keys()) - set(definition.parameter_schema.keys()))
+        if unknown_keys:
+            validation_errors.append(f"Unknown parameter(s): {', '.join(unknown_keys)}.")
+
+    for required_key in definition.required_fields:
+        if required_key not in raw_params:
+            validation_errors.append(f"Missing required parameter '{required_key}'.")
+
+    normalized_params = {}
+    for key, value in raw_params.items():
+        if key not in definition.parameter_schema:
+            continue
+        expected_type = definition.parameter_schema[key]
+        if not _type_matches(expected_type, value):
+            validation_errors.append(
+                f"Invalid type for '{key}': expected {expected_type}, got {type(value).__name__}."
+            )
+            continue
+        normalized_params[key] = value
+
+    if validation_errors:
+        return NormalizedToolCall(tool_name, raw_params, normalized_params, "invalid", validation_errors, source_metadata)
+    return NormalizedToolCall(tool_name, raw_params, normalized_params, "valid", [], source_metadata)
+
+
+def dedupe_normalized_tool_calls(normalized_calls):
+    deduped = []
+    seen = set()
+    for normalized in normalized_calls:
+        fingerprint = (
+            normalized.tool_name,
+            json.dumps(normalized.normalized_params, sort_keys=True, separators=(",", ":")),
+        )
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        deduped.append(normalized)
+    return deduped
+
+
+def normalize_and_prepare_tool_calls(candidate_tool_calls):
+    normalized = [
+        normalize_tool_call(candidate, source_metadata={"index": idx})
+        for idx, candidate in enumerate(candidate_tool_calls)
+    ]
+    return dedupe_normalized_tool_calls(normalized)
+
+
+def execute_normalized_tool_call(normalized_tool_call, conversation, user):
+    if not isinstance(normalized_tool_call, NormalizedToolCall):
+        return {
+            "tool_name": None,
+            "status": "error",
+            "result": None,
+            "error_type": "protocol_error",
+            "error_message": "Execution requires a NormalizedToolCall object.",
+            "retryable": False,
+            "file_creation_tool_used": False,
         }
 
-        # If the tool operates on the workspace, it must use the owner's ID
-        # to construct the correct path, not the current user's ID.
-        workspace_tools = [
-            "list_files",
-            "read_file",
-            "read_codebase",
-            "write_file",
-            "execute_python",
-            "index_workspace",
-            "query_workspace",
-            "create_and_open_canvas",
-            "list_directory_tree",
-            "git_clone",
-            "git_pull",
-            "git_push",
-            "git_commit",
-            "git_add",
-            "run_shell_command",
-        ]
-        if tool_name in workspace_tools:
-            context_params["user_id"] = conversation["owner_id"]
+    if normalized_tool_call.validation_status != "valid":
+        return {
+            "tool_name": normalized_tool_call.tool_name,
+            "status": "error",
+            "result": None,
+            "error_type": "validation_error",
+            "error_message": "; ".join(normalized_tool_call.validation_errors),
+            "retryable": False,
+            "file_creation_tool_used": False,
+        }
 
+    tool_name = normalized_tool_call.tool_name
+    definition = TOOL_REGISTRY.get(tool_name)
+    file_creation_tool_used = tool_name in ["create_and_open_canvas", "write_file"]
+    tool_func = definition.handler
+    context_params = {
+        "conversation_id": conversation["id"],
+        "owner_id": conversation["owner_id"],
+        "project_id": conversation.get("project_id"),
+        "user_id": user.id,
+        "user_data_dir": current_app.config["USER_DATA_DIR"],
+        "ollama_host": current_app.config.get("OLLAMA_HOST"),
+        "user": user,
+        "api_key": current_app.config["GOOGLE_API_KEY"],
+        "cse_id": current_app.config["GOOGLE_CSE_ID"],
+    }
+
+    workspace_tools = [
+        "list_files", "read_file", "read_codebase", "write_file", "execute_python",
+        "index_workspace", "query_workspace", "create_and_open_canvas", "list_directory_tree",
+        "git_clone", "git_pull", "git_push", "git_commit", "git_add", "run_shell_command",
+    ]
+    if tool_name in workspace_tools:
+        context_params["user_id"] = conversation["owner_id"]
+
+    try:
         tool_params = {}
         sig = inspect.signature(tool_func)
         for param_name in sig.parameters:
-            if param_name in raw_params:
-                tool_params[param_name] = raw_params[param_name]
+            if param_name in normalized_tool_call.normalized_params:
+                tool_params[param_name] = normalized_tool_call.normalized_params[param_name]
             elif param_name in context_params:
                 tool_params[param_name] = context_params[param_name]
 
-        tool_result = tool_func(**tool_params)
+        logger.info("tool_dispatch tool=%s conversation_id=%s", tool_name, conversation.get("id"))
+        result = tool_func(**tool_params)
         logger.info("tool_dispatch_done tool=%s conversation_id=%s", tool_name, conversation.get("id"))
-        return tool_result, file_creation_tool_used
-    else:
-        raise ValueError(f"Tool '{tool_name}' not found.")
+        return {
+            "tool_name": tool_name,
+            "status": "success",
+            "result": result,
+            "error_type": None,
+            "error_message": None,
+            "retryable": False,
+            "file_creation_tool_used": file_creation_tool_used,
+        }
+    except Exception as exc:
+        return {
+            "tool_name": tool_name,
+            "status": "error",
+            "result": None,
+            "error_type": "execution_error",
+            "error_message": str(exc),
+            "retryable": False,
+            "file_creation_tool_used": file_creation_tool_used,
+        }
+
+
+def handle_tool_call(tool_call, conversation, user):
+    """Compatibility wrapper for existing call sites."""
+    normalized = normalize_tool_call(tool_call)
+    execution_result = execute_normalized_tool_call(normalized, conversation, user)
+    if execution_result["status"] == "error":
+        raise ValueError(execution_result["error_message"])
+    return execution_result["result"], execution_result["file_creation_tool_used"]
 
 __all__ = [
     # from submodules
@@ -574,6 +713,12 @@ __all__ = [
     "ask_debugger",
     "ask_coder",
     "call_chat_stream",
+    "TOOL_REGISTRY",
+    "NormalizedToolCall",
+    "normalize_tool_call",
+    "normalize_and_prepare_tool_calls",
+    "dedupe_normalized_tool_calls",
+    "execute_normalized_tool_call",
     "handle_tool_call",
     "remember",
     "recall",
