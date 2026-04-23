@@ -45,6 +45,8 @@ def initialize_chat(data):
             "project_id": data.get("project_id"),
             "participants": [{"user_id": owner_id, "role": "owner"}],
             "messages": [],
+            "artifacts": [],
+            "last_active_artifact_id": None,
             "created_at": time.time(),
         }
         save_conversation(conversation_path, conversation)

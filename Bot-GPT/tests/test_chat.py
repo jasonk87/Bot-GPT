@@ -95,6 +95,40 @@ def test_write_file_emits_open_canvas(socketio_test_client, test_user, mocker, a
     assert open_canvas_events[0]['filename'] == 'test.txt'
 
 
+def test_tool_call_parser_handles_mixed_prose_and_nested_json(socketio_test_client, test_user, mocker, app):
+    """Tool call extraction should work even with prose and nested braces."""
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream")
+    mock_handle_tool = mocker.patch("chat.handle_tool_call")
+    mocker.patch("chat.update_conversation_title")
+
+    tool_call_response = (
+        "I will gather context first.\n\n"
+        "```json\n"
+        "{\"tool\":\"write_file\",\"parameters\":{\"path\":\"notes.txt\",\"content\":\"{\\\"nested\\\":{\\\"ok\\\":true}}\"}}\n"
+        "```\n"
+        "Then I will summarize."
+    )
+    mock_stream.side_effect = [iter([tool_call_response]), iter(["Done."])]
+    mock_handle_tool.return_value = ({"status": "file_written", "path": "notes.txt"}, True)
+
+    with app.app_context():
+        socketio_test_client.emit('chat_message', {
+            'messages': json.dumps([{'role': 'user', 'content': 'write notes'}]),
+            'model': 'test-model',
+            'conversation_id': ''
+        })
+
+    received = socketio_test_client.get_received()
+    tool_call_events = [
+        args['args'][0] for args in received
+        if args['name'] == 'ai_response' and args['args'][0].get('type') == 'tool_call'
+    ]
+
+    assert len(tool_call_events) == 1
+    assert tool_call_events[0]['name'] == 'write_file'
+    assert tool_call_events[0]['params']['path'] == 'notes.txt'
+
+
 def test_load_conversation_includes_active_run(socketio_test_client, test_user, app):
     """Test that reloading a conversation includes active run state for the UI."""
     convo_id = "active_run_convo"
@@ -107,6 +141,14 @@ def test_load_conversation_includes_active_run(socketio_test_client, test_user, 
             'title': 'Running Chat',
             'participants': [{'user_id': test_user.id, 'role': 'owner'}],
             'messages': [{'role': 'user', 'content': 'keep going'}],
+            'artifacts': [{
+                'artifact_id': 'utils.py',
+                'conversation_id': convo_id,
+                'artifact_type': 'code',
+                'last_updated_at': 1710000000,
+                'title': 'utils.py',
+            }],
+            'last_active_artifact_id': 'utils.py',
         })
         index_path = os.path.join(app.instance_path, 'conversation_index.json')
         add_to_conversation_index(index_path, convo_id, test_user.id)
@@ -130,6 +172,8 @@ def test_load_conversation_includes_active_run(socketio_test_client, test_user, 
     assert len(payloads) == 1
     assert payloads[0]['active_run']['is_running'] is True
     assert payloads[0]['active_run']['partial_response'] == 'Still working'
+    assert payloads[0]['last_active_artifact_id'] == 'utils.py'
+    assert payloads[0]['artifacts'][0]['artifact_id'] == 'utils.py'
 
     chat.AGENT_SESSIONS.pop(convo_id, None)
 

@@ -17,6 +17,13 @@ from shared_paths import (
     get_conversation_index_path,
     get_user_conversation_index_path,
 )
+from artifacts import (
+    list_artifacts_for_conversation,
+    set_last_active_artifact,
+    upsert_artifact_metadata,
+    rename_artifact_metadata,
+    remove_artifact_metadata,
+)
 from tools.file_system import get_workspace_path
 from tools import (
     get_file_tree,
@@ -98,6 +105,11 @@ def handle_workspace_file():
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
+            upsert_artifact_metadata(
+                owner_id,
+                conversation_id,
+                path,
+            )
             socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=str(conversation_id))
             return jsonify({"success": True, "message": f"File '{path}' saved."})
         except Exception as e:
@@ -109,6 +121,7 @@ def handle_workspace_file():
         try:
             if os.path.isfile(file_path):
                 os.remove(file_path)
+                remove_artifact_metadata(owner_id, conversation_id, path)
             elif os.path.isdir(file_path):
                 shutil.rmtree(file_path)
             else:
@@ -277,7 +290,9 @@ def upload_file():
             "owner_id": owner_id,
             "title": "New Chat",
             "participants": [{'user_id': owner_id, 'role': 'owner'}],
-            "messages": []
+            "messages": [],
+            "artifacts": [],
+            "last_active_artifact_id": None,
         }
         convo_path = _get_conversation_path(owner_id, conversation_id)
         save_conversation(convo_path, conversation_data)
@@ -295,6 +310,7 @@ def upload_file():
         if file and file.filename:
             filename = secure_filename(file.filename)
             file.save(os.path.join(workspace_path, filename))
+            upsert_artifact_metadata(owner_id, conversation_id, filename)
             filenames.append(filename)
 
     file_list_str = "\\n- ".join(filenames)
@@ -363,5 +379,32 @@ def rename_workspace_item():
 
     os.makedirs(os.path.dirname(destination_path), exist_ok=True)
     shutil.move(source_path, destination_path)
+    rename_artifact_metadata(owner_id, conversation_id, old_path, new_path)
     socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=str(conversation_id))
     return jsonify({"success": True, "message": f"Renamed '{old_path}' to '{new_path}'."})
+
+
+@workspace.route("/api/conversation/<conversation_id>/artifacts", methods=["GET", "POST"])
+@login_required
+def conversation_artifacts(conversation_id):
+    owner_id = find_conversation_owner(conversation_id)
+    if not owner_id:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
+    if not conversation_data or not check_permission(conversation_data, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    if request.method == "POST":
+        data = request.get_json() or {}
+        artifact_id = data.get("artifact_id")
+        if artifact_id:
+            set_last_active_artifact(owner_id, conversation_id, artifact_id)
+        return jsonify({"success": True})
+
+    artifacts = list_artifacts_for_conversation(owner_id, conversation_id)
+    return jsonify({
+        "artifacts": artifacts,
+        "last_active_artifact_id": conversation_data.get("last_active_artifact_id"),
+    })

@@ -1,6 +1,7 @@
 import os
 from flask import current_app
 from extensions import socketio
+from artifacts import upsert_artifact_metadata
 
 
 def get_workspace_path(conversation_id, owner_id):
@@ -138,6 +139,7 @@ def write_file(path, content, conversation_id=None, user_id=None):
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
+        upsert_artifact_metadata(user_id, conversation_id, path)
 
         # After successfully writing the file, emit an event to the room
         socketio.emit(
