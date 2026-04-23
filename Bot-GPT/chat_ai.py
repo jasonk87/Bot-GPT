@@ -203,12 +203,80 @@ def process_final_answer(conversation, canvas_mode, write_file):
     yield {"type": "final_answer", "content": final_answer_content}
 
 
+def _extract_code_fences(content):
+    fences = []
+    cursor = 0
+    while True:
+        start = content.find("```", cursor)
+        if start == -1:
+            break
+        language_end = content.find("\n", start + 3)
+        if language_end == -1:
+            break
+        language = content[start + 3:language_end].strip().lower()
+        end = content.find("```", language_end + 1)
+        if end == -1:
+            break
+        fences.append((language, content[language_end + 1:end]))
+        cursor = end + 3
+    return fences
+
+
+def _decode_json_objects(text):
+    decoder = json.JSONDecoder()
+    objects = []
+    cursor = 0
+    while True:
+        start = text.find("{", cursor)
+        if start == -1:
+            break
+        try:
+            parsed, parsed_len = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            cursor = start + 1
+            continue
+        objects.append(parsed)
+        cursor = start + parsed_len
+    return objects
+
+
+def _extract_tool_calls(full_response_content, sanitize_json):
+    parsed_tool_calls = []
+    seen = set()
+    candidate_regions = [body for language, body in _extract_code_fences(full_response_content) if language in ("", "json")]
+
+    if not candidate_regions:
+        candidate_regions = [full_response_content]
+
+    for region in candidate_regions:
+        sanitized = sanitize_json(region)
+        for parsed in _decode_json_objects(sanitized):
+            if not isinstance(parsed, dict):
+                continue
+            if not isinstance(parsed.get("tool"), str):
+                continue
+            if "parameters" not in parsed:
+                parsed["parameters"] = {}
+            elif not isinstance(parsed.get("parameters"), dict):
+                continue
+
+            dedupe_key = json.dumps(parsed, sort_keys=True)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            parsed_tool_calls.append(parsed)
+
+    return parsed_tool_calls
+
+
 def handle_ai_response(
     data,
     *,
     initialize_chat,
     call_stream,
     handle_tool_call,
+    normalize_and_prepare_tool_calls,
+    execute_normalized_tool_call,
     sanitize_json,
     agent_sessions,
     update_conversation_title,
@@ -284,30 +352,33 @@ def handle_ai_response(
                 yield {"type": "assistant_chunk", "content": trailing_delta}
             yield {"type": "assistant_end"}
 
-            tool_calls = re.findall(r"```json\s*(\{[\s\S]*?\})\s*```", full_response_content)
-            if not tool_calls:
+            tool_call_candidates = _extract_tool_calls(full_response_content, sanitize_json)
+            if not tool_call_candidates:
                 break
 
+            tool_calls = normalize_and_prepare_tool_calls(tool_call_candidates)
             aggregated_tool_results = []
-            for tool_call_str in tool_calls:
+            for tool_call in tool_calls:
                 tool_call_id = f"tool_{int(time.time() * 1000)}"
                 try:
-                    tool_call = json.loads(sanitize_json(tool_call_str))
-                    logger.info("chat_tool_call conversation_id=%s tool=%s", conversation["id"], tool_call.get("tool"))
+                    logger.info("chat_tool_call conversation_id=%s tool=%s", conversation["id"], tool_call.tool_name)
                     yield {
                         "type": "progress_update",
                         "stage": "executing",
-                        "label": f"Running tool: {tool_call.get('tool')}",
+                        "label": f"Running tool: {tool_call.tool_name}",
                         "ts": time.time(),
                     }
                     agent_sessions[conversation["id"]]["stage"] = "tool_call"
-                    agent_sessions[conversation["id"]]["tool_name"] = tool_call.get("tool")
-                    agent_sessions[conversation["id"]]["tool_params"] = tool_call.get("parameters")
-                    yield {"type": "tool_call", "tool_call_id": tool_call_id, "name": tool_call.get("tool"), "params": tool_call.get("parameters")}
+                    agent_sessions[conversation["id"]]["tool_name"] = tool_call.tool_name
+                    agent_sessions[conversation["id"]]["tool_params"] = tool_call.normalized_params
+                    yield {"type": "tool_call", "tool_call_id": tool_call_id, "name": tool_call.tool_name, "params": tool_call.normalized_params}
 
-                    tool_result, _ = handle_tool_call(tool_call, conversation, current_user)
+                    execution_result = execute_normalized_tool_call(tool_call, conversation, current_user)
+                    if execution_result.get("status") == "error":
+                        raise ValueError(execution_result.get("error_message"))
+                    tool_result = execution_result.get("result")
                     if isinstance(tool_result, dict):
-                        if tool_result.get("status") == "canvas_created" or (tool_result.get("status") == "file_written" and tool_call.get("tool") in ["create_and_open_canvas", "write_file"]):
+                        if tool_result.get("status") == "canvas_created" or (tool_result.get("status") == "file_written" and tool_call.tool_name in ["create_and_open_canvas", "write_file"]):
                             yield {"type": "open_canvas", "filename": tool_result.get("path") or tool_result.get("filename")}
                         elif tool_result.get("status") == "file_written":
                             yield {"type": "file_updated", "path": tool_result.get("path"), "content": tool_result.get("content")}

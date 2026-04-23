@@ -88,6 +88,8 @@ def test_handle_ai_response_emits_response_mode_and_injects_depth_prompt(mocker)
             initialize_chat=mock_init,
             call_stream=fake_call_stream,
             handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=lambda calls: [],
+            execute_normalized_tool_call=MagicMock(),
             sanitize_json=lambda s: s,
             agent_sessions={},
             update_conversation_title=mock_update_title,
