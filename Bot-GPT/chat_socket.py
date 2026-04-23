@@ -5,7 +5,17 @@ import time
 
 from flask import current_app, request
 from flask_login import current_user, login_required
-from flask_socketio import emit, join_room, leave_room
+try:
+    from flask_socketio import emit, join_room, leave_room
+except ImportError:  # pragma: no cover - fallback when socketio dependency is absent
+    def emit(*args, **kwargs):
+        return None
+
+    def join_room(*args, **kwargs):
+        return None
+
+    def leave_room(*args, **kwargs):
+        return None
 
 from models import (
     load_conversation,

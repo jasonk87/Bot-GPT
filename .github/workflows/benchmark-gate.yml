@@ -1,0 +1,40 @@
+name: Benchmark Gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["main", "master"]
+
+jobs:
+  benchmark-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r Bot-GPT/requirements.txt
+
+      - name: Run benchmark gate (if configured)
+        env:
+          BENCHMARK_MODEL: ${{ secrets.BENCHMARK_MODEL }}
+          OLLAMA_HOST: ${{ secrets.OLLAMA_HOST }}
+          MIN_VERIFICATION_PASS_RATE: "0.85"
+          MIN_NEXT_STEP_RATE: "0.95"
+          MIN_KEYWORD_RECALL: "0.70"
+        run: |
+          if [ -z "${BENCHMARK_MODEL}" ]; then
+            echo "BENCHMARK_MODEL secret not set; skipping benchmark gate."
+            exit 0
+          fi
+          if [ -z "${OLLAMA_HOST}" ]; then
+            export OLLAMA_HOST="http://localhost:11434"
+          fi
+          bash Bot-GPT/eval/ci_benchmark_gate.sh

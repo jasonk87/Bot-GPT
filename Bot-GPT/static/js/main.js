@@ -22,7 +22,10 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     summarizeBtn, summaryModal, summaryContent, closeSummaryBtn,
     agentModeToggle, toolsDropdownBtn, toolsDropdownMenu,
     attachImageBtn, imageInput, imagePreviewContainer,
-    planToggleBtn, planPanel, planContent, planActions, approvePlanBtn, rejectPlanBtn;
+    planToggleBtn, planPanel, planContent, planActions, approvePlanBtn, rejectPlanBtn,
+    responseModeSelect, thoughtPanelDefaultToggle,
+    dependencyBanner, dependencyBannerText, dependencyBannerDismiss, dependencyBannerDetails,
+    dependencyDetailsModal, dependencyDetailsContent, closeDependencyDetailsBtn, copyDependencyDetailsBtn;
 
 const API_BASE = '/api';
 let conversationHistory = [];
@@ -42,10 +45,15 @@ let isCanvasMode = false;
 let currentAgentBubble = null;
 let fullAgentResponse = "";
 let currentResponseContent = "";
+let currentResponseMode = null;
+let selectedResponseModePreference = 'auto';
+let thoughtPanelExpandedByDefault = false;
 let openTabs = [];
 let activeTabIndex = -1;
 let conversationRunStates = {};
 let pendingNewConversationRun = null;
+let dependencyBannerDismissedForSession = false;
+let lastDependencyReport = null;
 
 function getCurrentConversationStorageKey() {
     return currentUsername ? `botgpt_current_conversation_id_${currentUsername}` : 'botgpt_current_conversation_id';
@@ -247,6 +255,16 @@ async function initializeApp(username) {
     rejectPlanBtn = document.getElementById('reject-plan-btn');
     toolsDropdownBtn = document.getElementById('tools-dropdown-btn');
     toolsDropdownMenu = document.getElementById('tools-dropdown-menu');
+    dependencyBanner = document.getElementById('dependency-banner');
+    dependencyBannerText = document.getElementById('dependency-banner-text');
+    dependencyBannerDismiss = document.getElementById('dependency-banner-dismiss');
+    dependencyBannerDetails = document.getElementById('dependency-banner-details');
+    dependencyDetailsModal = document.getElementById('dependency-details-modal');
+    dependencyDetailsContent = document.getElementById('dependency-details-content');
+    closeDependencyDetailsBtn = document.getElementById('close-dependency-details-btn');
+    copyDependencyDetailsBtn = document.getElementById('copy-dependency-details-btn');
+    responseModeSelect = document.getElementById('response-mode-select');
+    thoughtPanelDefaultToggle = document.getElementById('thought-panel-default-toggle');
 
     // Image Upload Elements
     attachImageBtn = document.getElementById('attach-image-btn');
@@ -270,6 +288,110 @@ async function initializeApp(username) {
             toolsDropdownMenu.classList.add('hidden');
         }
     });
+
+    const responseModeStorageKey = currentUsername ? `botgpt_response_mode_${currentUsername}` : 'botgpt_response_mode';
+    const thoughtPanelStorageKey = currentUsername ? `botgpt_thought_panel_expanded_${currentUsername}` : 'botgpt_thought_panel_expanded';
+    const dependencyBannerStorageKey = currentUsername ? `botgpt_dependency_banner_dismissed_${currentUsername}` : 'botgpt_dependency_banner_dismissed';
+    dependencyBannerDismissedForSession = sessionStorage.getItem(dependencyBannerStorageKey) === '1';
+    selectedResponseModePreference = localStorage.getItem(responseModeStorageKey) || 'auto';
+    thoughtPanelExpandedByDefault = localStorage.getItem(thoughtPanelStorageKey) === '1';
+    if (responseModeSelect) {
+        responseModeSelect.value = selectedResponseModePreference;
+        responseModeSelect.addEventListener('change', async () => {
+            selectedResponseModePreference = responseModeSelect.value || 'auto';
+            localStorage.setItem(responseModeStorageKey, selectedResponseModePreference);
+            try {
+                await fetch(`${API_BASE}/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ response_mode_preference: selectedResponseModePreference }),
+                });
+            } catch (error) {
+                console.error("Failed to save response mode preference:", error);
+            }
+        });
+    }
+    if (thoughtPanelDefaultToggle) {
+        thoughtPanelDefaultToggle.checked = thoughtPanelExpandedByDefault;
+        thoughtPanelDefaultToggle.addEventListener('change', async () => {
+            thoughtPanelExpandedByDefault = !!thoughtPanelDefaultToggle.checked;
+            localStorage.setItem(thoughtPanelStorageKey, thoughtPanelExpandedByDefault ? '1' : '0');
+            try {
+                await fetch(`${API_BASE}/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ thought_panel_expanded: thoughtPanelExpandedByDefault }),
+                });
+            } catch (error) {
+                console.error("Failed to save thought panel preference:", error);
+            }
+        });
+    }
+
+    if (dependencyBannerDismiss) {
+        dependencyBannerDismiss.addEventListener('click', () => {
+            dependencyBannerDismissedForSession = true;
+            sessionStorage.setItem(dependencyBannerStorageKey, '1');
+            if (dependencyBanner) {
+                dependencyBanner.classList.add('hidden');
+            }
+        });
+    }
+
+    if (dependencyBannerDetails && dependencyDetailsModal && dependencyDetailsContent) {
+        dependencyBannerDetails.addEventListener('click', () => {
+            const report = lastDependencyReport || {};
+            const required = report.required || {};
+            const optional = report.optional || {};
+            const missingRequired = report.missing_required || [];
+            const missingOptional = report.missing_optional || [];
+            const recommendations = report.recommendations || [];
+            dependencyDetailsContent.textContent = [
+                "Dependency Health Report",
+                "------------------------",
+                `Status: ${report.status || 'unknown'}`,
+                "",
+                `Missing required: ${missingRequired.length ? missingRequired.join(', ') : 'none'}`,
+                `Missing optional: ${missingOptional.length ? missingOptional.join(', ') : 'none'}`,
+                "",
+                "Required modules:",
+                JSON.stringify(required, null, 2),
+                "",
+                "Optional modules:",
+                JSON.stringify(optional, null, 2),
+                "",
+                "Recovery guidance:",
+                ...(recommendations.length
+                    ? recommendations.map((item) => `- ${item}`)
+                    : [
+                        "- Install missing required modules first (app stability).",
+                        "- Install optional modules to restore degraded features.",
+                    ]),
+            ].join('\n');
+            dependencyDetailsModal.classList.remove('hidden');
+        });
+    }
+
+    if (closeDependencyDetailsBtn && dependencyDetailsModal) {
+        closeDependencyDetailsBtn.addEventListener('click', () => {
+            dependencyDetailsModal.classList.add('hidden');
+        });
+    }
+
+    if (copyDependencyDetailsBtn && dependencyDetailsContent) {
+        copyDependencyDetailsBtn.addEventListener('click', async () => {
+            const original = copyDependencyDetailsBtn.textContent;
+            try {
+                await navigator.clipboard.writeText(dependencyDetailsContent.textContent || '');
+                copyDependencyDetailsBtn.textContent = 'Copied!';
+                setTimeout(() => { copyDependencyDetailsBtn.textContent = original; }, 1200);
+            } catch (error) {
+                console.error("Failed to copy dependency diagnostics:", error);
+                copyDependencyDetailsBtn.textContent = 'Copy failed';
+                setTimeout(() => { copyDependencyDetailsBtn.textContent = original; }, 1200);
+            }
+        });
+    }
 
 
     // --- Event Listeners for Plan Approval ---
@@ -322,11 +444,19 @@ async function initializeApp(username) {
                     planStepContainer.style.display = 'block';
                     planStepContent.textContent = `${data.step_number}. ${data.step_description}`;
                     break;
+                case 'progress_update':
+                    markConversationRunState(currentConversationId, { isRunning: true, stage: data.stage });
+                    updateProgressTimeline(currentAgentBubble, data);
+                    break;
                 case 'assistant_chunk':
                     // This is the main event for streaming content
                     markConversationRunState(currentConversationId, { isRunning: true, stage: 'answering' });
                     currentResponseContent += data.content;
                     updateBotBubble(currentAgentBubble, currentResponseContent, false);
+                    break;
+                case 'response_mode':
+                    currentResponseMode = data.mode || null;
+                    updateResponseModeBadge(currentAgentBubble, currentResponseMode);
                     break;
                 case 'assistant_end':
                     // This signals the end of a single thought-act-observe loop from the AI
@@ -658,6 +788,7 @@ async function initializeApp(username) {
 
     await populateModels();
     await loadUserSettings();
+    await loadDependencyHealthBanner();
 
     const savedConvoId = getSavedCurrentConversationId();
     if (savedConvoId) {
@@ -717,6 +848,41 @@ async function initializeApp(username) {
     }
 }
 
+async function loadDependencyHealthBanner() {
+    if (!dependencyBanner || !dependencyBannerText) return;
+    try {
+        const response = await fetch('/health/dependencies');
+        if (!response.ok) return;
+        const report = await response.json();
+        lastDependencyReport = report;
+        const missingRequired = report.missing_required || [];
+        const missingOptional = report.missing_optional || [];
+
+        if (!missingRequired.length && !missingOptional.length) {
+            dependencyBanner.classList.add('hidden');
+            dependencyBannerText.textContent = '';
+            return;
+        }
+
+        if (dependencyBannerDismissedForSession) {
+            dependencyBanner.classList.add('hidden');
+            return;
+        }
+
+        const parts = [];
+        if (missingRequired.length) {
+            parts.push(`Missing required: ${missingRequired.join(', ')}`);
+        }
+        if (missingOptional.length) {
+            parts.push(`Missing optional: ${missingOptional.join(', ')}`);
+        }
+        dependencyBannerText.textContent = `Dependency health warning — ${parts.join(' | ')}`;
+        dependencyBanner.classList.remove('hidden');
+    } catch (error) {
+        console.error("Failed to load dependency health:", error);
+    }
+}
+
 async function loadUserSettings() {
     try {
         const response = await fetch(`${API_BASE}/settings`);
@@ -735,6 +901,14 @@ async function loadUserSettings() {
         if (userModel) modelSelect.value = userModel;
         currentModelDisplay.textContent = userModel;
         personaSelect.value = settings.persona || 'default';
+        selectedResponseModePreference = settings.response_mode_preference || selectedResponseModePreference || 'auto';
+        if (responseModeSelect) {
+            responseModeSelect.value = selectedResponseModePreference;
+        }
+        thoughtPanelExpandedByDefault = !!settings.thought_panel_expanded;
+        if (thoughtPanelDefaultToggle) {
+            thoughtPanelDefaultToggle.checked = thoughtPanelExpandedByDefault;
+        }
 
     } catch (error) {
         console.error("Failed to load user settings:", error);
@@ -1437,6 +1611,7 @@ function sendMessage() {
     imagePreviewContainer.classList.add('hidden');
 
     currentAgentBubble = createBotMessageContainer();
+    currentResponseMode = null;
     currentResponseContent = ""; // Reset the content for the new message
     if (currentConversationId) {
         markConversationRunState(currentConversationId, { isRunning: true, agentMode, stage: 'thinking', partialResponse: '' });
@@ -1449,7 +1624,8 @@ function sendMessage() {
         model: userModel,
         conversation_id: currentConversationId || '',
         canvas_mode: isCanvasMode,
-        agent_mode: agentMode
+        agent_mode: agentMode,
+        response_mode_preference: selectedResponseModePreference
     };
     try {
         socket.emit('chat_message', params);
@@ -1477,10 +1653,11 @@ function createBotMessageContainer(animate = true) {
         <div class="flex-1 bot-bubble">
                     <div class="thinking-process-container" style="display: none;">
                         <div class="thinking-header">
-                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path></svg>
-                            <span>Thinking...</span>
+                            <svg class="w-4 h-4 mr-2 thought-toggle-icon transition-transform duration-150" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path></svg>
+                            <span class="flex-1">Thought process</span>
+                            <span class="thinking-meta text-xs text-gray-400">Hidden</span>
                         </div>
-                        <div class="thinking-content prose prose-invert max-w-none"></div>
+                        <div class="thinking-content prose prose-invert max-w-none" style="display: none;"></div>
                     </div>
             <div class="plan-step-container" style="display: none;">
                 <div class="plan-step-header">
@@ -1489,11 +1666,20 @@ function createBotMessageContainer(animate = true) {
                 </div>
                 <div class="plan-step-content"></div>
             </div>
+            <div class="progress-timeline-container" style="display: none;">
+                <button type="button" class="progress-timeline-header w-full text-left text-xs text-gray-300 mb-1 font-semibold flex items-center">
+                    <svg class="w-4 h-4 mr-2 progress-toggle-icon transition-transform duration-150" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l4-4 4 4m0 6l-4 4-4-4"></path></svg>
+                    <span class="flex-1">Progress</span>
+                    <span class="progress-meta text-xs text-gray-400">0 steps</span>
+                </button>
+                <ul class="progress-timeline text-xs text-gray-400 space-y-1" style="display: none;"></ul>
+            </div>
             <div class="agent-status">
                 <div class="thinking-indicator">
                     <span></span><span></span><span></span>
                 </div>
             </div>
+            <div class="response-mode-badge text-xs text-gray-400 mt-1 hidden"></div>
             <div class="tool-activity" style="display: none;">
                 <div class="tool-activity-header">
                     <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l-4 4-4-4 4-4"></path></svg>
@@ -1509,12 +1695,87 @@ function createBotMessageContainer(animate = true) {
 
             const thinkingHeader = botMessageWrapper.querySelector('.thinking-header');
             const thinkingContent = botMessageWrapper.querySelector('.thinking-content');
+            const thoughtToggleIcon = botMessageWrapper.querySelector('.thought-toggle-icon');
+            const thinkingMeta = botMessageWrapper.querySelector('.thinking-meta');
+            thinkingContent.style.display = thoughtPanelExpandedByDefault ? 'block' : 'none';
+            thoughtToggleIcon?.classList.toggle('rotate-180', thoughtPanelExpandedByDefault);
+            if (thinkingMeta) thinkingMeta.textContent = thoughtPanelExpandedByDefault ? 'Visible' : 'Hidden';
             thinkingHeader.addEventListener('click', () => {
-                thinkingContent.style.display = thinkingContent.style.display === 'none' ? 'block' : 'none';
+                const expanded = thinkingContent.style.display !== 'none';
+                thinkingContent.style.display = expanded ? 'none' : 'block';
+                thoughtToggleIcon?.classList.toggle('rotate-180', !expanded);
+                if (thinkingMeta) thinkingMeta.textContent = expanded ? 'Hidden' : 'Visible';
+            });
+            const progressHeader = botMessageWrapper.querySelector('.progress-timeline-header');
+            const progressTimeline = botMessageWrapper.querySelector('.progress-timeline');
+            const progressToggleIcon = botMessageWrapper.querySelector('.progress-toggle-icon');
+            progressHeader?.addEventListener('click', () => {
+                const expanded = progressTimeline.style.display !== 'none';
+                progressTimeline.style.display = expanded ? 'none' : 'block';
+                progressToggleIcon?.classList.toggle('rotate-180', !expanded);
             });
 
     smartScroll(chatContainer);
     return botMessageWrapper;
+}
+
+function updateResponseModeBadge(bubbleElement, mode) {
+    if (!bubbleElement) return;
+    const badge = bubbleElement.querySelector('.response-mode-badge');
+    if (!badge) return;
+
+    if (!mode) {
+        badge.classList.add('hidden');
+        badge.textContent = '';
+        return;
+    }
+
+    const normalized = String(mode).toLowerCase();
+    const label = normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    badge.textContent = `Response mode: ${label}`;
+    badge.classList.remove('hidden');
+}
+
+function updateProgressTimeline(bubbleElement, progressEvent) {
+    if (!bubbleElement || !progressEvent) return;
+    const container = bubbleElement.querySelector('.progress-timeline-container');
+    const timeline = bubbleElement.querySelector('.progress-timeline');
+    if (!container || !timeline) return;
+
+    container.style.display = 'block';
+    const label = progressEvent.label || progressEvent.stage || 'Working';
+    const stage = String(progressEvent.stage || '').toLowerCase();
+    const stageMarker = {
+        planning: '🧭',
+        executing: '⚙️',
+        verifying: '🧪',
+        finalizing: '✅',
+    }[stage] || '•';
+    const nextText = `${stageMarker} ${label}`;
+    const lastItem = timeline.lastElementChild;
+    if (lastItem && lastItem.textContent === nextText) {
+        return;
+    }
+
+    const item = document.createElement('li');
+    item.textContent = nextText;
+    item.className = {
+        planning: 'text-blue-300',
+        executing: 'text-yellow-300',
+        verifying: 'text-purple-300',
+        finalizing: 'text-green-300',
+    }[stage] || 'text-gray-400';
+    timeline.appendChild(item);
+    const progressMeta = bubbleElement.querySelector('.progress-meta');
+    if (progressMeta) {
+        const count = timeline.children.length;
+        progressMeta.textContent = `${count} step${count === 1 ? '' : 's'}`;
+    }
+
+    const maxItems = 8;
+    while (timeline.children.length > maxItems) {
+        timeline.removeChild(timeline.firstChild);
+    }
 }
 
 function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
@@ -1527,23 +1788,46 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     const toolActivity = bubbleElement.querySelector('.tool-activity');
 
     // Extract thought content
-    const thinkMatch = responseContent.match(/<think>([\s\S]*?)<\/think>/);
-    const thinkContent = thinkMatch ? thinkMatch[1] : null;
+    const thinkStart = responseContent.indexOf('<think>');
+    const thinkEnd = thinkStart >= 0 ? responseContent.indexOf('</think>', thinkStart + 7) : -1;
+    let thinkContent = null;
+    if (thinkStart >= 0) {
+        thinkContent = thinkEnd >= 0
+            ? responseContent.slice(thinkStart + 7, thinkEnd)
+            : responseContent.slice(thinkStart + 7);
+    }
 
     // Extract conversational content (everything outside think and tool blocks)
     const conversationalContent = responseContent
         .replace(/<think>[\s\S]*?<\/think>/g, '')
+        .replace(/<think>[\s\S]*$/g, '')
         .replace(/```json\s*([\s\S]*?)\s*```/g, '')
         .trim();
 
     if (thinkContent) {
         thinkingContainer.style.display = 'block';
         thinkingContentEl.innerHTML = marked.parse(thinkContent);
+        const thinkingMeta = bubbleElement.querySelector('.thinking-meta');
+        if (thinkingMeta) {
+            const lineCount = thinkContent.split('\n').filter(Boolean).length;
+            thinkingMeta.textContent = isFinal ? `${lineCount} line${lineCount === 1 ? '' : 's'}` : 'Streaming...';
+        }
         smartScroll(thinkingContentEl);
     } else {
         // Hide it only if we are in a final state, otherwise it might just not have arrived yet
         if (isFinal) {
             thinkingContainer.style.display = 'none';
+            const thinkingContent = bubbleElement.querySelector('.thinking-content');
+            const thoughtToggleIcon = bubbleElement.querySelector('.thought-toggle-icon');
+            const thinkingMeta = bubbleElement.querySelector('.thinking-meta');
+            if (thinkingContent) {
+                const shouldExpand = thoughtPanelExpandedByDefault;
+                thinkingContent.style.display = shouldExpand ? 'block' : 'none';
+                thoughtToggleIcon?.classList.toggle('rotate-180', shouldExpand);
+                if (thinkingMeta && !thinkContent) {
+                    thinkingMeta.textContent = shouldExpand ? 'Visible' : 'Hidden';
+                }
+            }
         }
     }
 
@@ -1561,6 +1845,12 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     }
 
     if (isFinal) {
+        const progressTimeline = bubbleElement.querySelector('.progress-timeline');
+        const progressToggleIcon = bubbleElement.querySelector('.progress-toggle-icon');
+        if (progressTimeline) {
+            progressTimeline.style.display = 'none';
+            progressToggleIcon?.classList.remove('rotate-180');
+        }
         // Hide the main thinking indicator when the turn is truly over
         agentStatus.style.display = 'none';
         if (conversationalContent || thinkContent) {
