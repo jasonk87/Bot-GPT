@@ -1,28 +1,21 @@
 import os
 import sys
 import pytest
-import shutil
 from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app import create_app, socketio as _socketio
-from models import User, _save_users, _load_users
+from models import User, _save_users
 
 @pytest.fixture(scope='session')
-def app():
+def app(tmp_path_factory):
     """Create and configure a new app instance for the test session."""
-    app = create_app('testing')
-    instance_path = app.instance_path
-    if os.path.exists(instance_path):
-        shutil.rmtree(instance_path)
-    os.makedirs(instance_path)
+    instance_path = tmp_path_factory.mktemp("instance")
+    app = create_app('testing', instance_path=str(instance_path))
 
     with app.app_context():
         yield app
-
-    if os.path.exists(instance_path):
-        shutil.rmtree(instance_path)
 
 
 @pytest.fixture(scope='function')
@@ -37,21 +30,13 @@ def test_user(app):
         users_path = os.path.join(app.instance_path, 'users.json')
         if os.path.exists(users_path):
             os.remove(users_path)
-        user_data_dir = app.config["USER_DATA_DIR"]
-        os.makedirs(user_data_dir, exist_ok=True)
-        user_data_users_path = os.path.join(user_data_dir, 'users.json')
-        if os.path.exists(user_data_users_path):
-            os.remove(user_data_users_path)
 
         user = User(id=1, username='testuser', password_hash=None)
         user.set_password('password')
         _save_users(users_path, {'1': user.to_dict()})
-        _save_users(user_data_users_path, {'1': user.to_dict()})
         yield user
         if os.path.exists(users_path):
             os.remove(users_path)
-        if os.path.exists(user_data_users_path):
-            os.remove(user_data_users_path)
 
 @pytest.fixture
 def logged_in_client(client, test_user):
@@ -94,11 +79,6 @@ def two_users(app):
         users_path = os.path.join(app.instance_path, 'users.json')
         if os.path.exists(users_path):
             os.remove(users_path)
-        user_data_dir = app.config["USER_DATA_DIR"]
-        os.makedirs(user_data_dir, exist_ok=True)
-        user_data_users_path = os.path.join(user_data_dir, 'users.json')
-        if os.path.exists(user_data_users_path):
-            os.remove(user_data_users_path)
 
         user1 = User(id=1, username='testuser1', password_hash=None)
         user1.set_password('password')
@@ -109,11 +89,8 @@ def two_users(app):
             '2': user2.to_dict()
         }
         _save_users(users_path, users)
-        _save_users(user_data_users_path, users)
 
         yield user1, user2
 
         if os.path.exists(users_path):
             os.remove(users_path)
-        if os.path.exists(user_data_users_path):
-            os.remove(user_data_users_path)

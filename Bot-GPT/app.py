@@ -7,12 +7,19 @@ from extensions import socketio
 # Import blueprints after initializing socketio to avoid circular imports
 # (Actually, standard practice is to import blueprints inside create_app or after socketio definition)
 
-def create_app(config_name=None):
+def create_app(config_name=None, instance_path=None):
     """Create and configure an instance of the Flask application."""
     if config_name is None:
         config_name = os.getenv("FLASK_CONFIG", "default")
 
-    app = Flask(__name__, instance_relative_config=True, template_folder="templates")
+    flask_kwargs = {
+        "instance_relative_config": True,
+        "template_folder": "templates",
+    }
+    if instance_path is not None:
+        flask_kwargs["instance_path"] = os.path.abspath(instance_path)
+
+    app = Flask(__name__, **flask_kwargs)
 
     # --- Configuration ---
     app.config.from_object(config[config_name])
@@ -23,6 +30,10 @@ def create_app(config_name=None):
     except OSError:
         if not os.path.isdir(app.instance_path):
             raise
+
+    from shared_paths import migrate_legacy_users_file
+
+    migrate_legacy_users_file(app)
 
     # --- Initialize Extensions ---
     socketio.init_app(
@@ -39,8 +50,9 @@ def create_app(config_name=None):
     @login_manager.user_loader
     def load_user(user_id):
         from models import get_user_by_id
-        users_path = os.path.join(app.config["USER_DATA_DIR"], 'users.json')
-        return get_user_by_id(users_path, int(user_id))
+        from shared_paths import get_users_path
+
+        return get_user_by_id(get_users_path(), int(user_id))
 
     # --- Register Blueprints ---
     from routes import main as main_blueprint

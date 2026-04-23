@@ -4,11 +4,7 @@ Flask-SocketIO
 requests
 beautifulsoup4
 Werkzeug
-google-api-python-client
 python-dotenv
-sentence-transformers
-faiss-cpu
-chromadb
 filelock
-google-generativeai
-Pillow
+
+# Optional integrations are listed in requirements-optional.txt
