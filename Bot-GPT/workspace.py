@@ -17,6 +17,16 @@ from shared_paths import (
     get_conversation_index_path,
     get_user_conversation_index_path,
 )
+from artifacts import (
+    list_artifacts_for_conversation,
+    set_last_active_artifact,
+    upsert_artifact_metadata,
+    rename_artifact_metadata,
+    remove_artifact_metadata,
+    snapshot_artifact_version,
+    list_artifact_versions,
+    get_artifact_version,
+)
 from tools.file_system import get_workspace_path
 from tools import (
     get_file_tree,
@@ -95,9 +105,26 @@ def handle_workspace_file():
             return jsonify({"error": "Access denied for this operation"}), 403
         content = data.get("content")
         try:
+            previous_content = None
+            if os.path.exists(file_path) and os.path.isfile(file_path):
+                with open(file_path, "r", encoding="utf-8") as existing:
+                    previous_content = existing.read()
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
+            if previous_content is not None and previous_content != content:
+                snapshot_artifact_version(
+                    owner_id,
+                    conversation_id,
+                    path,
+                    previous_content,
+                    change_summary="Updated from workspace editor",
+                )
+            upsert_artifact_metadata(
+                owner_id,
+                conversation_id,
+                path,
+            )
             socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=str(conversation_id))
             return jsonify({"success": True, "message": f"File '{path}' saved."})
         except Exception as e:
@@ -109,6 +136,7 @@ def handle_workspace_file():
         try:
             if os.path.isfile(file_path):
                 os.remove(file_path)
+                remove_artifact_metadata(owner_id, conversation_id, path)
             elif os.path.isdir(file_path):
                 shutil.rmtree(file_path)
             else:
@@ -277,7 +305,10 @@ def upload_file():
             "owner_id": owner_id,
             "title": "New Chat",
             "participants": [{'user_id': owner_id, 'role': 'owner'}],
-            "messages": []
+            "messages": [],
+            "artifacts": [],
+            "artifact_versions": {},
+            "last_active_artifact_id": None,
         }
         convo_path = _get_conversation_path(owner_id, conversation_id)
         save_conversation(convo_path, conversation_data)
@@ -295,6 +326,7 @@ def upload_file():
         if file and file.filename:
             filename = secure_filename(file.filename)
             file.save(os.path.join(workspace_path, filename))
+            upsert_artifact_metadata(owner_id, conversation_id, filename)
             filenames.append(filename)
 
     file_list_str = "\\n- ".join(filenames)
@@ -363,5 +395,113 @@ def rename_workspace_item():
 
     os.makedirs(os.path.dirname(destination_path), exist_ok=True)
     shutil.move(source_path, destination_path)
+    rename_artifact_metadata(owner_id, conversation_id, old_path, new_path)
     socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=str(conversation_id))
     return jsonify({"success": True, "message": f"Renamed '{old_path}' to '{new_path}'."})
+
+
+@workspace.route("/api/conversation/<conversation_id>/artifacts", methods=["GET", "POST"])
+@login_required
+def conversation_artifacts(conversation_id):
+    owner_id = find_conversation_owner(conversation_id)
+    if not owner_id:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
+    if not conversation_data or not check_permission(conversation_data, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    if request.method == "POST":
+        data = request.get_json() or {}
+        artifact_id = data.get("artifact_id")
+        if artifact_id:
+            set_last_active_artifact(owner_id, conversation_id, artifact_id)
+        return jsonify({"success": True})
+
+    artifacts = list_artifacts_for_conversation(owner_id, conversation_id)
+    return jsonify({
+        "artifacts": artifacts,
+        "last_active_artifact_id": conversation_data.get("last_active_artifact_id"),
+    })
+
+
+@workspace.route("/api/artifact/<path:artifact_id>/versions", methods=["GET"])
+@login_required
+def artifact_versions(artifact_id):
+    conversation_id = request.args.get("conversation_id")
+    if not conversation_id:
+        return jsonify({"error": "conversation_id is required"}), 400
+    owner_id = find_conversation_owner(conversation_id)
+    if not owner_id:
+        return jsonify({"error": "Conversation not found"}), 404
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
+    if not conversation_data or not check_permission(conversation_data, current_user):
+        return jsonify({"error": "Access denied"}), 403
+    versions = list_artifact_versions(owner_id, conversation_id, artifact_id)
+    return jsonify({"artifact_id": artifact_id, "versions": versions})
+
+
+@workspace.route("/api/artifact/<path:artifact_id>/version/<version_id>", methods=["GET"])
+@login_required
+def artifact_version_detail(artifact_id, version_id):
+    conversation_id = request.args.get("conversation_id")
+    if not conversation_id:
+        return jsonify({"error": "conversation_id is required"}), 400
+    owner_id = find_conversation_owner(conversation_id)
+    if not owner_id:
+        return jsonify({"error": "Conversation not found"}), 404
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
+    if not conversation_data or not check_permission(conversation_data, current_user):
+        return jsonify({"error": "Access denied"}), 403
+    version = get_artifact_version(owner_id, conversation_id, artifact_id, version_id)
+    if not version:
+        return jsonify({"error": "Version not found"}), 404
+    return jsonify(version)
+
+
+@workspace.route("/api/artifact/<path:artifact_id>/version/<version_id>/restore", methods=["POST"])
+@login_required
+def restore_artifact_version(artifact_id, version_id):
+    data = request.get_json() or {}
+    conversation_id = data.get("conversation_id")
+    if not conversation_id:
+        return jsonify({"error": "conversation_id is required"}), 400
+    owner_id = find_conversation_owner(conversation_id)
+    if not owner_id:
+        return jsonify({"error": "Conversation not found"}), 404
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
+    if not conversation_data or not check_permission(conversation_data, current_user, level="owner"):
+        return jsonify({"error": "Access denied for this operation"}), 403
+    version = get_artifact_version(owner_id, conversation_id, artifact_id, version_id)
+    if not version:
+        return jsonify({"error": "Version not found"}), 404
+
+    workspace_path = get_workspace_path(conversation_id, owner_id)
+    file_path = os.path.join(workspace_path, artifact_id)
+    if not is_safe_path(workspace_path, file_path):
+        return jsonify({"error": "Invalid path"}), 403
+
+    previous_content = None
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as existing:
+            previous_content = existing.read()
+
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w", encoding="utf-8") as target:
+        target.write(version["content"])
+
+    if previous_content is not None and previous_content != version["content"]:
+        snapshot_artifact_version(
+            owner_id,
+            conversation_id,
+            artifact_id,
+            previous_content,
+            change_summary=f"Restore point before {version_id}",
+        )
+    upsert_artifact_metadata(owner_id, conversation_id, artifact_id)
+    socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=str(conversation_id))
+    return jsonify({"success": True, "artifact_id": artifact_id, "restored_version_id": version_id})
