@@ -22,7 +22,10 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     summarizeBtn, summaryModal, summaryContent, closeSummaryBtn,
     agentModeToggle, toolsDropdownBtn, toolsDropdownMenu,
     attachImageBtn, imageInput, imagePreviewContainer,
-    planToggleBtn, planPanel, planContent, planActions, approvePlanBtn, rejectPlanBtn;
+    planToggleBtn, planPanel, planContent, planActions, approvePlanBtn, rejectPlanBtn,
+    responseModeSelect,
+    dependencyBanner, dependencyBannerText, dependencyBannerDismiss, dependencyBannerDetails,
+    dependencyDetailsModal, dependencyDetailsContent, closeDependencyDetailsBtn, copyDependencyDetailsBtn;
 
 const API_BASE = '/api';
 let conversationHistory = [];
@@ -42,10 +45,14 @@ let isCanvasMode = false;
 let currentAgentBubble = null;
 let fullAgentResponse = "";
 let currentResponseContent = "";
+let currentResponseMode = null;
+let selectedResponseModePreference = 'auto';
 let openTabs = [];
 let activeTabIndex = -1;
 let conversationRunStates = {};
 let pendingNewConversationRun = null;
+let dependencyBannerDismissedForSession = false;
+let lastDependencyReport = null;
 
 function getCurrentConversationStorageKey() {
     return currentUsername ? `botgpt_current_conversation_id_${currentUsername}` : 'botgpt_current_conversation_id';
@@ -247,6 +254,15 @@ async function initializeApp(username) {
     rejectPlanBtn = document.getElementById('reject-plan-btn');
     toolsDropdownBtn = document.getElementById('tools-dropdown-btn');
     toolsDropdownMenu = document.getElementById('tools-dropdown-menu');
+    dependencyBanner = document.getElementById('dependency-banner');
+    dependencyBannerText = document.getElementById('dependency-banner-text');
+    dependencyBannerDismiss = document.getElementById('dependency-banner-dismiss');
+    dependencyBannerDetails = document.getElementById('dependency-banner-details');
+    dependencyDetailsModal = document.getElementById('dependency-details-modal');
+    dependencyDetailsContent = document.getElementById('dependency-details-content');
+    closeDependencyDetailsBtn = document.getElementById('close-dependency-details-btn');
+    copyDependencyDetailsBtn = document.getElementById('copy-dependency-details-btn');
+    responseModeSelect = document.getElementById('response-mode-select');
 
     // Image Upload Elements
     attachImageBtn = document.getElementById('attach-image-btn');
@@ -270,6 +286,92 @@ async function initializeApp(username) {
             toolsDropdownMenu.classList.add('hidden');
         }
     });
+
+    const responseModeStorageKey = currentUsername ? `botgpt_response_mode_${currentUsername}` : 'botgpt_response_mode';
+    const dependencyBannerStorageKey = currentUsername ? `botgpt_dependency_banner_dismissed_${currentUsername}` : 'botgpt_dependency_banner_dismissed';
+    dependencyBannerDismissedForSession = sessionStorage.getItem(dependencyBannerStorageKey) === '1';
+    selectedResponseModePreference = localStorage.getItem(responseModeStorageKey) || 'auto';
+    if (responseModeSelect) {
+        responseModeSelect.value = selectedResponseModePreference;
+        responseModeSelect.addEventListener('change', async () => {
+            selectedResponseModePreference = responseModeSelect.value || 'auto';
+            localStorage.setItem(responseModeStorageKey, selectedResponseModePreference);
+            try {
+                await fetch(`${API_BASE}/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ response_mode_preference: selectedResponseModePreference }),
+                });
+            } catch (error) {
+                console.error("Failed to save response mode preference:", error);
+            }
+        });
+    }
+
+    if (dependencyBannerDismiss) {
+        dependencyBannerDismiss.addEventListener('click', () => {
+            dependencyBannerDismissedForSession = true;
+            sessionStorage.setItem(dependencyBannerStorageKey, '1');
+            if (dependencyBanner) {
+                dependencyBanner.classList.add('hidden');
+            }
+        });
+    }
+
+    if (dependencyBannerDetails && dependencyDetailsModal && dependencyDetailsContent) {
+        dependencyBannerDetails.addEventListener('click', () => {
+            const report = lastDependencyReport || {};
+            const required = report.required || {};
+            const optional = report.optional || {};
+            const missingRequired = report.missing_required || [];
+            const missingOptional = report.missing_optional || [];
+            const recommendations = report.recommendations || [];
+            dependencyDetailsContent.textContent = [
+                "Dependency Health Report",
+                "------------------------",
+                `Status: ${report.status || 'unknown'}`,
+                "",
+                `Missing required: ${missingRequired.length ? missingRequired.join(', ') : 'none'}`,
+                `Missing optional: ${missingOptional.length ? missingOptional.join(', ') : 'none'}`,
+                "",
+                "Required modules:",
+                JSON.stringify(required, null, 2),
+                "",
+                "Optional modules:",
+                JSON.stringify(optional, null, 2),
+                "",
+                "Recovery guidance:",
+                ...(recommendations.length
+                    ? recommendations.map((item) => `- ${item}`)
+                    : [
+                        "- Install missing required modules first (app stability).",
+                        "- Install optional modules to restore degraded features.",
+                    ]),
+            ].join('\n');
+            dependencyDetailsModal.classList.remove('hidden');
+        });
+    }
+
+    if (closeDependencyDetailsBtn && dependencyDetailsModal) {
+        closeDependencyDetailsBtn.addEventListener('click', () => {
+            dependencyDetailsModal.classList.add('hidden');
+        });
+    }
+
+    if (copyDependencyDetailsBtn && dependencyDetailsContent) {
+        copyDependencyDetailsBtn.addEventListener('click', async () => {
+            const original = copyDependencyDetailsBtn.textContent;
+            try {
+                await navigator.clipboard.writeText(dependencyDetailsContent.textContent || '');
+                copyDependencyDetailsBtn.textContent = 'Copied!';
+                setTimeout(() => { copyDependencyDetailsBtn.textContent = original; }, 1200);
+            } catch (error) {
+                console.error("Failed to copy dependency diagnostics:", error);
+                copyDependencyDetailsBtn.textContent = 'Copy failed';
+                setTimeout(() => { copyDependencyDetailsBtn.textContent = original; }, 1200);
+            }
+        });
+    }
 
 
     // --- Event Listeners for Plan Approval ---
@@ -327,6 +429,10 @@ async function initializeApp(username) {
                     markConversationRunState(currentConversationId, { isRunning: true, stage: 'answering' });
                     currentResponseContent += data.content;
                     updateBotBubble(currentAgentBubble, currentResponseContent, false);
+                    break;
+                case 'response_mode':
+                    currentResponseMode = data.mode || null;
+                    updateResponseModeBadge(currentAgentBubble, currentResponseMode);
                     break;
                 case 'assistant_end':
                     // This signals the end of a single thought-act-observe loop from the AI
@@ -658,6 +764,7 @@ async function initializeApp(username) {
 
     await populateModels();
     await loadUserSettings();
+    await loadDependencyHealthBanner();
 
     const savedConvoId = getSavedCurrentConversationId();
     if (savedConvoId) {
@@ -717,6 +824,41 @@ async function initializeApp(username) {
     }
 }
 
+async function loadDependencyHealthBanner() {
+    if (!dependencyBanner || !dependencyBannerText) return;
+    try {
+        const response = await fetch('/health/dependencies');
+        if (!response.ok) return;
+        const report = await response.json();
+        lastDependencyReport = report;
+        const missingRequired = report.missing_required || [];
+        const missingOptional = report.missing_optional || [];
+
+        if (!missingRequired.length && !missingOptional.length) {
+            dependencyBanner.classList.add('hidden');
+            dependencyBannerText.textContent = '';
+            return;
+        }
+
+        if (dependencyBannerDismissedForSession) {
+            dependencyBanner.classList.add('hidden');
+            return;
+        }
+
+        const parts = [];
+        if (missingRequired.length) {
+            parts.push(`Missing required: ${missingRequired.join(', ')}`);
+        }
+        if (missingOptional.length) {
+            parts.push(`Missing optional: ${missingOptional.join(', ')}`);
+        }
+        dependencyBannerText.textContent = `Dependency health warning — ${parts.join(' | ')}`;
+        dependencyBanner.classList.remove('hidden');
+    } catch (error) {
+        console.error("Failed to load dependency health:", error);
+    }
+}
+
 async function loadUserSettings() {
     try {
         const response = await fetch(`${API_BASE}/settings`);
@@ -735,6 +877,10 @@ async function loadUserSettings() {
         if (userModel) modelSelect.value = userModel;
         currentModelDisplay.textContent = userModel;
         personaSelect.value = settings.persona || 'default';
+        selectedResponseModePreference = settings.response_mode_preference || selectedResponseModePreference || 'auto';
+        if (responseModeSelect) {
+            responseModeSelect.value = selectedResponseModePreference;
+        }
 
     } catch (error) {
         console.error("Failed to load user settings:", error);
@@ -1437,6 +1583,7 @@ function sendMessage() {
     imagePreviewContainer.classList.add('hidden');
 
     currentAgentBubble = createBotMessageContainer();
+    currentResponseMode = null;
     currentResponseContent = ""; // Reset the content for the new message
     if (currentConversationId) {
         markConversationRunState(currentConversationId, { isRunning: true, agentMode, stage: 'thinking', partialResponse: '' });
@@ -1449,7 +1596,8 @@ function sendMessage() {
         model: userModel,
         conversation_id: currentConversationId || '',
         canvas_mode: isCanvasMode,
-        agent_mode: agentMode
+        agent_mode: agentMode,
+        response_mode_preference: selectedResponseModePreference
     };
     try {
         socket.emit('chat_message', params);
@@ -1494,6 +1642,7 @@ function createBotMessageContainer(animate = true) {
                     <span></span><span></span><span></span>
                 </div>
             </div>
+            <div class="response-mode-badge text-xs text-gray-400 mt-1 hidden"></div>
             <div class="tool-activity" style="display: none;">
                 <div class="tool-activity-header">
                     <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l-4 4-4-4 4-4"></path></svg>
@@ -1515,6 +1664,23 @@ function createBotMessageContainer(animate = true) {
 
     smartScroll(chatContainer);
     return botMessageWrapper;
+}
+
+function updateResponseModeBadge(bubbleElement, mode) {
+    if (!bubbleElement) return;
+    const badge = bubbleElement.querySelector('.response-mode-badge');
+    if (!badge) return;
+
+    if (!mode) {
+        badge.classList.add('hidden');
+        badge.textContent = '';
+        return;
+    }
+
+    const normalized = String(mode).toLowerCase();
+    const label = normalized.charAt(0).toUpperCase() + normalized.slice(1);
+    badge.textContent = `Response mode: ${label}`;
+    badge.classList.remove('hidden');
 }
 
 function updateBotBubble(bubbleElement, responseContent, isFinal = false) {

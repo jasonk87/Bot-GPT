@@ -1,12 +1,27 @@
 import requests
 from bs4 import BeautifulSoup
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 from flask import current_app
+
+try:
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+except Exception:  # optional dependency in some environments
+    build = None
+
+    class HttpError(Exception):
+        pass
+
+
+def _google_client_available():
+    return build is not None
 
 
 def google_search(api_key, cse_id, query):
     """Performs a Google search and returns the results."""
+    if not _google_client_available():
+        raise ConnectionError(
+            "Google search dependency unavailable: install 'google-api-python-client'."
+        )
     try:
         service = build("customsearch", "v1", developerKey=api_key)
         res = service.cse().list(q=query, cx=cse_id, num=3).execute()
@@ -66,17 +81,20 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
     if not api_key or not cse_id:
         return "Error: Google Search API key or CSE ID is not configured."
 
-    if not all([requests, BeautifulSoup, build]):
+    if not all([requests, BeautifulSoup]) or not _google_client_available():
         missing = [
             lib
             for lib, present in [
                 ("'requests'", requests),
                 ("'beautifulsoup4'", BeautifulSoup),
-                ("'google-api-python-client'", build),
+                ("'google-api-python-client'", _google_client_available()),
             ]
             if not present
         ]
-        return f"Error: Missing required libraries: {', '.join(missing)}."
+        return (
+            f"Error: Missing required libraries: {', '.join(missing)}.\n"
+            "Recovery: install missing packages or use non-web-search tools."
+        )
 
     try:
         search_results = google_search(api_key, cse_id, query)

@@ -1,8 +1,13 @@
 import os
 from datetime import timedelta
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+except Exception:  # optional dependency in some runtime/test environments
+    load_dotenv = None
+
+if load_dotenv:
+    load_dotenv()
 
 
 class Config:
