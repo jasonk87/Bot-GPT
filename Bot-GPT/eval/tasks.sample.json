@@ -1,0 +1,17 @@
+[
+  {
+    "id": "bug_triage",
+    "prompt": "Our Flask app fails at startup with missing dependencies. What should we do first?",
+    "expected_keywords": ["dependency", "required", "next step"],
+    "min_keyword_recall": 0.66,
+    "require_next_step": true
+  },
+  {
+    "id": "depth_mode",
+    "prompt": "Should this be a standard response or deep response for architecture tradeoffs?",
+    "expected_keywords": ["standard", "deep", "tradeoff"],
+    "min_keyword_recall": 0.66,
+    "require_next_step": true,
+    "forbidden_patterns": ["I am not sure"]
+  }
+]
