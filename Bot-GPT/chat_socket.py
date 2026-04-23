@@ -24,6 +24,7 @@ from models import (
     find_conversation_owner,
 )
 from shared_paths import get_conversation_index_path, get_conversation_path
+from artifacts import list_artifacts_for_conversation
 
 
 def register_socket_handlers(socketio, *, agent_sessions, serialize_agent_session, handle_ai_response, plan_approvals):
@@ -128,10 +129,13 @@ def register_socket_handlers(socketio, *, agent_sessions, serialize_agent_sessio
         conversation = load_conversation(get_conversation_path(owner_id, conversation_id))
         if conversation and check_permission(conversation, current_user):
             participant = next((p for p in conversation.get("participants", []) if p["user_id"] == current_user.id), None)
+            artifacts = list_artifacts_for_conversation(owner_id, conversation_id)
             emit("conversation_loaded", {
                 "id": conversation["id"],
                 "messages": conversation.get("messages", []),
                 "role": participant["role"] if participant else "participant",
+                "artifacts": artifacts,
+                "last_active_artifact_id": conversation.get("last_active_artifact_id"),
                 "active_run": serialize_agent_session(agent_sessions.get(conversation_id)),
             })
         else:
