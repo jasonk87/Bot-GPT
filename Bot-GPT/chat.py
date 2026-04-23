@@ -14,6 +14,7 @@ from chat_state import AGENT_SESSIONS, serialize_agent_session
 from chat_persistence import initialize_chat
 from chat_title import update_conversation_title as _update_conversation_title
 from chat_ai import handle_ai_response as _handle_ai_response
+from chat_ai import get_depth_routing_metrics as _get_depth_routing_metrics
 from chat_socket import register_socket_handlers
 
 chat = Blueprint("chat", __name__)
@@ -49,10 +50,16 @@ register_socket_handlers(
 @chat.route("/api/settings", methods=["GET"])
 @login_required
 def get_settings():
+    users = _load_users(get_users_path())
+    user_data = users.get(str(current_user.id), {})
     persona_names = {key: value["name"] for key, value in PERSONAS.items()}
     return jsonify({
-        "model": current_user.selected_model,
-        "persona": current_user.selected_persona,
+        "model": user_data.get("selected_model", current_user.selected_model),
+        "persona": user_data.get("selected_persona", current_user.selected_persona),
+        "response_mode_preference": user_data.get(
+            "response_mode_preference",
+            getattr(current_user, "response_mode_preference", "auto"),
+        ),
         "available_personas": persona_names,
     })
 
@@ -66,6 +73,10 @@ def update_settings():
     if user_data:
         user_data["selected_model"] = data.get("model", user_data.get("selected_model"))
         user_data["selected_persona"] = data.get("persona", user_data.get("selected_persona"))
+        user_data["response_mode_preference"] = data.get("response_mode_preference", user_data.get("response_mode_preference", "auto"))
+        current_user.selected_model = user_data["selected_model"]
+        current_user.selected_persona = user_data["selected_persona"]
+        current_user.response_mode_preference = user_data["response_mode_preference"]
         _save_users(get_users_path(), users)
         return jsonify({"message": "Settings updated successfully"}), 200
     return jsonify({"message": "User not found"}), 404
@@ -124,3 +135,9 @@ def handle_plan_response_api():
         PLAN_APPROVALS[conversation_id] = response
         return jsonify({"status": "success"})
     return jsonify({"error": "Invalid parameters"}), 400
+
+
+@chat.route("/api/depth_metrics", methods=["GET"])
+@login_required
+def get_depth_metrics():
+    return jsonify(_get_depth_routing_metrics())
