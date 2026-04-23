@@ -1,5 +1,7 @@
 from unittest.mock import Mock
 from models import get_all_conversations_for_user
+from shared_paths import get_users_path
+from models import _load_users
 
 def test_index_route(client):
     """Test the main index route."""
@@ -62,3 +64,37 @@ def test_get_models_api(logged_in_client, mocker):
     assert isinstance(data, list)
     assert len(data) == 2
     assert data[0]['name'] == 'model1:latest'
+
+
+def test_settings_include_and_persist_response_mode(logged_in_client, test_user):
+    response = logged_in_client.get('/api/settings')
+    assert response.status_code == 200
+    settings = response.get_json()
+    assert settings.get('response_mode_preference') == 'auto'
+
+    update = logged_in_client.post('/api/settings', json={'response_mode_preference': 'deep'})
+    assert update.status_code == 200
+
+    settings_after = logged_in_client.get('/api/settings')
+    assert settings_after.status_code == 200
+    assert settings_after.get_json().get('response_mode_preference') == 'deep'
+
+    users = _load_users(get_users_path())
+    saved_user = users.get(str(test_user.id), {})
+    assert saved_user.get('response_mode_preference') == 'deep'
+
+
+def test_depth_metrics_endpoint_returns_json(logged_in_client):
+    response = logged_in_client.get('/api/depth_metrics')
+    assert response.status_code == 200
+    data = response.get_json()
+    assert isinstance(data, dict)
+
+
+def test_dependency_health_endpoint(client):
+    response = client.get('/health/dependencies')
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data.get('status') in {'ok', 'degraded'}
+    assert isinstance(data.get('required'), dict)
+    assert isinstance(data.get('optional'), dict)

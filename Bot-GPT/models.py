@@ -15,6 +15,7 @@ class User(UserMixin):
         self.password_hash = password_hash
         self.selected_model = kwargs.get('selected_model', '')
         self.selected_persona = kwargs.get('selected_persona', 'default')
+        self.response_mode_preference = kwargs.get('response_mode_preference', 'auto')
 
     def to_dict(self):
         return {
@@ -22,7 +23,8 @@ class User(UserMixin):
             'username': self.username,
             'password_hash': self.password_hash,
             'selected_model': self.selected_model,
-            'selected_persona': self.selected_persona
+            'selected_persona': self.selected_persona,
+            'response_mode_preference': self.response_mode_preference
         }
 
     def set_password(self, password):

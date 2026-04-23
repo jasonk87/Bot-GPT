@@ -3,6 +3,7 @@ from flask import Flask, jsonify
 from flask_login import LoginManager
 from config import config
 from extensions import socketio
+from health_checks import dependency_health_report
 
 # Import blueprints after initializing socketio to avoid circular imports
 # (Actually, standard practice is to import blueprints inside create_app or after socketio definition)
@@ -70,6 +71,22 @@ def create_app(config_name=None, instance_path=None):
     def health_check():
         return jsonify({"status": "ok"}), 200
 
+    @app.route('/health/dependencies')
+    def dependency_health_check():
+        return jsonify(dependency_health_report()), 200
+
+    dep_report = dependency_health_report()
+    if dep_report.get("missing_optional"):
+        app.logger.warning(
+            "Optional dependencies missing: %s",
+            ", ".join(dep_report["missing_optional"]),
+        )
+    if dep_report.get("missing_required"):
+        app.logger.error(
+            "Required dependencies missing: %s",
+            ", ".join(dep_report["missing_required"]),
+        )
+
     return app
 
 if __name__ == "__main__":
@@ -83,4 +100,3 @@ if __name__ == "__main__":
         use_reloader=True,
         reloader_type='stat', # More stable than watchdog in this environment
     )
-
