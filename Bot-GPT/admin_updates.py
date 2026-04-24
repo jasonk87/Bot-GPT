@@ -58,6 +58,10 @@ class UpdateManager:
     def _git(self, command: List[str], *, timeout: int = 20) -> Dict[str, object]:
         return self._run(["git"] + command, timeout=timeout)
 
+    @staticmethod
+    def _line(result: Dict[str, object], fallback: str) -> str:
+        return str(result.get("stderr") or result.get("stdout") or fallback).strip()
+
     def _target_candidates(self) -> List[str]:
         base = f"{TARGET_OWNER}/{TARGET_REPO}"
         return [
@@ -107,6 +111,7 @@ class UpdateManager:
                 continue
             rows.append({
                 "name": parts[0],
+                "full_ref": parts[0],
                 "updated_at": parts[1],
                 "commit": parts[2],
                 "subject": parts[3],
@@ -122,13 +127,15 @@ class UpdateManager:
         branches = self.remote_branches()
         last_checked = time.time()
         payload = {
-            "status": "ready",
+            "status": "idle",
+            "current_step": "checking",
             "snapshot": snapshot,
             "remote_branches": branches,
             "newest_remote": branches[0] if branches else None,
             "last_checked": last_checked,
             "updated_at": last_checked,
             "target_repo": self.target_repo(),
+            "last_log_line": self._line(fetch, "Branch refresh complete."),
         }
         self._write_json(self._state_path(instance_path), payload)
         return payload
@@ -137,13 +144,13 @@ class UpdateManager:
         return self.refresh(instance_path)
 
     def refresh(self, instance_path: str) -> Dict[str, object]:
-        self._set_state(instance_path, "checking", target_repo=self.target_repo())
+        self._set_state(instance_path, "checking", target_repo=self.target_repo(), current_step="checking")
         return self._refresh_state(instance_path)
 
     def get_status(self, instance_path: str) -> Dict[str, object]:
         return self._read_json(
             self._state_path(instance_path),
-            {"status": "idle", "target_repo": self.target_repo()},
+            {"status": "idle", "current_step": "idle", "target_repo": self.target_repo()},
         )
 
     def is_state_fresh(self, instance_path: str, max_age_seconds: int = DEFAULT_FRESHNESS_SECONDS) -> bool:
@@ -166,16 +173,40 @@ class UpdateManager:
         payload = self.get_status(instance_path)
         payload.update(extra)
         payload["status"] = status
+        payload["current_step"] = extra.get("current_step") or status
         payload["updated_at"] = time.time()
         self._write_json(self._state_path(instance_path), payload)
 
     def start_update(self, instance_path: str, *, branch: str, strategy: str = "abort", smoke_command: Optional[str] = None, restart_command: Optional[str] = None) -> Dict[str, object]:
         with self._lock:
             status = self.get_status(instance_path)
-            if status.get("status") in {"checking", "updating", "verifying", "restarting"}:
+            if status.get("status") in {
+                "checking",
+                "fetching",
+                "checking_dirty_tree",
+                "stashing",
+                "switching_branch",
+                "pulling_or_resetting",
+                "running_smoke_check",
+                "restarting",
+            }:
                 return {"status": "busy", "message": "Update already in progress."}
             self._validate_target_remote()
-            self._set_state(instance_path, "checking", target_branch=branch)
+            now = time.time()
+            self._set_state(
+                instance_path,
+                "checking",
+                current_step="checking",
+                started_at=now,
+                target_branch=branch,
+                error=None,
+                rollback_error=None,
+                rollback_result=None,
+                failed_step=None,
+                last_log_line="Starting update flow.",
+                smoke_output=None,
+                stash_created=False,
+            )
             thread = threading.Thread(
                 target=self._run_update_flow,
                 kwargs={
@@ -200,63 +231,148 @@ class UpdateManager:
             "snapshot": snapshot,
             "status": "started",
             "target_repo": self.target_repo(),
+            "failed_step": None,
+            "rollback_result": None,
+            "stash_created": False,
         }
+        current_step = "checking"
         try:
-            self._set_state(instance_path, "updating", snapshot=snapshot)
+            self._set_state(
+                instance_path,
+                "checking",
+                current_step="checking",
+                snapshot=snapshot,
+                started_at=started_at,
+                target_branch=branch,
+                last_log_line="Validating target remote.",
+            )
             self._validate_target_remote()
-            if snapshot.get("dirty"):
-                if strategy == "abort":
-                    raise RuntimeError("Working tree is dirty. Choose force or stash to continue.")
-                if strategy == "stash":
-                    stash = self._git(["stash", "push", "-u", "-m", "admin-update-autostash"], timeout=25)
-                    if not stash.get("ok"):
-                        raise RuntimeError(stash.get("stderr") or "Failed to stash changes.")
 
+            current_step = "fetching"
+            self._set_state(instance_path, "fetching", current_step=current_step, last_log_line="Fetching latest refs.")
             fetch = self._git(["fetch", "--all", "--prune"], timeout=45)
             if not fetch.get("ok"):
                 raise RuntimeError(fetch.get("stderr") or "git fetch failed")
 
+            current_step = "checking_dirty_tree"
+            self._set_state(instance_path, "checking_dirty_tree", current_step=current_step, last_log_line="Checking working tree cleanliness.")
+            stash_created = False
+            if snapshot.get("dirty"):
+                if strategy == "abort":
+                    raise RuntimeError("Working tree is dirty. Choose force or stash to continue.")
+                if strategy == "stash":
+                    current_step = "stashing"
+                    self._set_state(instance_path, "stashing", current_step=current_step, last_log_line="Stashing local changes.")
+                    stash = self._git(["stash", "push", "-u", "-m", "admin-update-autostash"], timeout=25)
+                    if not stash.get("ok"):
+                        raise RuntimeError(stash.get("stderr") or "Failed to stash changes.")
+                    stash_created = True
+                    history_item["stash_created"] = True
+                    self._set_state(instance_path, "stashing", current_step=current_step, stash_created=True, last_log_line=self._line(stash, "Stash created."))
+
             target = branch.replace("origin/", "")
+            current_step = "switching_branch"
+            self._set_state(instance_path, "switching_branch", current_step=current_step, last_log_line=f"Switching to {target}.")
             checkout = self._git(["checkout", target], timeout=25)
             if not checkout.get("ok"):
                 create = self._git(["checkout", "-b", target, f"origin/{target}"], timeout=25)
                 if not create.get("ok"):
                     raise RuntimeError(create.get("stderr") or "Failed to checkout target branch.")
+                self._set_state(instance_path, "switching_branch", current_step=current_step, last_log_line=self._line(create, "Created branch from origin."))
+            else:
+                self._set_state(instance_path, "switching_branch", current_step=current_step, last_log_line=self._line(checkout, "Switched branch."))
 
+            current_step = "pulling_or_resetting"
+            self._set_state(instance_path, "pulling_or_resetting", current_step=current_step, last_log_line=f"Resetting {target} to origin/{target}.")
             reset = self._git(["reset", "--hard", f"origin/{target}"], timeout=30)
             if not reset.get("ok"):
                 raise RuntimeError(reset.get("stderr") or "Failed to reset target branch.")
+            self._set_state(instance_path, "pulling_or_resetting", current_step=current_step, last_log_line=self._line(reset, "Reset complete."))
 
-            self._set_state(instance_path, "verifying")
+            current_step = "running_smoke_check"
+            self._set_state(instance_path, "running_smoke_check", current_step=current_step, last_log_line="Running smoke checks.")
             smoke = self._run(
                 ["bash", "-lc", smoke_command or "python -m py_compile app.py"],
                 timeout=60,
             )
+            smoke_output = (smoke.get("stderr") or smoke.get("stdout") or "").strip()
+            self._set_state(instance_path, "running_smoke_check", current_step=current_step, smoke_output=smoke_output, last_log_line=self._line(smoke, "Smoke check complete."))
             if not smoke.get("ok"):
                 raise RuntimeError(smoke.get("stderr") or smoke.get("stdout") or "Smoke verification failed.")
 
-            self._set_state(instance_path, "restarting")
             if restart_command:
+                current_step = "restarting"
+                self._set_state(instance_path, "restarting", current_step=current_step, last_log_line="Running restart command.")
                 restart = self._run(["bash", "-lc", restart_command], timeout=40)
                 if not restart.get("ok"):
                     raise RuntimeError(restart.get("stderr") or restart.get("stdout") or "Restart command failed.")
+                self._set_state(instance_path, "restarting", current_step=current_step, last_log_line=self._line(restart, "Restart command completed."))
 
             final_snapshot = self.get_repo_snapshot()
-            self._set_state(instance_path, "success", snapshot=final_snapshot)
-            history_item.update({"status": "success", "finished_at": time.time(), "result_snapshot": final_snapshot})
+            final_status = "success" if restart_command else "restart_required"
+            self._set_state(
+                instance_path,
+                final_status,
+                current_step=final_status,
+                snapshot=final_snapshot,
+                started_at=started_at,
+                target_branch=branch,
+                stash_created=stash_created,
+                last_log_line="Update complete." if restart_command else "Update complete. Manual restart required.",
+            )
+            history_item.update({
+                "status": final_status,
+                "finished_at": time.time(),
+                "result_snapshot": final_snapshot,
+                "smoke_output": smoke_output,
+            })
         except Exception as exc:
             rollback_error = None
-            self._set_state(instance_path, "failed", error=str(exc))
+            rollback_result = None
+            self._set_state(
+                instance_path,
+                "failed",
+                current_step="failed",
+                error=str(exc),
+                failed_step=current_step,
+                started_at=started_at,
+                target_branch=branch,
+                last_log_line=f"Failed at {current_step}: {exc}",
+            )
             if snapshot.get("branch") and snapshot.get("commit"):
                 checkout_back = self._git(["checkout", snapshot["branch"]], timeout=20)
                 reset_back = self._git(["reset", "--hard", snapshot["commit"]], timeout=25)
                 if checkout_back.get("ok") and reset_back.get("ok"):
-                    self._set_state(instance_path, "rolled_back", rollback_to=snapshot)
+                    rollback_result = "success"
+                    self._set_state(
+                        instance_path,
+                        "rolled_back",
+                        current_step="rolled_back",
+                        rollback_to=snapshot,
+                        rollback_result=rollback_result,
+                        started_at=started_at,
+                        target_branch=branch,
+                        failed_step=current_step,
+                        last_log_line="Rollback completed.",
+                    )
                 else:
-                    rollback_error = (checkout_back.get("stderr") or "") + " " + (reset_back.get("stderr") or "")
+                    rollback_error = ((checkout_back.get("stderr") or "") + " " + (reset_back.get("stderr") or "")).strip()
+                    rollback_result = "failed"
+                    self._set_state(
+                        instance_path,
+                        "failed",
+                        current_step="failed",
+                        rollback_error=rollback_error,
+                        rollback_result=rollback_result,
+                        started_at=started_at,
+                        target_branch=branch,
+                        failed_step=current_step,
+                    )
             history_item.update({
-                "status": "failed",
+                "status": "rolled_back" if rollback_result == "success" else "failed",
                 "error": str(exc),
+                "failed_step": current_step,
+                "rollback_result": rollback_result,
                 "rollback_error": rollback_error,
                 "finished_at": time.time(),
             })

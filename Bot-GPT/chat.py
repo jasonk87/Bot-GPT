@@ -81,6 +81,7 @@ def get_settings():
             )
         ),
         "github_username": user_data.get("github_username", ""),
+        "display_name": user_data.get("display_name", getattr(current_user, "display_name", "")),
         "is_admin": is_admin_user(current_user, current_app.config),
         "available_personas": persona_names,
     })
@@ -103,10 +104,13 @@ def update_settings():
             user_data["thought_panel_expanded"] = bool(data.get("thought_panel_expanded"))
         if "github_username" in data:
             user_data["github_username"] = str(data.get("github_username") or "").strip()
+        if "display_name" in data:
+            user_data["display_name"] = str(data.get("display_name") or "").strip()
         current_user.selected_model = user_data["selected_model"]
         current_user.selected_persona = user_data["selected_persona"]
         current_user.response_mode_preference = user_data["response_mode_preference"]
         current_user.thought_panel_expanded = bool(user_data.get("thought_panel_expanded", False))
+        current_user.display_name = user_data.get("display_name", "")
         _save_users(get_users_path(), users)
         return jsonify({"message": "Settings updated successfully"}), 200
     return jsonify({"message": "User not found"}), 404

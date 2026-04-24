@@ -482,20 +482,64 @@
             flex-grow: 1;
             overflow: hidden;
         }
+        #file-viewer, #artifact-preview, #workspace-panel {
+            min-width: 0;
+            overflow-x: hidden;
+        }
+        #artifact-preview {
+            overflow: auto;
+        }
         .resizing {
             user-select: none;
         }
+        .admin-update-status-panel {
+            max-height: 240px;
+            overflow-y: auto;
+        }
+        .admin-update-status-value {
+            word-break: break-word;
+        }
+        .admin-update-branch-option {
+            max-width: 100%;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
         @media (max-width: 640px) {
-            #canvas-panel {
+            #canvas-panel.mobile-fullscreen {
                 position: fixed;
                 inset: 0;
                 width: 100vw !important;
-                height: 100vh !important;
-                z-index: 60;
+                height: 100dvh;
+                min-height: 100vh;
+                z-index: 80;
                 border-left: none;
+                padding-top: env(safe-area-inset-top, 0);
+                padding-bottom: env(safe-area-inset-bottom, 0);
             }
-            #canvas-panel .canvas-header-buttons button#canvas-close-btn::after {
+            #canvas-panel.mobile-fullscreen .canvas-header {
+                position: sticky;
+                top: 0;
+                z-index: 2;
+            }
+            #canvas-panel.mobile-fullscreen #canvas-close-btn::after {
                 content: " / Back";
+            }
+            #canvas-panel.mobile-fullscreen .canvas-header-buttons {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.25rem;
+            }
+            #canvas-panel.mobile-fullscreen .canvas-header-buttons button {
+                margin-left: 0;
+            }
+            #admin-updates-pane .admin-updates-actions {
+                display: flex;
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+            #admin-updates-pane .admin-updates-actions > * {
+                width: 100%;
             }
         }
     </style>
@@ -871,7 +915,7 @@
                         <div class="bg-gray-900 rounded p-2">Last update result: <span id="admin-update-last-result" class="font-mono">-</span></div>
                     </div>
                     <div class="text-xs text-gray-400 mb-2">Last checked: <span id="admin-update-last-checked">Never</span></div>
-                    <div class="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center mb-3">
+                    <div class="admin-updates-actions flex flex-col sm:flex-row gap-2 items-stretch sm:items-center mb-3">
                         <button type="button" id="admin-update-refresh-btn" class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2 px-3 rounded">Check for Updates / Refresh Branches</button>
                         <span id="admin-update-status" class="text-xs text-gray-300">idle</span>
                     </div>
@@ -891,6 +935,21 @@
                     </div>
                     <div class="mt-3">
                         <button type="button" id="admin-update-apply-btn" class="w-full sm:w-auto bg-red-600 hover:bg-red-500 text-white text-xs font-bold py-2 px-3 rounded">Update to Selected Branch</button>
+                    </div>
+                    <div class="mt-3 bg-gray-900 rounded p-2 text-xs admin-update-status-panel">
+                        <div class="font-semibold text-gray-200 mb-1">Live update status</div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-1 text-gray-300">
+                            <div>Status: <span id="admin-update-live-status" class="admin-update-status-value font-mono">idle</span></div>
+                            <div>Step: <span id="admin-update-live-step" class="admin-update-status-value font-mono">-</span></div>
+                            <div>Target branch: <span id="admin-update-live-target" class="admin-update-status-value font-mono">-</span></div>
+                            <div>Started: <span id="admin-update-live-started" class="admin-update-status-value">-</span></div>
+                            <div>Elapsed: <span id="admin-update-live-elapsed" class="admin-update-status-value">0s</span></div>
+                            <div>Stash created: <span id="admin-update-live-stash" class="admin-update-status-value">-</span></div>
+                            <div class="sm:col-span-2">Last log: <span id="admin-update-live-log" class="admin-update-status-value">-</span></div>
+                            <div class="sm:col-span-2">Error: <span id="admin-update-live-error" class="admin-update-status-value text-red-300">-</span></div>
+                            <div class="sm:col-span-2">Rollback: <span id="admin-update-live-rollback" class="admin-update-status-value">-</span></div>
+                            <div class="sm:col-span-2">Smoke output: <span id="admin-update-live-smoke" class="admin-update-status-value">-</span></div>
+                        </div>
                     </div>
                     <div class="mt-3">
                         <div class="text-xs text-gray-300 mb-1">Update history</div>
