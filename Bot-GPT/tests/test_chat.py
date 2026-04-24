@@ -6,7 +6,7 @@ from app import socketio
 import chat
 import os
 from flask_login import login_user
-from models import save_conversation, add_to_conversation_index, add_user_to_conversation_index
+from models import User, save_conversation, add_to_conversation_index, add_user_to_conversation_index
 from repo_index import save_repo_index
 
 
@@ -342,3 +342,97 @@ def test_os_capability_refusal_is_overridden_with_policy_message(app, test_user,
     assert final_answers
     assert "OS control is currently disabled" in final_answers[-1]["content"]
     assert "cannot access your desktop" not in final_answers[-1]["content"].lower()
+
+
+def test_call_stream_prompt_contains_user_memory_and_excludes_recalled_memory_dump(app, mocker):
+    captured_prompt = {"value": ""}
+
+    def fake_stream(_model, _messages, system_prompt):
+        if "=== USER MEMORY ===" in system_prompt:
+            captured_prompt["value"] = system_prompt
+        if "strict response-depth router" in system_prompt.lower():
+            return iter(['{"mode":"standard","confidence":0.95}'])
+        return iter(["Acknowledged."])
+
+    mocker.patch("chat.call_ollama_chat_stream", side_effect=fake_stream)
+    mocker.patch("chat.update_conversation_title")
+
+    with app.test_request_context("/"):
+        user = User(id=77, username="jasonk87", password_hash=None, display_name="Jason")
+        login_user(user)
+        events = list(chat.handle_ai_response({
+            "messages": json.dumps([{"role": "user", "content": "Please summarize the current workstream."}]),
+            "model": "test-model",
+            "conversation_id": "",
+            "response_mode_preference": "standard",
+        }))
+
+    assert any(event.get("type") == "done" for event in events)
+    assert "=== USER MEMORY ===" in captured_prompt["value"]
+    assert "username: jasonk87" in captured_prompt["value"]
+    assert "display_name: Jason" in captured_prompt["value"]
+    assert "This is trusted user identity memory. Use it when relevant." in captured_prompt["value"]
+    assert "=== RECALLED MEMORY ===" not in captured_prompt["value"]
+    assert "I am a language model" not in captured_prompt["value"]
+    assert "I do not retain memory" not in captured_prompt["value"]
+
+
+def test_identity_question_uses_model_path_with_user_memory_prompt(app, mocker):
+    prompts_seen = []
+
+    def fake_stream(_model, _messages, system_prompt):
+        prompts_seen.append(system_prompt)
+        if "strict response-depth router" in system_prompt.lower():
+            return iter(['{"mode":"standard","confidence":0.95}'])
+        return iter(["Yes — your username is jasonk87 and your display name is Jason."])
+
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream", side_effect=fake_stream)
+    mocker.patch("chat.update_conversation_title")
+
+    with app.test_request_context("/"):
+        user = User(id=78, username="jasonk87", password_hash=None, display_name="Jason")
+        login_user(user)
+        events = list(chat.handle_ai_response({
+            "messages": json.dumps([{"role": "user", "content": "What is my name?"}]),
+            "model": "test-model",
+            "conversation_id": "",
+            "response_mode_preference": "standard",
+        }))
+
+    final_answers = [event for event in events if event.get("type") == "final_answer"]
+    assert final_answers
+    assert "jasonk87" in final_answers[-1]["content"]
+    assert "Jason" in final_answers[-1]["content"]
+    assert "do not have memory" not in final_answers[-1]["content"].lower()
+    assert mock_stream.call_count >= 1
+    assert any("=== USER MEMORY ===" in prompt and "username: jasonk87" in prompt for prompt in prompts_seen)
+
+
+def test_identity_prompt_uses_current_user_memory_without_cross_user_leakage(app, mocker):
+    prompts_seen = []
+
+    def fake_stream(_model, _messages, system_prompt):
+        prompts_seen.append(system_prompt)
+        if "strict response-depth router" in system_prompt.lower():
+            return iter(['{"mode":"standard","confidence":0.95}'])
+        return iter(["I know your username from USER MEMORY."])
+
+    mocker.patch("chat.call_ollama_chat_stream", side_effect=fake_stream)
+    mocker.patch("chat.update_conversation_title")
+
+    with app.test_request_context("/"):
+        user = User(id=79, username="alice99", password_hash=None, display_name="Alice")
+        login_user(user)
+        events = list(chat.handle_ai_response({
+            "messages": json.dumps([{"role": "user", "content": "Do you know my name?"}]),
+            "model": "test-model",
+            "conversation_id": "",
+            "response_mode_preference": "standard",
+        }))
+
+    assert any(event.get("type") == "done" for event in events)
+    joined_prompts = "\n".join(prompts_seen)
+    assert "username: alice99" in joined_prompts
+    assert "display_name: Alice" in joined_prompts
+    assert "username: jasonk87" not in joined_prompts
+    assert "display_name: Jason" not in joined_prompts

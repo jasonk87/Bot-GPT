@@ -53,3 +53,26 @@ def test_admin_updates_check_accepts_username_admin(client, app):
     assert response.status_code == 200
     assert response.get_json().get('status') == 'ready'
     refresh.assert_called_once_with(app.instance_path)
+
+
+def test_admin_updates_apply_sends_full_branch_ref(logged_in_client, app):
+    with patch('workspace.update_manager.is_state_fresh', return_value=True), \
+         patch('workspace.update_manager.start_update', return_value={"status": "started"}) as start_update:
+        response = logged_in_client.post('/api/admin/updates/update', json={
+            "branch": "origin/feature/very-long-branch-name",
+            "strategy": "abort",
+        })
+    assert response.status_code == 200
+    kwargs = start_update.call_args.kwargs
+    assert kwargs["branch"] == "origin/feature/very-long-branch-name"
+
+
+def test_admin_updates_apply_returns_busy_for_double_submit(logged_in_client, app):
+    with patch('workspace.update_manager.is_state_fresh', return_value=True), \
+         patch('workspace.update_manager.start_update', return_value={"status": "busy", "message": "Update already in progress."}):
+        response = logged_in_client.post('/api/admin/updates/update', json={
+            "branch": "origin/main",
+            "strategy": "abort",
+        })
+    assert response.status_code == 409
+    assert response.get_json().get("status") == "busy"

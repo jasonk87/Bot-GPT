@@ -25,7 +25,7 @@ class FakeChromaClient:
         return {"name": name}
 
 
-def test_archive_conversation_persists_user_and_assistant_turns():
+def test_archive_conversation_persists_only_user_turns():
     memory = MemoryManager()
     memory.user_collection = FakeCollection()
 
@@ -38,11 +38,10 @@ def test_archive_conversation_persists_user_and_assistant_turns():
         ],
     })
 
-    assert archived == 2
-    assert len(memory.user_collection.calls) == 2
+    assert archived == 1
+    assert len(memory.user_collection.calls) == 1
     assert memory.user_collection.calls[0]["ids"] == ["conversation:convo-123:0:user"]
     assert memory.user_collection.calls[0]["documents"] == ["user: My name is Jason and I like dark roast coffee."]
-    assert memory.user_collection.calls[1]["documents"] == ["assistant: I'll remember that."]
 
 
 def test_project_memory_uses_same_collection_for_same_repo_remote(app, test_user):
