@@ -12,6 +12,9 @@ from models import (
     check_permission,
 )
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
+from memory_ingest import extract_facts_from_message
+from memory_store import upsert_fact
+from memory_retriever import build_memory_injection_block
 from shared_paths import (
     get_conversation_path,
     get_conversation_index_path,
@@ -45,6 +48,9 @@ def initialize_chat(data):
             "project_id": data.get("project_id"),
             "participants": [{"user_id": owner_id, "role": "owner"}],
             "messages": [],
+            "artifacts": [],
+            "artifact_versions": {},
+            "last_active_artifact_id": None,
             "created_at": time.time(),
         }
         save_conversation(conversation_path, conversation)
@@ -69,6 +75,7 @@ def initialize_chat(data):
             )
 
         latest_query = None
+        msgs = []
         messages_raw = data.get("messages")
         if messages_raw:
             try:
@@ -79,8 +86,30 @@ def initialize_chat(data):
                 pass
 
         memory_context = memory.get_all_context(query=latest_query)
+        hybrid_memory_context = build_memory_injection_block(
+            current_user.id,
+            conversation["id"],
+            latest_query or "",
+            project_key=conversation.get("project_id"),
+        )
         if memory_context:
             system_prompt += f"\n\n=== RECALLED MEMORY ===\n{memory_context}\n=======================\n"
+        if hybrid_memory_context:
+            system_prompt += f"\n\n{hybrid_memory_context}\n"
+
+        if latest_query:
+            facts = extract_facts_from_message(latest_query)
+            for fact in facts:
+                upsert_fact(
+                    current_user.id,
+                    scope=fact.get("scope", "user"),
+                    key=fact.get("key"),
+                    value=fact.get("value"),
+                    source_conversation_id=conversation["id"],
+                    source_message_index=max(0, len(msgs) - 1) if messages_raw else None,
+                    confidence=fact.get("confidence", 0.65),
+                    project_key=conversation.get("project_id") if fact.get("scope") == "project" else None,
+                )
     except Exception as e:
         current_app.logger.warning(f"Error injecting memory: {e}")
 
