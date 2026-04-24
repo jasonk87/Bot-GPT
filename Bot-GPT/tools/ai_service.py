@@ -80,11 +80,16 @@ def call_gemini_chat_stream(model, messages, system_prompt):
                 continue
 
             if not buffer:
-                if decoded_line == '[': continue
-                if decoded_line == ']': continue
-                if decoded_line == ',': continue
-                if decoded_line.startswith('['): decoded_line = decoded_line[1:].strip()
-                elif decoded_line.startswith(','): decoded_line = decoded_line[1:].strip()
+                if decoded_line == '[':
+                    continue
+                if decoded_line == ']':
+                    continue
+                if decoded_line == ',':
+                    continue
+                if decoded_line.startswith('['):
+                    decoded_line = decoded_line[1:].strip()
+                elif decoded_line.startswith(','):
+                    decoded_line = decoded_line[1:].strip()
 
             buffer += decoded_line
 
@@ -111,7 +116,7 @@ def call_gemini_chat_stream(model, messages, system_prompt):
          if e.response is not None:
              try:
                  error_msg += f"\nDetails: {e.response.text}"
-             except:
+             except Exception:
                  pass
          yield error_msg
     except Exception as e:
