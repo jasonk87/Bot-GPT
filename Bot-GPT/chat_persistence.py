@@ -14,7 +14,7 @@ from models import (
 from prompts import PERSONAS, DEFAULT_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT
 from memory_ingest import extract_facts_from_message
 from memory_store import upsert_fact
-from memory_retriever import build_memory_injection_block
+from memory_retriever import build_memory_injection_block, build_user_memory_block
 from shared_paths import (
     get_conversation_path,
     get_conversation_index_path,
@@ -62,6 +62,7 @@ def initialize_chat(data):
     system_prompt = PERSONAS.get(persona_key, {}).get("prompt", DEFAULT_SYSTEM_PROMPT)
     if data.get("agent_mode", False):
         system_prompt = AGENT_SYSTEM_PROMPT
+    system_prompt = f"{system_prompt}\n\n{build_user_memory_block(current_user)}\n"
 
     try:
         from memory import MemoryManager
@@ -85,28 +86,27 @@ def initialize_chat(data):
             except Exception:
                 pass
 
-        memory_context = memory.get_all_context(query=latest_query)
         hybrid_memory_context = build_memory_injection_block(
             current_user.id,
             conversation["id"],
             latest_query or "",
             project_key=conversation.get("project_id"),
         )
-        if memory_context:
-            system_prompt += f"\n\n=== RECALLED MEMORY ===\n{memory_context}\n=======================\n"
         if hybrid_memory_context:
             system_prompt += f"\n\n{hybrid_memory_context}\n"
 
-        if latest_query:
-            facts = extract_facts_from_message(latest_query)
-            for fact in facts:
+        for idx, message in enumerate(msgs or []):
+            if message.get("role") != "user":
+                continue
+            content = message.get("content", "")
+            for fact in extract_facts_from_message(content):
                 upsert_fact(
                     current_user.id,
                     scope=fact.get("scope", "user"),
                     key=fact.get("key"),
                     value=fact.get("value"),
                     source_conversation_id=conversation["id"],
-                    source_message_index=max(0, len(msgs) - 1) if messages_raw else None,
+                    source_message_index=idx,
                     confidence=fact.get("confidence", 0.65),
                     project_key=conversation.get("project_id") if fact.get("scope") == "project" else None,
                 )
