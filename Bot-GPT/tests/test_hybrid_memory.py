@@ -1,0 +1,105 @@
+from context_compactor import compact_session_history, estimate_context_usage
+from memory_ingest import extract_facts_from_message, is_memory_worthy
+from memory_retriever import build_memory_injection_block, retrieve_relevant_memory
+from memory_store import upsert_fact, list_facts, update_session_memory
+
+
+def test_memory_ingestion_stores_relevant_facts(app, test_user):
+    with app.app_context():
+        facts = extract_facts_from_message("I prefer Python and my repo alpha-service has a gateway.")
+        assert len(facts) >= 1
+        for fact in facts:
+            upsert_fact(
+                test_user.id,
+                scope=fact["scope"],
+                key=fact["key"],
+                value=fact["value"],
+                source_conversation_id="c1",
+                source_message_index=3,
+                confidence=fact["confidence"],
+                project_key="alpha" if fact["scope"] == "project" else None,
+            )
+        stored = list_facts(test_user.id, scope="user")
+        assert len(stored) >= 1
+
+
+def test_irrelevant_data_is_not_memory_worthy():
+    assert is_memory_worthy("hi") is False
+    assert extract_facts_from_message("ok") == []
+
+
+def test_retrieval_returns_relevant_items(app, test_user):
+    with app.app_context():
+        upsert_fact(
+            test_user.id,
+            scope="user",
+            key="preference:python",
+            value="User prefers Python for backend work.",
+            source_conversation_id="c2",
+            source_message_index=0,
+            confidence=0.9,
+        )
+        retrieved = retrieve_relevant_memory(test_user.id, "python backend preference")
+        assert retrieved["user_facts"]
+        assert "python" in retrieved["user_facts"][0]["value"].lower()
+
+
+def test_memory_injection_is_bounded_and_traceable(app, test_user):
+    with app.app_context():
+        upsert_fact(
+            test_user.id,
+            scope="user",
+            key="ownership:truck",
+            value="User owns a truck.",
+            source_conversation_id="c-trace",
+            source_message_index=8,
+            confidence=0.8,
+        )
+        block = build_memory_injection_block(test_user.id, "c-trace", "truck", max_chars=300)
+        assert len(block) <= 300
+        assert "source: convo=c-trace" in block
+
+
+def test_per_user_memory_isolation(app, two_users):
+    user1, user2 = two_users
+    with app.app_context():
+        upsert_fact(
+            user1.id,
+            scope="user",
+            key="pref:one",
+            value="User one prefers Go.",
+            source_conversation_id="c-u1",
+            source_message_index=1,
+            confidence=0.7,
+        )
+        upsert_fact(
+            user2.id,
+            scope="user",
+            key="pref:two",
+            value="User two prefers Rust.",
+            source_conversation_id="c-u2",
+            source_message_index=1,
+            confidence=0.7,
+        )
+        user1_facts = list_facts(user1.id, scope="user")
+        user2_facts = list_facts(user2.id, scope="user")
+    assert any("Go" in f["value"] for f in user1_facts)
+    assert all("Rust" not in f["value"] for f in user1_facts)
+    assert any("Rust" in f["value"] for f in user2_facts)
+
+
+def test_context_compaction_preserves_key_info():
+    messages = [{"role": "user", "content": "todo: fix parser"} for _ in range(20)]
+    usage = estimate_context_usage(messages, max_chars=100)
+    assert usage > 0.7
+    compacted = compact_session_history(messages, keep_recent=5)
+    assert compacted["summary"]
+    assert len(compacted["trimmed_messages"]) == 5
+    assert compacted["key_notes"]
+
+
+def test_session_memory_updates(app, test_user):
+    with app.app_context():
+        update_session_memory(test_user.id, "conv-1", "summary text", ["note-a", "note-b"])
+        block = build_memory_injection_block(test_user.id, "conv-1", "summary")
+    assert "summary text" in block

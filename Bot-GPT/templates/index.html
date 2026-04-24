@@ -176,6 +176,74 @@
         .tool-activity-body .status-running { color: #facc15; }
         .tool-activity-body .status-success { color: #4ade80; }
         .tool-activity-body .status-error { color: #f87171; }
+        .live-activity-bar {
+            border-bottom: 1px solid #1f2937;
+            background: rgba(17, 24, 39, 0.85);
+            padding: 0.5rem 1rem;
+        }
+        .live-activity-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.8125rem;
+            color: #d1d5db;
+        }
+        .live-activity-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: #34d399;
+            box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6);
+            animation: livePulse 1.4s infinite;
+            flex-shrink: 0;
+        }
+        @keyframes livePulse {
+            0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6); }
+            70% { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+        }
+        .live-activity-panel {
+            margin-top: 0.5rem;
+            font-size: 0.75rem;
+            color: #94a3b8;
+            display: none;
+        }
+        .live-activity-panel[data-open="true"] {
+            display: grid;
+            gap: 0.2rem;
+        }
+        .tool-timeline-container {
+            margin-top: 0.5rem;
+            border-top: 1px solid #1f2937;
+            padding-top: 0.4rem;
+        }
+        .tool-timeline-list {
+            display: none;
+            margin-top: 0.35rem;
+            max-height: 180px;
+            overflow-y: auto;
+        }
+        .tool-timeline-list[data-open="true"] {
+            display: block;
+        }
+        .tool-step {
+            padding: 0.3rem 0.35rem;
+            border-radius: 0.35rem;
+            cursor: pointer;
+        }
+        .tool-step:hover {
+            background: rgba(51, 65, 85, 0.35);
+        }
+        .tool-step-details {
+            display: none;
+            margin-top: 0.2rem;
+            color: #9ca3af;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .tool-step-details[data-open="true"] {
+            display: block;
+        }
 
         .user-bubble, .bot-bubble {
             overflow-wrap: break-word;
@@ -407,11 +475,14 @@
         @media (max-width: 640px) {
             #canvas-panel {
                 position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                z-index: 40;
+                inset: 0;
+                width: 100vw !important;
+                height: 100vh !important;
+                z-index: 60;
+                border-left: none;
+            }
+            #canvas-panel .canvas-header-buttons button#canvas-close-btn::after {
+                content: " / Back";
             }
         }
     </style>
@@ -545,11 +616,33 @@
                         </button>
                     </div>
                 </div>
+                <div id="live-activity-bar" class="live-activity-bar">
+                    <div class="flex items-center gap-2">
+                        <div id="live-activity-status" class="live-activity-status">
+                            <span class="live-activity-dot"></span>
+                            <span id="live-activity-text">Ready</span>
+                        </div>
+                    </div>
+                    <div id="live-activity-panel" class="live-activity-panel" data-open="false">
+                        <div>Stage: <span id="activity-stage-text">idle</span></div>
+                        <div>Focus: <span id="activity-focus-text">—</span></div>
+                        <div>Last action: <span id="activity-action-text">Waiting for request.</span></div>
+                        <div class="tool-timeline-container">
+                            <button id="tool-timeline-toggle" class="text-xs text-gray-400 hover:text-white" type="button">Tool timeline</button>
+                            <ul id="tool-timeline-list" class="tool-timeline-list" data-open="false"></ul>
+                        </div>
+                    </div>
+                </div>
                 <main id="chat-container" class="scrollable-content flex-1 overflow-y-auto p-4 flex flex-col space-y-4">
-                    <div id="welcome-message" class="text-center text-gray-400 h-full flex flex-col justify-center items-center">
-                        <div class="brand-chip mb-4"><span class="brand-dot"></span> Ready</div>
-                        <h1 class="text-4xl font-bold text-white">Bring in a repo, a bug, or a half-finished idea.</h1>
-                        <p class="mt-3 max-w-xl text-base text-gray-400">Ask for a fix, upload context, inspect files, or let the agent work through a plan step by step.</p>
+                    <div id="welcome-message" class="h-full flex flex-col justify-center items-center text-center px-4">
+                        <h1 class="text-3xl sm:text-4xl font-bold text-white">New Chat</h1>
+                        <p class="mt-3 max-w-xl text-sm sm:text-base text-gray-400">Ask anything, build something, or try one of these:</p>
+                        <div class="mt-4 w-full max-w-xl flex flex-col gap-2">
+                            <button type="button" class="new-chat-suggestion-btn text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-800/70 transition" data-suggestion="Help me debug this code issue step by step.">Debug some code</button>
+                            <button type="button" class="new-chat-suggestion-btn text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-800/70 transition" data-suggestion="Analyze this repository and summarize architecture, risks, and quick wins.">Analyze a repo</button>
+                            <button type="button" class="new-chat-suggestion-btn text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-800/70 transition" data-suggestion="Run an agent task to implement and verify a focused change.">Run an agent task</button>
+                            <button type="button" class="new-chat-suggestion-btn text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-800/70 transition" data-suggestion="Explain this concept deeply with examples and tradeoffs.">Explain something deeply</button>
+                        </div>
                     </div>
                 </main>
                 <footer class="p-4 bg-gray-800 flex-shrink-0">
@@ -687,18 +780,110 @@
 
     <!-- Settings Modal -->
     <div id="settings-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-30">
-        <div class="bg-gray-800 rounded-lg p-6 shadow-xl w-full max-w-lg">
+        <div class="bg-gray-800 rounded-lg p-4 sm:p-6 shadow-xl w-[95vw] max-w-3xl max-h-[92vh] flex flex-col">
             <h3 class="text-lg font-bold mb-4">Agent Settings</h3>
-            <form id="settings-form">
-                <div class="mb-4">
+            <div class="mb-3 overflow-x-auto settings-tabs-scroll">
+              <div class="flex gap-2 text-xs min-w-max pb-1">
+                <button type="button" class="settings-tab-btn px-3 py-1 rounded border border-gray-600" data-tab="general">General</button>
+                <button type="button" class="settings-tab-btn px-3 py-1 rounded border border-gray-600" data-tab="models">Models</button>
+                <button type="button" class="settings-tab-btn px-3 py-1 rounded border border-gray-600" data-tab="proactive">Proactive Tasks</button>
+                <button type="button" class="settings-tab-btn px-3 py-1 rounded border border-gray-600" data-tab="telegram">Telegram</button>
+                <button type="button" class="settings-tab-btn px-3 py-1 rounded border border-gray-600" data-tab="workflows">Workflows</button>
+                <button type="button" class="settings-tab-btn px-3 py-1 rounded border border-gray-600" data-tab="safety">OS Agent / Safety</button>
+                <button type="button" id="admin-updates-tab-btn" class="settings-tab-btn px-3 py-1 rounded border border-gray-600 hidden" data-tab="admin-updates">Admin Updates</button>
+              </div>
+            </div>
+            <form id="settings-form" class="flex flex-col min-h-0">
+              <div class="flex-1 overflow-y-auto pr-1 settings-content-scroll">
+                <div class="mb-4 settings-tab-pane" data-tab="general">
                     <label for="model-select" class="block text-gray-300 text-sm font-bold mb-2">Default Model</label>
                     <select id="model-select" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white leading-tight focus:outline-none focus:shadow-outline"></select>
-                </div>
-                <div class="mb-6">
                     <label for="persona-select" class="block text-gray-300 text-sm font-bold mb-2">Personality</label>
                     <select id="persona-select" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white leading-tight focus:outline-none focus:shadow-outline"></select>
+                    <label for="github-username-input" class="block text-gray-300 text-sm font-bold mt-3 mb-2">GitHub Username (optional)</label>
+                    <input id="github-username-input" type="text" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white leading-tight focus:outline-none focus:shadow-outline" placeholder="your-github-handle">
                 </div>
-                <div class="flex justify-end space-x-4">
+                <div class="mb-4 hidden settings-tab-pane" data-tab="models">
+                    <label class="block text-gray-300 text-sm font-bold mb-2">default_chat_model</label>
+                    <select id="default-chat-model-select" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white mb-3"></select>
+                    <label class="block text-gray-300 text-sm font-bold mb-2">deep_chat_model</label>
+                    <select id="deep-chat-model-select" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white mb-3"></select>
+                    <label class="block text-gray-300 text-sm font-bold mb-2">utility_model</label>
+                    <select id="utility-model-select" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white"></select>
+                </div>
+                <div class="mb-4 hidden settings-tab-pane space-y-2" data-tab="proactive">
+                    <div class="flex items-center justify-between">
+                        <span class="font-semibold text-gray-200">Proactive system</span>
+                        <button type="button" id="proactive-refresh-btn" class="text-[11px] px-2 py-1 rounded border border-gray-600 hover:border-gray-400">Refresh</button>
+                    </div>
+                    <div class="text-xs text-gray-400">Heartbeat: <span id="heartbeat-label">--</span></div>
+                    <div id="task-dashboard-summary" class="text-xs text-gray-400">No background tasks configured.</div>
+                    <ul id="task-dashboard-list" class="space-y-1 text-xs"></ul>
+                    <div id="notification-inbox-summary" class="text-xs text-gray-500">Notifications: 0 unread</div>
+                </div>
+                <div class="mb-4 hidden settings-tab-pane space-y-2" data-tab="telegram">
+                    <div class="text-xs text-gray-300">Status: <span id="telegram-status-summary">Unknown</span></div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <button type="button" id="telegram-pair-btn" class="text-[11px] px-2 py-1 rounded border border-gray-600 hover:border-gray-400">Generate Telegram Pair Code</button>
+                        <button type="button" id="telegram-unpair-btn" class="text-[11px] px-2 py-1 rounded border border-gray-600 hover:border-gray-400">Unpair</button>
+                    </div>
+                    <div id="telegram-pair-code" class="font-mono text-xs text-gray-300">Not paired</div>
+                </div>
+                <div class="mb-4 hidden settings-tab-pane space-y-2" data-tab="workflows">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs text-gray-300">Learned workflows</span>
+                        <button type="button" id="workflow-refresh-btn" class="text-[11px] px-2 py-1 rounded border border-gray-600 hover:border-gray-400">Refresh</button>
+                    </div>
+                    <ul id="workflow-list" class="space-y-1 text-xs"></ul>
+                </div>
+                <div class="mb-4 hidden settings-tab-pane space-y-2" data-tab="safety">
+                    <button type="button" id="safety-refresh-btn" class="text-[11px] px-2 py-1 rounded border border-gray-600 hover:border-gray-400">Refresh Safety Status</button>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                        <div class="bg-gray-900 rounded p-2">OS Agent Enabled: <span id="safety-os-enabled">-</span></div>
+                        <div class="bg-gray-900 rounded p-2">Safe Mode: <span id="safety-safe-mode">-</span></div>
+                        <div class="bg-gray-900 rounded p-2">Approve Caution: <span id="safety-approve-caution">-</span></div>
+                        <div class="bg-gray-900 rounded p-2">Approve Dangerous: <span id="safety-approve-dangerous">-</span></div>
+                    </div>
+                    <div class="text-xs text-gray-300">Pending approvals</div>
+                    <ul id="safety-pending-list" class="space-y-1 text-xs"></ul>
+                </div>
+                <div id="admin-updates-pane" class="mb-4 hidden settings-tab-pane" data-tab="admin-updates">
+                    <div class="text-xs text-gray-300 mb-2">Updater target is fixed to <span class="font-mono">jasonk87/Bot-GPT</span>.</div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs mb-3">
+                        <div class="bg-gray-900 rounded p-2">Current branch: <span id="admin-update-current-branch" class="font-mono">-</span></div>
+                        <div class="bg-gray-900 rounded p-2">Current commit: <span id="admin-update-current-commit" class="font-mono">-</span></div>
+                        <div class="bg-gray-900 rounded p-2">Newest remote branch: <span id="admin-update-newest-branch" class="font-mono">-</span></div>
+                        <div class="bg-gray-900 rounded p-2">Newest remote commit: <span id="admin-update-newest-commit" class="font-mono">-</span></div>
+                    </div>
+                    <div class="text-xs text-gray-400 mb-2">Last checked: <span id="admin-update-last-checked">Never</span></div>
+                    <div class="flex flex-wrap gap-2 items-center mb-3">
+                        <button type="button" id="admin-update-refresh-btn" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2 px-3 rounded">Check for Updates / Refresh Branches</button>
+                        <span id="admin-update-status" class="text-xs text-gray-300">idle</span>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2 items-end">
+                        <div class="md:col-span-2">
+                            <label for="admin-update-branch-select" class="block text-xs text-gray-300 mb-1">Target Branch</label>
+                            <select id="admin-update-branch-select" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white text-xs"></select>
+                        </div>
+                        <div>
+                            <label for="admin-update-strategy-select" class="block text-xs text-gray-300 mb-1">Dirty Tree</label>
+                            <select id="admin-update-strategy-select" class="shadow appearance-none border rounded w-full py-2 px-3 bg-gray-600 text-white text-xs">
+                                <option value="abort">abort</option>
+                                <option value="stash">stash</option>
+                                <option value="force">force</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <button type="button" id="admin-update-apply-btn" class="bg-red-600 hover:bg-red-500 text-white text-xs font-bold py-2 px-3 rounded">Apply Update</button>
+                    </div>
+                    <div class="mt-3">
+                        <div class="text-xs text-gray-300 mb-1">Update history</div>
+                        <ul id="admin-update-history" class="space-y-1 text-xs"></ul>
+                    </div>
+                </div>
+              </div>
+                <div class="flex justify-end space-x-4 pt-3 border-t border-gray-700 mt-2 shrink-0">
                     <button type="button" id="cancel-settings-btn" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">Cancel</button>
                     <button type="submit" id="save-settings-btn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded">Save Settings</button>
                 </div>
@@ -715,6 +900,23 @@
             </div>
             <div class="flex justify-end mt-6 flex-shrink-0">
                 <button id="close-summary-btn" class="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-4 rounded">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Attachment Viewer Modal -->
+    <div id="attachment-modal" class="fixed inset-0 bg-black bg-opacity-80 hidden z-50 flex items-center justify-center p-3">
+        <div class="w-full max-w-5xl max-h-[90vh] bg-gray-900 rounded-lg border border-gray-700 flex flex-col">
+            <div class="flex items-center justify-between px-3 py-2 border-b border-gray-700">
+                <span id="attachment-modal-title" class="text-sm text-gray-200 truncate">Attachment</span>
+                <div class="flex items-center gap-2">
+                    <button type="button" id="attachment-download-btn" class="text-xs px-2 py-1 rounded border border-gray-600 hover:border-gray-400">Download</button>
+                    <button type="button" id="attachment-telegram-btn" class="text-xs px-2 py-1 rounded border border-gray-600 hover:border-gray-400">Send to Telegram</button>
+                    <button type="button" id="attachment-close-btn" class="text-xs px-2 py-1 rounded border border-gray-600 hover:border-gray-400">Close</button>
+                </div>
+            </div>
+            <div class="flex-1 overflow-auto flex items-center justify-center p-2">
+                <img id="attachment-modal-image" src="" alt="Attachment preview" class="max-w-full max-h-[75vh] object-contain rounded">
             </div>
         </div>
     </div>
