@@ -24,6 +24,14 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     attachImageBtn, imageInput, imagePreviewContainer,
     planToggleBtn, planPanel, planContent, planActions, approvePlanBtn, rejectPlanBtn,
     responseModeSelect, thoughtPanelDefaultToggle,
+    liveActivityBar, liveActivityText, liveActivityPanel, activityPanelToggle, activityStageText, activityFocusText, activityActionText,
+    toolTimelineToggle, toolTimelineList,
+    proactiveDashboard, heartbeatLabel, taskDashboardSummary, taskDashboardList, notificationInboxSummary,
+    telegramPairBtn, telegramPairCode,
+    workflowRefreshBtn, workflowList,
+    githubUsernameInput, adminUpdatesTabBtn, adminUpdatesPane, adminUpdateRefreshBtn, adminUpdateStatus,
+    adminUpdateBranchSelect, adminUpdateStrategySelect, adminUpdateApplyBtn,
+    adminUpdateCurrentBranch, adminUpdateCurrentCommit, adminUpdateNewestBranch, adminUpdateNewestCommit, adminUpdateLastChecked,
     dependencyBanner, dependencyBannerText, dependencyBannerDismiss, dependencyBannerDetails,
     dependencyDetailsModal, dependencyDetailsContent, closeDependencyDetailsBtn, copyDependencyDetailsBtn;
 
@@ -33,6 +41,9 @@ let currentConversationId = null;
 let currentConversationRole = null;
 let deleteResolver = null;
 let userModel = null;
+let defaultChatModel = null;
+let deepChatModel = null;
+let utilityModel = null;
 let currentUsername = null;
 let editor = null;
 let socket = null;
@@ -54,6 +65,30 @@ let conversationRunStates = {};
 let pendingNewConversationRun = null;
 let dependencyBannerDismissedForSession = false;
 let lastDependencyReport = null;
+let liveActivityState = {
+    currentStage: 'idle',
+    currentFocus: '—',
+    lastAction: 'Waiting for request.',
+    activeTool: null,
+    startedAt: null,
+};
+let toolTimelineEntries = [];
+let toolTimelineByCallId = new Map();
+let artifactState = {
+    currentArtifactId: null,
+    artifactStatus: 'idle',
+    artifactType: 'unknown',
+    lastUpdatedAt: null,
+    previewAvailable: false,
+};
+let artifactPreviewVisible = false;
+let artifactList = [];
+let artifactById = new Map();
+let workspacePanelCollapsedMobile = true;
+let artifactVersions = [];
+let selectedArtifactVersionId = null;
+let proactiveDashboardTimer = null;
+let userIsAdmin = false;
 
 function getCurrentConversationStorageKey() {
     return currentUsername ? `botgpt_current_conversation_id_${currentUsername}` : 'botgpt_current_conversation_id';
@@ -61,6 +96,23 @@ function getCurrentConversationStorageKey() {
 
 function getTabsStorageKey(conversationId) {
     return currentUsername ? `botgpt_tabs_${currentUsername}_${conversationId}` : `botgpt_tabs_${conversationId}`;
+}
+
+function sortArtifacts(items = []) {
+    return [...items].sort((a, b) => Number(b.last_updated_at || 0) - Number(a.last_updated_at || 0));
+}
+
+function upsertArtifactEntry(entry) {
+    if (!entry || !entry.artifact_id) return;
+    const normalized = {
+        artifact_id: entry.artifact_id,
+        conversation_id: entry.conversation_id || currentConversationId,
+        artifact_type: entry.artifact_type || inferArtifactType(entry.artifact_id),
+        last_updated_at: entry.last_updated_at || Date.now() / 1000,
+        title: entry.title || entry.artifact_id.split('/').pop(),
+    };
+    artifactById.set(normalized.artifact_id, normalized);
+    artifactList = sortArtifacts(Array.from(artifactById.values()));
 }
 
 function saveCurrentConversationId(conversationId) {
@@ -87,6 +139,85 @@ function clearConversationSessionState(conversationId) {
         currentResponseContent = '';
         setAgentRunning(false);
         clearCurrentConversationId();
+    }
+}
+
+function formatRelativeTime(epochSeconds) {
+    if (!epochSeconds) return '—';
+    const delta = Math.max(0, Math.floor(Date.now() / 1000 - Number(epochSeconds)));
+    if (delta < 60) return `${delta}s ago`;
+    if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
+    return `${Math.floor(delta / 3600)}h ago`;
+}
+
+async function refreshProactiveDashboard() {
+    if (!proactiveDashboard) return;
+    try {
+        const [tasksRes, heartbeatRes, notificationsRes, telegramStatusRes, workflowsRes] = await Promise.all([
+            fetch(`${API_BASE}/tasks`),
+            fetch(`${API_BASE}/system/heartbeat`),
+            fetch(`${API_BASE}/notifications?unread_only=1`),
+            fetch(`${API_BASE}/telegram/status`),
+            fetch(`${API_BASE}/workflows`),
+        ]);
+        const tasksData = await tasksRes.json();
+        const heartbeatData = await heartbeatRes.json();
+        const notificationsData = await notificationsRes.json();
+        const telegramData = await telegramStatusRes.json();
+        const workflowData = await workflowsRes.json();
+
+        const tasks = tasksData.tasks || [];
+        const unread = notificationsData.notifications || [];
+        heartbeatLabel.textContent = `Heartbeat: ${formatRelativeTime(heartbeatData.last_heartbeat)}`;
+        taskDashboardSummary.textContent = tasks.length
+            ? `${tasks.filter((t) => t.status === 'active').length} active task(s) • last activity ${formatRelativeTime(heartbeatData.last_task_activity)}`
+            : 'No background tasks configured.';
+        notificationInboxSummary.textContent = `Notifications: ${unread.length} unread`;
+
+        taskDashboardList.innerHTML = '';
+        tasks.slice(0, 5).forEach((task) => {
+            const li = document.createElement('li');
+            const lastResult = task.last_result?.message || 'No results yet';
+            li.className = 'text-gray-300';
+            li.textContent = `${task.name} — ${task.status} — last ${formatRelativeTime(task.last_run)} — next ${formatRelativeTime(task.next_run)} — ${lastResult}`;
+            taskDashboardList.appendChild(li);
+        });
+        if (telegramPairCode) {
+            const linked = telegramData.linked_accounts || [];
+            telegramPairCode.textContent = linked.length
+                ? `Paired: @${linked[0].telegram_username || linked[0].telegram_user_id}`
+                : 'Not paired';
+        }
+        if (workflowList) {
+            workflowList.innerHTML = '';
+            (workflowData.workflows || []).slice(0, 5).forEach((workflow) => {
+                const li = document.createElement('li');
+                li.className = 'text-gray-300 flex items-center justify-between gap-2';
+                li.innerHTML = `
+                    <span>${workflow.name} (${Math.round((workflow.success_rate || 0) * 100)}%)</span>
+                    <span class="space-x-1">
+                        <button class="workflow-run-btn text-[10px] border border-gray-600 rounded px-1" data-workflow-id="${workflow.workflow_id}">Run</button>
+                        <button class="workflow-delete-btn text-[10px] border border-gray-700 rounded px-1" data-workflow-id="${workflow.workflow_id}">Delete</button>
+                    </span>
+                `;
+                workflowList.appendChild(li);
+            });
+            workflowList.querySelectorAll('.workflow-run-btn').forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    await fetch(`${API_BASE}/workflows/${btn.dataset.workflowId}/run`, { method: 'POST' });
+                    await refreshProactiveDashboard();
+                });
+            });
+            workflowList.querySelectorAll('.workflow-delete-btn').forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    await fetch(`${API_BASE}/workflows/${btn.dataset.workflowId}`, { method: 'DELETE' });
+                    await refreshProactiveDashboard();
+                });
+            });
+        }
+    } catch (error) {
+        console.error('Failed to refresh proactive dashboard', error);
+        if (taskDashboardSummary) taskDashboardSummary.textContent = 'Proactive dashboard unavailable.';
     }
 }
 
@@ -265,6 +396,37 @@ async function initializeApp(username) {
     copyDependencyDetailsBtn = document.getElementById('copy-dependency-details-btn');
     responseModeSelect = document.getElementById('response-mode-select');
     thoughtPanelDefaultToggle = document.getElementById('thought-panel-default-toggle');
+    liveActivityBar = document.getElementById('live-activity-bar');
+    liveActivityText = document.getElementById('live-activity-text');
+    liveActivityPanel = document.getElementById('live-activity-panel');
+    activityPanelToggle = document.getElementById('activity-panel-toggle');
+    activityStageText = document.getElementById('activity-stage-text');
+    activityFocusText = document.getElementById('activity-focus-text');
+    activityActionText = document.getElementById('activity-action-text');
+    toolTimelineToggle = document.getElementById('tool-timeline-toggle');
+    toolTimelineList = document.getElementById('tool-timeline-list');
+    proactiveDashboard = document.getElementById('proactive-dashboard');
+    heartbeatLabel = document.getElementById('heartbeat-label');
+    taskDashboardSummary = document.getElementById('task-dashboard-summary');
+    taskDashboardList = document.getElementById('task-dashboard-list');
+    notificationInboxSummary = document.getElementById('notification-inbox-summary');
+    telegramPairBtn = document.getElementById('telegram-pair-btn');
+    telegramPairCode = document.getElementById('telegram-pair-code');
+    workflowRefreshBtn = document.getElementById('workflow-refresh-btn');
+    workflowList = document.getElementById('workflow-list');
+    githubUsernameInput = document.getElementById('github-username-input');
+    adminUpdatesTabBtn = document.getElementById('admin-updates-tab-btn');
+    adminUpdatesPane = document.getElementById('admin-updates-pane');
+    adminUpdateRefreshBtn = document.getElementById('admin-update-refresh-btn');
+    adminUpdateStatus = document.getElementById('admin-update-status');
+    adminUpdateBranchSelect = document.getElementById('admin-update-branch-select');
+    adminUpdateStrategySelect = document.getElementById('admin-update-strategy-select');
+    adminUpdateApplyBtn = document.getElementById('admin-update-apply-btn');
+    adminUpdateCurrentBranch = document.getElementById('admin-update-current-branch');
+    adminUpdateCurrentCommit = document.getElementById('admin-update-current-commit');
+    adminUpdateNewestBranch = document.getElementById('admin-update-newest-branch');
+    adminUpdateNewestCommit = document.getElementById('admin-update-newest-commit');
+    adminUpdateLastChecked = document.getElementById('admin-update-last-checked');
 
     // Image Upload Elements
     attachImageBtn = document.getElementById('attach-image-btn');
@@ -272,6 +434,31 @@ async function initializeApp(username) {
     imagePreviewContainer = document.getElementById('image-preview-container');
 
     welcomeUser.textContent = `Welcome, ${username}!`;
+    activityPanelToggle?.addEventListener('click', () => {
+        const isOpen = liveActivityPanel?.dataset.open === 'true';
+        liveActivityPanel.dataset.open = isOpen ? 'false' : 'true';
+    });
+    toolTimelineToggle?.addEventListener('click', () => {
+        const isOpen = toolTimelineList?.dataset.open === 'true';
+        toolTimelineList.dataset.open = isOpen ? 'false' : 'true';
+    });
+    updateLiveActivity({ stage: 'idle', action: 'Ready for your request.' });
+    resetToolTimeline();
+    await refreshProactiveDashboard();
+    if (proactiveDashboardTimer) clearInterval(proactiveDashboardTimer);
+    proactiveDashboardTimer = setInterval(refreshProactiveDashboard, 30000);
+    telegramPairBtn?.addEventListener('click', async () => {
+        try {
+            const response = await fetch(`${API_BASE}/telegram/pairing-code`, { method: 'POST' });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.error || 'Failed to generate pairing code');
+            telegramPairCode.textContent = `${payload.pairing_code} (expires soon)`;
+        } catch (error) {
+            console.error('Telegram pairing code error', error);
+            telegramPairCode.textContent = 'Pairing unavailable';
+        }
+    });
+    workflowRefreshBtn?.addEventListener('click', refreshProactiveDashboard);
 
     // --- Image Upload Logic ---
     attachImageBtn.addEventListener('click', () => imageInput.click());
@@ -416,6 +603,15 @@ async function initializeApp(username) {
     socket.on('disconnect', () => {
         console.log('Socket.IO disconnected');
     });
+    socket.on('proactive_notification', (notification) => {
+        const title = notification?.title || 'Background task update';
+        const message = notification?.message || 'A background task completed.';
+        addMessage(`🔔 ${title}: ${message}`, 'assistant');
+        refreshProactiveDashboard();
+    });
+    socket.on('proactive_task_update', () => {
+        refreshProactiveDashboard();
+    });
 
     socket.on('ai_response', (data) => {
         try {
@@ -436,6 +632,18 @@ async function initializeApp(username) {
                     }
                     break;
                 case 'open_canvas':
+                    upsertArtifactEntry({
+                        artifact_id: data.filename,
+                        artifact_type: inferArtifactType(data.filename),
+                        last_updated_at: Date.now() / 1000,
+                    });
+                    updateArtifactState({
+                        currentArtifactId: data.filename,
+                        artifactType: inferArtifactType(data.filename),
+                        artifactStatus: 'created',
+                        previewAvailable: false,
+                    });
+                    updateLiveActivity({ stage: 'acting', action: `Created artifact: ${data.filename}` });
                     openFileCanvas(data.filename);
                     break;
                 case 'plan_step_update':
@@ -447,10 +655,20 @@ async function initializeApp(username) {
                 case 'progress_update':
                     markConversationRunState(currentConversationId, { isRunning: true, stage: data.stage });
                     updateProgressTimeline(currentAgentBubble, data);
+                    updateLiveActivity({ stage: data.stage, action: data.label || null });
+                    break;
+                case 'activity_update':
+                    updateLiveActivity({
+                        stage: data.stage || 'analyzing',
+                        focus: data.focus || null,
+                        action: data.last_action || null,
+                        activeTool: data.active_tool || null,
+                    });
                     break;
                 case 'assistant_chunk':
                     // This is the main event for streaming content
                     markConversationRunState(currentConversationId, { isRunning: true, stage: 'answering' });
+                    updateLiveActivity({ stage: 'analyzing', action: 'Composing response…' });
                     currentResponseContent += data.content;
                     updateBotBubble(currentAgentBubble, currentResponseContent, false);
                     break;
@@ -484,14 +702,24 @@ async function initializeApp(username) {
                     });
                     updateBotBubble(currentAgentBubble, currentResponseContent, true);
                     showToolCall(currentAgentBubble, data.name, data.params);
+                    updateToolTimelineFromEvent('tool_call', data);
+                    updateLiveActivity({
+                        stage: 'tool_execution',
+                        activeTool: data.name,
+                        action: `Running ${String(data.name || 'tool').replace(/_/g, ' ')}…`,
+                    });
                     break;
                 case 'tool_result':
                     markConversationRunState(currentConversationId, { isRunning: true, stage: 'after_tool' });
                     updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
+                    updateToolTimelineFromEvent('tool_result', data);
+                    updateLiveActivity({ stage: 'analyzing', action: 'Analyzing tool results…', activeTool: null });
                     break;
                 case 'tool_error':
                     markConversationRunState(currentConversationId, { isRunning: true, stage: 'tool_error', error: data.error });
                     updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);
+                    updateToolTimelineFromEvent('tool_error', data);
+                    updateLiveActivity({ stage: 'analyzing', action: 'Tool failed. Re-evaluating next step…', activeTool: null });
                     break;
                 case 'final_answer':
                     // This is now the definitive final answer from the agent.
@@ -504,6 +732,7 @@ async function initializeApp(username) {
                         }
                     }
                     markConversationRunState(currentConversationId, { isRunning: true, partialResponse: currentResponseContent, stage: 'final_answer' });
+                    updateLiveActivity({ stage: 'finalizing', action: 'Finalizing answer…' });
                     updateBotBubble(currentAgentBubble, currentResponseContent, true);
                     break;
                 case 'done':
@@ -516,6 +745,7 @@ async function initializeApp(username) {
                     }
                     // Reset content for the next user message
                     currentResponseContent = "";
+                    updateLiveActivity({ stage: 'idle', action: 'Ready for your next request.', activeTool: null, resetTimer: true });
                     break;
                 case 'agent_error':
                     if (data.error === 'Conversation not found.') {
@@ -525,6 +755,7 @@ async function initializeApp(username) {
                     }
                     markConversationRunState(currentConversationId, { isRunning: true, stage: 'error', error: data.error });
                     updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);
+                    updateLiveActivity({ stage: 'error', action: `Issue: ${data.error}`, activeTool: null });
                     setAgentRunning(false);
                     break;
                 case 'refresh_files':
@@ -533,6 +764,18 @@ async function initializeApp(username) {
                     }
                     break;
                 case 'file_updated': {
+                    upsertArtifactEntry({
+                        artifact_id: data.path,
+                        artifact_type: inferArtifactType(data.path),
+                        last_updated_at: Date.now() / 1000,
+                    });
+                    updateArtifactState({
+                        currentArtifactId: data.path,
+                        artifactType: inferArtifactType(data.path),
+                        artifactStatus: 'updated',
+                        previewAvailable: true,
+                    });
+                    updateLiveActivity({ stage: 'analyzing', action: `Updated artifact: ${data.path}` });
                     // Update content in tabs if open
                     const tabIndex = openTabs.findIndex(t => t.path === data.path);
                     if (tabIndex !== -1) {
@@ -541,6 +784,10 @@ async function initializeApp(username) {
                         if (tabIndex === activeTabIndex && editor) {
                             if (editor.getValue() !== data.content) {
                                 editor.setValue(data.content);
+                            }
+                            renderArtifactPreview(data.content, data.path);
+                            if (artifactState.currentArtifactId === data.path) {
+                                loadVersionsForArtifact(data.path).then(() => renderCanvasPanel());
                             }
                         }
                     }
@@ -722,9 +969,32 @@ async function initializeApp(username) {
     uploadForm.addEventListener('submit', handleFileUpload);
 
     // --- Settings Modal Logic ---
-    settingsBtn.addEventListener('click', () => settingsModal.classList.remove('hidden'));
+    settingsBtn.addEventListener('click', async () => {
+        settingsModal.classList.remove('hidden');
+        if (userIsAdmin) {
+            await loadAdminUpdateStatus();
+        }
+    });
     cancelSettingsBtn.addEventListener('click', () => settingsModal.classList.add('hidden'));
     settingsForm.addEventListener('submit', handleSaveSettings);
+    document.querySelectorAll('.settings-tab-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const tab = btn.dataset.tab;
+            document.querySelectorAll('.settings-tab-btn').forEach((node) => node.classList.toggle('bg-gray-700', node === btn));
+            document.querySelectorAll('.settings-tab-pane').forEach((pane) => {
+                pane.classList.toggle('hidden', pane.dataset.tab !== tab);
+            });
+        });
+    });
+    document.querySelector('.settings-tab-btn[data-tab="general"]')?.classList.add('bg-gray-700');
+    const proactiveSlot = document.getElementById('settings-proactive-slot');
+    if (proactiveSlot && proactiveDashboard && proactiveDashboard.parentElement !== proactiveSlot) {
+        proactiveDashboard.classList.remove('hidden');
+        proactiveSlot.innerHTML = '';
+        proactiveSlot.appendChild(proactiveDashboard);
+    }
+    adminUpdateRefreshBtn?.addEventListener('click', refreshAdminUpdates);
+    adminUpdateApplyBtn?.addEventListener('click', applyAdminUpdate);
 
             // --- Share Modal Logic ---
             cancelShareBtn.addEventListener('click', () => shareModal.classList.add('hidden'));
@@ -796,10 +1066,12 @@ async function initializeApp(username) {
         // But we can eagerly load the tabs.
         currentConversationId = savedConvoId;
         await populateFileExplorer();
+        await loadArtifactsForCurrentConversation();
         await loadTabState();
         socket.emit('load_conversation', { conversation_id: savedConvoId });
     } else {
         await populateFileExplorer();
+        await loadArtifactsForCurrentConversation();
     }
 
     socket.emit('load_conversations');
@@ -883,6 +1155,87 @@ async function loadDependencyHealthBanner() {
     }
 }
 
+function formatUnixTimestamp(seconds) {
+    if (!seconds) return 'Never';
+    try {
+        return new Date(Number(seconds) * 1000).toLocaleString();
+    } catch (_) {
+        return 'Never';
+    }
+}
+
+function renderAdminUpdateState(state = {}) {
+    if (!adminUpdatesPane || !userIsAdmin) return;
+    const snapshot = state.snapshot || {};
+    const newest = state.newest_remote || (state.remote_branches || [])[0] || {};
+    adminUpdateCurrentBranch.textContent = snapshot.branch || '-';
+    adminUpdateCurrentCommit.textContent = (snapshot.commit || '-').slice(0, 12);
+    adminUpdateNewestBranch.textContent = newest.name || '-';
+    adminUpdateNewestCommit.textContent = (newest.commit || '-').slice(0, 12);
+    adminUpdateLastChecked.textContent = formatUnixTimestamp(state.last_checked);
+    adminUpdateStatus.textContent = state.status || 'idle';
+
+    const branches = state.remote_branches || [];
+    if (adminUpdateBranchSelect) {
+        const existing = adminUpdateBranchSelect.value;
+        adminUpdateBranchSelect.innerHTML = '';
+        branches.forEach((entry) => {
+            const option = document.createElement('option');
+            option.value = entry.name;
+            option.textContent = `${entry.name} (${(entry.commit || '').slice(0, 10)})`;
+            adminUpdateBranchSelect.appendChild(option);
+        });
+        if (existing && branches.some((entry) => entry.name === existing)) {
+            adminUpdateBranchSelect.value = existing;
+        }
+    }
+}
+
+async function loadAdminUpdateStatus() {
+    if (!userIsAdmin) return;
+    try {
+        const response = await fetch(`${API_BASE}/admin/updates/status`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Failed to load update status');
+        renderAdminUpdateState(payload);
+    } catch (error) {
+        console.error('Failed to load admin update status:', error);
+    }
+}
+
+async function refreshAdminUpdates() {
+    if (!userIsAdmin) return;
+    try {
+        adminUpdateStatus.textContent = 'checking';
+        const response = await fetch(`${API_BASE}/admin/updates/check`);
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Failed to refresh branches');
+        renderAdminUpdateState(payload);
+    } catch (error) {
+        adminUpdateStatus.textContent = `error: ${error.message}`;
+    }
+}
+
+async function applyAdminUpdate() {
+    if (!userIsAdmin || !adminUpdateBranchSelect?.value) return;
+    try {
+        adminUpdateStatus.textContent = 'updating';
+        const response = await fetch(`${API_BASE}/admin/updates/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                branch: adminUpdateBranchSelect.value,
+                strategy: adminUpdateStrategySelect?.value || 'abort',
+            }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Update failed to start');
+        await loadAdminUpdateStatus();
+    } catch (error) {
+        adminUpdateStatus.textContent = `error: ${error.message}`;
+    }
+}
+
 async function loadUserSettings() {
     try {
         const response = await fetch(`${API_BASE}/settings`);
@@ -898,7 +1251,16 @@ async function loadUserSettings() {
         }
 
         userModel = settings.model || (modelSelect.options.length > 0 ? modelSelect.options[0].value : '');
+        defaultChatModel = settings.default_chat_model || userModel;
+        deepChatModel = settings.deep_chat_model || userModel;
+        utilityModel = settings.utility_model || userModel;
         if (userModel) modelSelect.value = userModel;
+        const defaultModelSelect = document.getElementById('default-chat-model-select');
+        const deepModelSelect = document.getElementById('deep-chat-model-select');
+        const utilityModelSelect = document.getElementById('utility-model-select');
+        if (defaultModelSelect) defaultModelSelect.value = defaultChatModel;
+        if (deepModelSelect) deepModelSelect.value = deepChatModel;
+        if (utilityModelSelect) utilityModelSelect.value = utilityModel;
         currentModelDisplay.textContent = userModel;
         personaSelect.value = settings.persona || 'default';
         selectedResponseModePreference = settings.response_mode_preference || selectedResponseModePreference || 'auto';
@@ -909,6 +1271,19 @@ async function loadUserSettings() {
         if (thoughtPanelDefaultToggle) {
             thoughtPanelDefaultToggle.checked = thoughtPanelExpandedByDefault;
         }
+        if (githubUsernameInput) {
+            githubUsernameInput.value = settings.github_username || '';
+        }
+        userIsAdmin = !!settings.is_admin;
+        if (adminUpdatesTabBtn) {
+            adminUpdatesTabBtn.classList.toggle('hidden', !userIsAdmin);
+        }
+        if (adminUpdatesPane && !userIsAdmin) {
+            adminUpdatesPane.classList.add('hidden');
+        }
+        if (userIsAdmin) {
+            await loadAdminUpdateStatus();
+        }
 
     } catch (error) {
         console.error("Failed to load user settings:", error);
@@ -918,15 +1293,32 @@ async function loadUserSettings() {
 async function handleSaveSettings(e) {
     e.preventDefault();
     const newModel = modelSelect.value;
+    const defaultModelSelect = document.getElementById('default-chat-model-select');
+    const deepModelSelect = document.getElementById('deep-chat-model-select');
+    const utilityModelSelect = document.getElementById('utility-model-select');
+    const newDefaultModel = defaultModelSelect?.value || newModel;
+    const newDeepModel = deepModelSelect?.value || newModel;
+    const newUtilityModel = utilityModelSelect?.value || newModel;
     const newPersona = personaSelect.value;
+    const githubUsername = (githubUsernameInput?.value || '').trim();
     try {
         const response = await fetch(`${API_BASE}/settings`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: newModel, persona: newPersona }),
+            body: JSON.stringify({
+                model: newModel,
+                default_chat_model: newDefaultModel,
+                deep_chat_model: newDeepModel,
+                utility_model: newUtilityModel,
+                persona: newPersona,
+                github_username: githubUsername,
+            }),
         });
         if (!response.ok) throw new Error('Failed to save settings');
         userModel = newModel;
+        defaultChatModel = newDefaultModel;
+        deepChatModel = newDeepModel;
+        utilityModel = newUtilityModel;
         currentModelDisplay.textContent = userModel;
         settingsModal.classList.add('hidden');
     } catch (error) {
@@ -953,12 +1345,20 @@ async function populateModels() {
         const response = await fetch(`${window.location.origin}${API_BASE}/models`);
         if (!response.ok) throw new Error("Failed to fetch models");
         const models = await response.json();
-        modelSelect.innerHTML = '';
+        const selects = [
+            modelSelect,
+            document.getElementById('default-chat-model-select'),
+            document.getElementById('deep-chat-model-select'),
+            document.getElementById('utility-model-select'),
+        ].filter(Boolean);
+        selects.forEach((select) => { select.innerHTML = ''; });
         models.forEach(model => {
-            const option = document.createElement('option');
-            option.value = model.name;
-            option.textContent = model.name;
-            modelSelect.appendChild(option);
+            selects.forEach((select) => {
+                const option = document.createElement('option');
+                option.value = model.name;
+                option.textContent = model.name;
+                select.appendChild(option);
+            });
         });
     } catch (error) { console.error("Failed to fetch models:", error); }
 }
@@ -993,6 +1393,113 @@ async function populateFileExplorer() {
     } catch (error) {
         console.error("Failed to populate file explorer:", error);
         fileExplorer.innerHTML = '<p class="text-red-400">Could not load files.</p>';
+    }
+}
+
+async function loadArtifactsForCurrentConversation() {
+    if (!currentConversationId) {
+        artifactList = [];
+        artifactById = new Map();
+        artifactVersions = [];
+        selectedArtifactVersionId = null;
+        return;
+    }
+    try {
+        const response = await fetch(`${window.location.origin}${API_BASE}/conversation/${currentConversationId}/artifacts`);
+        if (!response.ok) return;
+        const data = await response.json();
+        artifactList = sortArtifacts(data.artifacts || []);
+        artifactById = new Map(artifactList.map((artifact) => [artifact.artifact_id, artifact]));
+        if (data.last_active_artifact_id) {
+            updateArtifactState({
+                currentArtifactId: data.last_active_artifact_id,
+                artifactType: inferArtifactType(data.last_active_artifact_id),
+                artifactStatus: 'restored',
+                previewAvailable: true,
+            });
+        }
+    } catch (error) {
+        console.warn('Failed to load artifacts', error);
+    }
+}
+
+function computeSimpleLineDiff(currentContent = '', versionContent = '') {
+    const currentLines = String(currentContent || '').split('\n');
+    const versionLines = String(versionContent || '').split('\n');
+    const maxLen = Math.max(currentLines.length, versionLines.length);
+    const diffRows = [];
+    for (let i = 0; i < maxLen; i += 1) {
+        const before = versionLines[i] ?? '';
+        const after = currentLines[i] ?? '';
+        if (before === after) continue;
+        diffRows.push(`- ${before}`);
+        diffRows.push(`+ ${after}`);
+        if (diffRows.length >= 80) break;
+    }
+    if (diffRows.length === 0) return 'No line differences.';
+    return diffRows.join('\n');
+}
+
+async function loadVersionsForArtifact(artifactId) {
+    if (!artifactId || !currentConversationId) {
+        artifactVersions = [];
+        selectedArtifactVersionId = null;
+        return;
+    }
+    try {
+        const response = await fetch(`${window.location.origin}${API_BASE}/artifact/${encodeURIComponent(artifactId)}/versions?conversation_id=${encodeURIComponent(currentConversationId)}`);
+        if (!response.ok) {
+            artifactVersions = [];
+            selectedArtifactVersionId = null;
+            return;
+        }
+        const data = await response.json();
+        artifactVersions = data.versions || [];
+    } catch (error) {
+        artifactVersions = [];
+        console.warn('Failed to load artifact versions', error);
+    }
+}
+
+async function previewArtifactVersion(artifactId, versionId) {
+    if (!artifactId || !versionId || !currentConversationId) return;
+    try {
+        const response = await fetch(`${window.location.origin}${API_BASE}/artifact/${encodeURIComponent(artifactId)}/version/${encodeURIComponent(versionId)}?conversation_id=${encodeURIComponent(currentConversationId)}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to load version');
+        selectedArtifactVersionId = versionId;
+        const activeTab = openTabs[activeTabIndex];
+        const currentContent = activeTab?.content || (editor ? editor.getValue() : '');
+        const diff = computeSimpleLineDiff(currentContent, data.content || '');
+        artifactPreviewVisible = true;
+        renderCanvasPanel();
+        const previewContainer = document.getElementById('artifact-preview');
+        if (!previewContainer) return;
+        previewContainer.innerHTML = `
+            <div class="text-xs text-gray-300 mb-2">Version ${versionId} (${new Date(Number(data.timestamp) * 1000).toLocaleString()})</div>
+            <pre class="text-xs text-gray-300 bg-gray-900 p-3 rounded overflow-auto h-full">${diff.replace(/[<>&]/g, (m) => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[m]))}</pre>
+        `;
+    } catch (error) {
+        alert(`Error loading version preview: ${error.message}`);
+    }
+}
+
+async function restoreArtifactVersion(artifactId, versionId) {
+    if (!artifactId || !versionId || !currentConversationId) return;
+    try {
+        const response = await fetch(`${window.location.origin}${API_BASE}/artifact/${encodeURIComponent(artifactId)}/version/${encodeURIComponent(versionId)}/restore`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversation_id: currentConversationId }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Restore failed');
+        await openFileCanvas(artifactId, { source: 'restore' });
+        await loadVersionsForArtifact(artifactId);
+        updateLiveActivity({ stage: 'acting', action: `Restored ${artifactId} to ${versionId}` });
+        renderCanvasPanel();
+    } catch (error) {
+        alert(`Error restoring version: ${error.message}`);
     }
 }
 
@@ -1146,18 +1653,68 @@ async function handleRename(oldPath) {
             tabsHtml += '</div>';
 
             const activeTab = openTabs[activeTabIndex];
+            const artifactMeta = artifactStatusText();
+            const workspaceRows = artifactList.length > 0
+                ? artifactList.map((artifact) => {
+                    const isActive = artifact.artifact_id === activeTab.path ? 'bg-blue-900 text-blue-100' : 'text-gray-300 hover:bg-gray-800';
+                    const updated = artifact.last_updated_at
+                        ? new Date(Number(artifact.last_updated_at) * 1000).toLocaleString()
+                        : '—';
+                    return `
+                        <button class="workspace-artifact-item w-full text-left px-2 py-1 rounded ${isActive}" data-artifact-id="${artifact.artifact_id}">
+                            <div class="truncate text-xs">${artifact.title || artifact.artifact_id}</div>
+                            <div class="text-[10px] text-gray-400 truncate">${updated}</div>
+                        </button>
+                    `;
+                }).join('')
+                : '<div class="text-xs text-gray-500 px-2 py-3">No artifacts created yet</div>';
+            const versionRows = artifactVersions.length > 0
+                ? artifactVersions.map((version) => {
+                    const isSelected = version.version_id === selectedArtifactVersionId ? 'bg-indigo-900 text-indigo-100' : 'text-gray-300 hover:bg-gray-800';
+                    const summary = version.change_summary ? ` • ${version.change_summary}` : '';
+                    return `
+                        <div class="rounded ${isSelected} px-2 py-1">
+                            <button class="workspace-version-item w-full text-left" data-version-id="${version.version_id}" data-artifact-id="${activeTab.path}">
+                                <div class="text-[10px] truncate">${new Date(Number(version.timestamp) * 1000).toLocaleString()}${summary}</div>
+                            </button>
+                            <div class="flex gap-1 mt-1">
+                                <button class="version-preview-btn text-[10px] border border-gray-700 rounded px-1 py-0.5" data-version-id="${version.version_id}" data-artifact-id="${activeTab.path}">Preview</button>
+                                <button class="version-restore-btn text-[10px] border border-gray-700 rounded px-1 py-0.5" data-version-id="${version.version_id}" data-artifact-id="${activeTab.path}">Restore</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('')
+                : '<div class="text-xs text-gray-500 px-2 py-2">No previous versions yet</div>';
 
             canvasPanel.innerHTML = `
                 ${tabsHtml}
                 <div class="canvas-header">
-                    <h3 class="canvas-header-title text-sm" title="${activeTab.path}">${activeTab.path}</h3>
+                    <div class="flex-1 min-w-0">
+                        <h3 class="canvas-header-title text-sm" title="${activeTab.path}">${activeTab.path}</h3>
+                        <div class="text-xs text-gray-400 mt-1">${artifactMeta}</div>
+                    </div>
                     <div class="canvas-header-buttons">
+                        <button id="canvas-preview-btn">${artifactPreviewVisible ? 'Editor' : 'Preview'}</button>
                         <button id="canvas-copy-btn">Copy</button>
                         <button id="canvas-save-btn">Save</button>
                         <button id="canvas-close-btn">Close Panel</button>
                     </div>
                 </div>
-                <div id="file-viewer" class="flex-1"></div>
+                <div class="px-2 pb-2 sm:hidden">
+                    <button id="workspace-mobile-toggle" class="text-xs border border-gray-700 rounded px-2 py-1 text-gray-300">${workspacePanelCollapsedMobile ? 'Show Workspace' : 'Hide Workspace'}</button>
+                </div>
+                <div class="flex-1 min-h-0 flex">
+                    <aside id="workspace-panel" class="w-56 border-r border-gray-800 overflow-y-auto ${workspacePanelCollapsedMobile ? 'hidden sm:block' : 'block'}">
+                        <div class="px-2 py-2 text-xs uppercase tracking-wide text-gray-400">Workspace</div>
+                        <div class="space-y-1 px-1 pb-2">${workspaceRows}</div>
+                        <div class="px-2 py-2 text-xs uppercase tracking-wide text-gray-400 border-t border-gray-800">Versions</div>
+                        <div class="space-y-1 px-1 pb-2">${versionRows}</div>
+                    </aside>
+                    <div class="flex-1 min-w-0 flex">
+                        <div id="file-viewer" class="flex-1 ${artifactPreviewVisible ? 'hidden' : ''}"></div>
+                        <div id="artifact-preview" class="flex-1 p-2 ${artifactPreviewVisible ? '' : 'hidden'}"></div>
+                    </div>
+                </div>
             `;
 
             canvasPanel.classList.remove('hidden');
@@ -1169,11 +1726,24 @@ async function handleRename(oldPath) {
                 tabEl.addEventListener('click', (e) => {
                     if (e.target.classList.contains('canvas-tab-close')) return;
                     const index = parseInt(tabEl.dataset.index);
-                    if (index !== activeTabIndex) {
+                     if (index !== activeTabIndex) {
                          if (editor) {
                              openTabs[activeTabIndex].content = editor.getValue();
                          }
                          activeTabIndex = index;
+                         const nextTab = openTabs[activeTabIndex];
+                         updateArtifactState({
+                             currentArtifactId: nextTab.path,
+                             artifactType: inferArtifactType(nextTab.path),
+                             artifactStatus: 'focused',
+                             previewAvailable: true,
+                         });
+                         persistLastActiveArtifact(nextTab.path);
+                         loadVersionsForArtifact(nextTab.path).then(() => {
+                             if (openTabs[activeTabIndex] && openTabs[activeTabIndex].path === nextTab.path) {
+                                 renderCanvasPanel();
+                             }
+                         });
                          renderCanvasPanel();
                          saveTabState();
                     }
@@ -1191,6 +1761,35 @@ async function handleRename(oldPath) {
             // Attach Header Listeners
             document.getElementById('canvas-copy-btn').addEventListener('click', () => {
                 if (editor) navigator.clipboard.writeText(editor.getValue());
+            });
+            document.getElementById('canvas-preview-btn').addEventListener('click', () => {
+                artifactPreviewVisible = !artifactPreviewVisible;
+                renderCanvasPanel();
+            });
+            const workspaceToggleBtn = document.getElementById('workspace-mobile-toggle');
+            if (workspaceToggleBtn) {
+                workspaceToggleBtn.addEventListener('click', () => {
+                    workspacePanelCollapsedMobile = !workspacePanelCollapsedMobile;
+                    renderCanvasPanel();
+                });
+            }
+            document.querySelectorAll('.workspace-artifact-item').forEach((item) => {
+                item.addEventListener('click', async () => {
+                    const artifactId = item.dataset.artifactId;
+                    await openFileCanvas(artifactId, { source: 'workspace' });
+                });
+            });
+            document.querySelectorAll('.version-preview-btn').forEach((btn) => {
+                btn.addEventListener('click', async (event) => {
+                    event.stopPropagation();
+                    await previewArtifactVersion(btn.dataset.artifactId, btn.dataset.versionId);
+                });
+            });
+            document.querySelectorAll('.version-restore-btn').forEach((btn) => {
+                btn.addEventListener('click', async (event) => {
+                    event.stopPropagation();
+                    await restoreArtifactVersion(btn.dataset.artifactId, btn.dataset.versionId);
+                });
             });
 
             document.getElementById('canvas-save-btn').addEventListener('click', async () => {
@@ -1216,6 +1815,17 @@ async function handleRename(oldPath) {
                             throw new Error(data.error);
                         }
                         saveBtn.textContent = 'Saved!';
+                        updateArtifactState({
+                            currentArtifactId: activeTab.path,
+                            artifactType: inferArtifactType(activeTab.path),
+                            artifactStatus: 'updated',
+                            previewAvailable: true,
+                        });
+                        upsertArtifactEntry({
+                            artifact_id: activeTab.path,
+                            artifact_type: inferArtifactType(activeTab.path),
+                            last_updated_at: Date.now() / 1000,
+                        });
                         setTimeout(() => { saveBtn.textContent = 'Save'; }, 2000);
                     } catch (error) {
                         alert(`Error saving file: ${error.message}`);
@@ -1227,6 +1837,7 @@ async function handleRename(oldPath) {
             document.getElementById('canvas-close-btn').addEventListener('click', hideCanvasPanel);
 
             initializeEditor(activeTab.content, activeTab.mode);
+            renderArtifactPreview(activeTab.content, activeTab.path);
         }
 
         function closeTab(index) {
@@ -1278,10 +1889,31 @@ async function handleRename(oldPath) {
             saveTabState();
         }
 
-        async function openFileCanvas(path) {
+        async function persistLastActiveArtifact(artifactId) {
+            if (!currentConversationId || !artifactId) return;
+            try {
+                await fetch(`${window.location.origin}${API_BASE}/conversation/${currentConversationId}/artifacts`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ artifact_id: artifactId }),
+                });
+            } catch (error) {
+                console.warn('Unable to persist active artifact', error);
+            }
+        }
+
+        async function openFileCanvas(path, options = {}) {
             const existingIndex = openTabs.findIndex(t => t.path === path);
             if (existingIndex !== -1) {
                 activeTabIndex = existingIndex;
+                updateArtifactState({
+                    currentArtifactId: path,
+                    artifactType: inferArtifactType(path),
+                    artifactStatus: 'focused',
+                    previewAvailable: true,
+                });
+                await persistLastActiveArtifact(path);
+                await loadVersionsForArtifact(path);
                 renderCanvasPanel();
                 isCanvasMode = true;
                 canvasToggleBtn.classList.add('toggled');
@@ -1307,6 +1939,15 @@ async function handleRename(oldPath) {
                     mode: mode
                 });
                 activeTabIndex = openTabs.length - 1;
+                updateArtifactState({
+                    currentArtifactId: path,
+                    artifactType: inferArtifactType(path),
+                    artifactStatus: options.source === 'timeline' ? 'opened_from_timeline' : 'opened',
+                    previewAvailable: true,
+                });
+                upsertArtifactEntry({ artifact_id: path, artifact_type: inferArtifactType(path) });
+                await persistLastActiveArtifact(path);
+                await loadVersionsForArtifact(path);
 
                 renderCanvasPanel();
 
@@ -1588,6 +2229,14 @@ function sendMessage() {
 
     const agentMode = agentModeToggle.checked;
     setAgentRunning(true, agentMode);
+    resetToolTimeline();
+    updateLiveActivity({
+        stage: 'planning',
+        action: 'Planning next step…',
+        focus: text || 'Working on your latest request.',
+        activeTool: null,
+        resetTimer: true,
+    });
 
     welcomeMessage.style.display = 'none';
 
@@ -1622,6 +2271,9 @@ function sendMessage() {
     const params = {
         messages: JSON.stringify(conversationHistory),
         model: userModel,
+        default_chat_model: defaultChatModel || userModel,
+        deep_chat_model: deepChatModel || userModel,
+        utility_model: utilityModel || userModel,
         conversation_id: currentConversationId || '',
         canvas_mode: isCanvasMode,
         agent_mode: agentMode,
@@ -1778,6 +2430,214 @@ function updateProgressTimeline(bubbleElement, progressEvent) {
     }
 }
 
+function inferActivityStage(stage, fallback = 'thinking') {
+    const normalized = String(stage || '').toLowerCase();
+    if (['idle', 'done'].includes(normalized)) return 'ready';
+    if (['planning', 'thinking', 'analyzing', 'answering', 'verifying'].includes(normalized)) return 'thinking';
+    if (['executing', 'tool_call', 'tool_execution', 'after_tool', 'finalizing', 'final_answer'].includes(normalized)) return 'acting';
+    if (['pending_approval', 'waiting_approval'].includes(normalized)) return 'waiting_approval';
+    if (['error', 'tool_error'].includes(normalized)) return 'error';
+    return fallback;
+}
+
+function formatActivityStatus(stage, action, activeTool) {
+    const labels = {
+        ready: 'Ready',
+        thinking: 'Thinking',
+        acting: 'Acting',
+        waiting_approval: 'Waiting for approval',
+        error: 'Error',
+    };
+    if (stage === 'error' && action) return 'Error';
+    return labels[stage] || 'Thinking';
+}
+
+function updateLiveActivity({ stage, focus, action, activeTool, resetTimer = false }) {
+    const nextStage = inferActivityStage(stage, liveActivityState.currentStage);
+    if (resetTimer || !liveActivityState.startedAt) {
+        liveActivityState.startedAt = Date.now();
+    }
+    if (focus) liveActivityState.currentFocus = focus;
+    if (action) liveActivityState.lastAction = action;
+    if (activeTool !== undefined) liveActivityState.activeTool = activeTool;
+    liveActivityState.currentStage = nextStage;
+
+    const status = formatActivityStatus(nextStage, action, liveActivityState.activeTool);
+    if (liveActivityText) liveActivityText.textContent = status;
+    if (activityStageText) activityStageText.textContent = status;
+    if (activityFocusText) activityFocusText.textContent = '—';
+    if (activityActionText) activityActionText.textContent = '—';
+    if (liveActivityBar) {
+        liveActivityBar.classList.toggle('opacity-80', nextStage === 'ready');
+    }
+}
+
+function resetToolTimeline() {
+    toolTimelineEntries = [];
+    toolTimelineByCallId = new Map();
+    if (toolTimelineList) {
+        toolTimelineList.innerHTML = '';
+        toolTimelineList.dataset.open = 'false';
+    }
+}
+
+function formatTimelineSummary(toolName, status, payload) {
+    const readableName = String(toolName || 'Tool').replace(/_/g, ' ');
+    if (payload && typeof payload === 'object' && payload.path) {
+        return `${readableName}: ${payload.path}`;
+    }
+    if (status === 'error') return `${readableName} failed`;
+    if (status === 'partial') return `${readableName} completed with warnings`;
+    return `${readableName} completed`;
+}
+
+function shouldSuppressTimelineNoise(entry) {
+    const summary = entry.short_summary || '';
+    const isLowValue = /redundant_call_same_context|loop_guard_non_retryable_repeat/.test(summary) || entry.usefulness_hint === 'low_signal_empty_result';
+    const last = toolTimelineEntries[toolTimelineEntries.length - 1];
+    if (!last) return false;
+    if (isLowValue && last.short_summary === summary && last.status === entry.status) {
+        return true;
+    }
+    return false;
+}
+
+function renderToolTimeline() {
+    if (!toolTimelineList) return;
+    toolTimelineList.innerHTML = '';
+    toolTimelineEntries.forEach((entry, index) => {
+        const li = document.createElement('li');
+        li.className = 'tool-step text-xs text-gray-300';
+        const icon = entry.status === 'success' ? '✅' : entry.status === 'partial' ? '⚠️' : '❌';
+        li.innerHTML = `<div>${icon} ${entry.short_summary} <span class="text-gray-500">${entry.timestamp}</span></div>`;
+        const detail = document.createElement('div');
+        detail.className = 'tool-step-details';
+        detail.dataset.open = 'false';
+        const detailLines = [];
+        if (entry.params_preview) detailLines.push(`Params: ${entry.params_preview}`);
+        if (entry.result_preview) detailLines.push(`Result: ${entry.result_preview}`);
+        if (entry.error_message) detailLines.push(`Error: ${entry.error_message}`);
+        if (entry.retryable !== undefined && entry.retryable !== null) detailLines.push(`Retryable: ${entry.retryable}`);
+        if (entry.usefulness_hint) detailLines.push(`Usefulness: ${entry.usefulness_hint}`);
+        detail.textContent = detailLines.join('\n');
+        li.appendChild(detail);
+        li.addEventListener('click', () => {
+            const open = detail.dataset.open === 'true';
+            detail.dataset.open = open ? 'false' : 'true';
+            if (entry.artifact_path) {
+                openFileCanvas(entry.artifact_path, { source: 'timeline' });
+            }
+        });
+        toolTimelineList.appendChild(li);
+    });
+}
+
+function updateToolTimelineFromEvent(type, data) {
+    if (!data) return;
+    if (type === 'tool_call') {
+        const entry = {
+            tool_name: data.name,
+            status: 'partial',
+            short_summary: formatTimelineSummary(data.name, 'partial', null),
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            params_preview: JSON.stringify(data.params || {}),
+            result_preview: null,
+            error_message: null,
+            retryable: null,
+            usefulness_hint: null,
+            artifact_path: data.params?.path || data.params?.filename || null,
+        };
+        toolTimelineByCallId.set(data.tool_call_id, entry);
+        if (!shouldSuppressTimelineNoise(entry)) {
+            toolTimelineEntries.push(entry);
+            renderToolTimeline();
+        }
+        return;
+    }
+
+    if (type === 'tool_result' || type === 'tool_error') {
+        const existing = toolTimelineByCallId.get(data.tool_call_id) || {
+            tool_name: data.name || 'tool',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        };
+        const meta = data.meta || {};
+        const status = type === 'tool_result' ? 'success' : 'error';
+        existing.status = status;
+        existing.short_summary = formatTimelineSummary(existing.tool_name || meta.tool_name, status, data.result || meta.result);
+        existing.result_preview = data.result ? JSON.stringify(data.result).slice(0, 180) : null;
+        existing.error_message = type === 'tool_error' ? (meta.error_message || data.error || '').slice(0, 180) : null;
+        existing.retryable = meta.retryable;
+        existing.usefulness_hint = meta.usefulness_hint || null;
+        existing.artifact_path = existing.artifact_path || data.result?.path || data.result?.filename || meta.result?.path || meta.result?.filename || null;
+        if (shouldSuppressTimelineNoise(existing)) {
+            return;
+        }
+        if (!toolTimelineEntries.includes(existing)) {
+            toolTimelineEntries.push(existing);
+        }
+        renderToolTimeline();
+    }
+}
+
+function inferArtifactType(path = '') {
+    const lower = String(path).toLowerCase();
+    if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown';
+    if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
+    if (/\.(py|js|ts|tsx|jsx|css|json|sql|sh|txt|yml|yaml|xml)$/.test(lower)) return 'code';
+    return 'unknown';
+}
+
+function updateArtifactState(partial) {
+    artifactState = {
+        ...artifactState,
+        ...partial,
+        lastUpdatedAt: partial.lastUpdatedAt || new Date().toISOString(),
+    };
+}
+
+function artifactStatusText() {
+    const status = artifactState.artifactStatus || 'idle';
+    const type = artifactState.artifactType || 'unknown';
+    const updated = artifactState.lastUpdatedAt ? new Date(artifactState.lastUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—';
+    const preview = artifactState.previewAvailable ? 'preview ready' : 'preview unavailable';
+    return `${type} • ${status} • ${preview} • updated ${updated}`;
+}
+
+function renderArtifactPreview(content, path) {
+    const previewContainer = document.getElementById('artifact-preview');
+    if (!previewContainer) return;
+    const type = inferArtifactType(path);
+    previewContainer.innerHTML = '';
+    try {
+        if (type === 'markdown') {
+            previewContainer.innerHTML = marked.parse(content || '');
+            updateArtifactState({ artifactType: type, artifactStatus: 'preview_ready', previewAvailable: true });
+            return;
+        }
+        if (type === 'html') {
+            const iframe = document.createElement('iframe');
+            iframe.className = 'w-full h-full border border-gray-700 rounded';
+            iframe.setAttribute('sandbox', 'allow-same-origin');
+            iframe.srcdoc = content || '';
+            previewContainer.appendChild(iframe);
+            updateArtifactState({ artifactType: type, artifactStatus: 'preview_ready', previewAvailable: true });
+            return;
+        }
+
+        const pre = document.createElement('pre');
+        pre.className = 'text-xs text-gray-300 bg-gray-900 p-3 rounded overflow-auto h-full';
+        pre.textContent = content || '';
+        previewContainer.appendChild(pre);
+        updateArtifactState({ artifactType: type, artifactStatus: 'preview_ready', previewAvailable: true });
+    } catch (error) {
+        const fallback = document.createElement('div');
+        fallback.className = 'text-xs text-yellow-300';
+        fallback.textContent = 'Preview unavailable, file saved successfully.';
+        previewContainer.appendChild(fallback);
+        updateArtifactState({ artifactType: type, artifactStatus: 'preview_failed', previewAvailable: false });
+    }
+}
+
 function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     if (!bubbleElement) return;
 
@@ -1847,9 +2707,18 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
     if (isFinal) {
         const progressTimeline = bubbleElement.querySelector('.progress-timeline');
         const progressToggleIcon = bubbleElement.querySelector('.progress-toggle-icon');
+        const progressMeta = bubbleElement.querySelector('.progress-meta');
+        const progressTitle = bubbleElement.querySelector('.progress-timeline-header .flex-1');
         if (progressTimeline) {
             progressTimeline.style.display = 'none';
             progressToggleIcon?.classList.remove('rotate-180');
+            const stepCount = progressTimeline.children.length;
+            if (progressMeta) {
+                progressMeta.textContent = `Completed · ${stepCount} step${stepCount === 1 ? '' : 's'}`;
+            }
+            if (progressTitle) {
+                progressTitle.textContent = 'Completed';
+            }
         }
         // Hide the main thinking indicator when the turn is truly over
         agentStatus.style.display = 'none';
@@ -2037,6 +2906,10 @@ function loadConversation(data) {
          currentConversationId = data.id;
          openTabs = [];
          activeTabIndex = -1;
+         artifactList = [];
+         artifactById = new Map();
+         artifactVersions = [];
+         selectedArtifactVersionId = null;
          hideCanvasPanel();
          saveCurrentConversationId(currentConversationId);
          loadTabState(); // Load tabs for the NEW conversation
@@ -2052,6 +2925,19 @@ function loadConversation(data) {
     currentResponseContent = '';
 
     conversationHistory = data.messages || [];
+    artifactList = sortArtifacts(data.artifacts || []);
+    artifactById = new Map(artifactList.map((artifact) => [artifact.artifact_id, artifact]));
+    if (data.last_active_artifact_id) {
+        updateArtifactState({
+            currentArtifactId: data.last_active_artifact_id,
+            artifactType: inferArtifactType(data.last_active_artifact_id),
+            artifactStatus: 'restored',
+            previewAvailable: true,
+        });
+    }
+    if (data.last_active_artifact_id) {
+        loadVersionsForArtifact(data.last_active_artifact_id);
+    }
     // Re-render history
     conversationHistory.forEach(msg => {
         if (msg.role === 'user') {
@@ -2081,6 +2967,12 @@ function loadConversation(data) {
     chatContainer.scrollTop = chatContainer.scrollHeight;
     socket.emit('join', { room: data.id });
     populateFileExplorer();
+    if (!data.artifacts) {
+        loadArtifactsForCurrentConversation();
+    }
+    if (data.last_active_artifact_id && openTabs.length === 0) {
+        openFileCanvas(data.last_active_artifact_id, { source: 'restore' });
+    }
     socket.emit('load_conversations'); // To update the active state
 }
 
@@ -2108,6 +3000,10 @@ function startNewChat() {
     conversationHistory = [];
     openTabs = [];
     activeTabIndex = -1;
+    artifactList = [];
+    artifactById = new Map();
+    artifactVersions = [];
+    selectedArtifactVersionId = null;
     pendingImages = [];
     imagePreviewContainer.innerHTML = '';
     imagePreviewContainer.classList.add('hidden');

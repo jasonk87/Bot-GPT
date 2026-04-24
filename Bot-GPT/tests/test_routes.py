@@ -11,8 +11,13 @@ def test_index_route(client):
 
 def test_profile_route_unauthenticated(client):
     """Test that the profile route requires login."""
+    with client.session_transaction() as sess:
+        sess.clear()
+    client.delete_cookie("session")
+    client.delete_cookie("remember_token")
     response = client.get('/profile')
     assert response.status_code == 302 # Redirect to login
+    assert "/login" in response.headers.get("Location", "")
 
 def test_profile_route_authenticated(logged_in_client, test_user, app):
     """Test the profile route for an authenticated user."""
@@ -85,6 +90,25 @@ def test_settings_include_and_persist_response_mode(logged_in_client, test_user)
     saved_user = users.get(str(test_user.id), {})
     assert saved_user.get('response_mode_preference') == 'deep'
     assert saved_user.get('thought_panel_expanded') is True
+
+
+def test_settings_include_and_persist_github_username(logged_in_client, test_user):
+    response = logged_in_client.get('/api/settings')
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload.get('github_username') == ''
+    assert payload.get('is_admin') is True
+
+    update = logged_in_client.post('/api/settings', json={'github_username': 'octocat'})
+    assert update.status_code == 200
+
+    settings_after = logged_in_client.get('/api/settings')
+    assert settings_after.status_code == 200
+    assert settings_after.get_json().get('github_username') == 'octocat'
+
+    users = _load_users(get_users_path())
+    saved_user = users.get(str(test_user.id), {})
+    assert saved_user.get('github_username') == 'octocat'
 
 
 def test_depth_metrics_endpoint_returns_json(logged_in_client):
