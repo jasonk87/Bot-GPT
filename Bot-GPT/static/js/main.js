@@ -34,6 +34,9 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     githubUsernameInput, adminUpdatesTabBtn, adminUpdatesPane, adminUpdateRefreshBtn, adminUpdateStatus,
     adminUpdateBranchSelect, adminUpdateStrategySelect, adminUpdateApplyBtn,
     adminUpdateCurrentBranch, adminUpdateCurrentCommit, adminUpdateNewestBranch, adminUpdateNewestCommit, adminUpdateLastChecked, adminUpdateHistory,
+    adminUpdateDirty, adminUpdateLastResult,
+    adminUpdateLiveStatus, adminUpdateLiveStep, adminUpdateLiveTarget, adminUpdateLiveStarted, adminUpdateLiveElapsed,
+    adminUpdateLiveLog, adminUpdateLiveError, adminUpdateLiveRollback, adminUpdateLiveSmoke, adminUpdateLiveStash,
     dependencyBanner, dependencyBannerText, dependencyBannerDismiss, dependencyBannerDetails,
     dependencyDetailsModal, dependencyDetailsContent, closeDependencyDetailsBtn, copyDependencyDetailsBtn,
     attachmentModal, attachmentModalImage, attachmentModalTitle, attachmentCloseBtn, attachmentDownloadBtn, attachmentTelegramBtn;
@@ -94,6 +97,9 @@ let proactiveDashboardTimer = null;
 let activeAttachmentPath = null;
 let userIsAdmin = false;
 let activityTicker = null;
+let adminUpdatePollTimer = null;
+let adminUpdateInFlight = false;
+const ADMIN_UPDATE_TERMINAL_STATES = new Set(['success', 'failed', 'rolled_back', 'restart_required']);
 
 function getCurrentConversationStorageKey() {
     return currentUsername ? `botgpt_current_conversation_id_${currentUsername}` : 'botgpt_current_conversation_id';
@@ -484,6 +490,18 @@ async function initializeApp(username) {
     adminUpdateNewestCommit = document.getElementById('admin-update-newest-commit');
     adminUpdateLastChecked = document.getElementById('admin-update-last-checked');
     adminUpdateHistory = document.getElementById('admin-update-history');
+    adminUpdateDirty = document.getElementById('admin-update-dirty');
+    adminUpdateLastResult = document.getElementById('admin-update-last-result');
+    adminUpdateLiveStatus = document.getElementById('admin-update-live-status');
+    adminUpdateLiveStep = document.getElementById('admin-update-live-step');
+    adminUpdateLiveTarget = document.getElementById('admin-update-live-target');
+    adminUpdateLiveStarted = document.getElementById('admin-update-live-started');
+    adminUpdateLiveElapsed = document.getElementById('admin-update-live-elapsed');
+    adminUpdateLiveLog = document.getElementById('admin-update-live-log');
+    adminUpdateLiveError = document.getElementById('admin-update-live-error');
+    adminUpdateLiveRollback = document.getElementById('admin-update-live-rollback');
+    adminUpdateLiveSmoke = document.getElementById('admin-update-live-smoke');
+    adminUpdateLiveStash = document.getElementById('admin-update-live-stash');
 
     // Image Upload Elements
     attachImageBtn = document.getElementById('attach-image-btn');
@@ -1267,16 +1285,96 @@ function formatUnixTimestamp(seconds) {
     }
 }
 
+function formatElapsedSeconds(startedAt) {
+    if (!startedAt) return '0s';
+    const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - Number(startedAt)));
+    if (elapsed < 60) return `${elapsed}s`;
+    const minutes = Math.floor(elapsed / 60);
+    const rem = elapsed % 60;
+    return `${minutes}m ${rem}s`;
+}
+
+function formatAdminBranchLabel(name = '', commit = '') {
+    const shortCommit = (commit || '').slice(0, 10);
+    return `${name}${shortCommit ? ` (${shortCommit})` : ''}`;
+}
+
+function setAdminUpdateControlsRunning(running, statusText = null) {
+    adminUpdateInFlight = running;
+    if (adminUpdateApplyBtn) {
+        adminUpdateApplyBtn.disabled = running;
+        adminUpdateApplyBtn.classList.toggle('opacity-60', running);
+        adminUpdateApplyBtn.classList.toggle('cursor-not-allowed', running);
+        adminUpdateApplyBtn.textContent = running ? 'Update in progress…' : 'Update to Selected Branch';
+    }
+    if (adminUpdateRefreshBtn) {
+        adminUpdateRefreshBtn.disabled = running;
+        adminUpdateRefreshBtn.classList.toggle('opacity-60', running);
+        adminUpdateRefreshBtn.classList.toggle('cursor-not-allowed', running);
+    }
+    if (statusText && adminUpdateStatus) {
+        adminUpdateStatus.textContent = statusText;
+    }
+}
+
+function stopAdminUpdatePolling() {
+    if (adminUpdatePollTimer) {
+        clearInterval(adminUpdatePollTimer);
+        adminUpdatePollTimer = null;
+    }
+}
+
+function startAdminUpdatePolling() {
+    stopAdminUpdatePolling();
+    adminUpdatePollTimer = setInterval(async () => {
+        const state = await loadAdminUpdateStatus({ includeHistory: false });
+        if (!state) return;
+        if (ADMIN_UPDATE_TERMINAL_STATES.has(state.status)) {
+            stopAdminUpdatePolling();
+            setAdminUpdateControlsRunning(false);
+            await refreshAdminPostTerminalState();
+        }
+    }, 1500);
+}
+
+async function refreshAdminPostTerminalState() {
+    await Promise.allSettled([
+        refreshAdminUpdates(),
+        loadAdminUpdateHistory(),
+    ]);
+}
+
 function renderAdminUpdateState(state = {}) {
     if (!adminUpdatesPane || !userIsAdmin) return;
     const snapshot = state.snapshot || {};
     const newest = state.newest_remote || (state.remote_branches || [])[0] || {};
+    const status = state.status || 'idle';
     adminUpdateCurrentBranch.textContent = snapshot.branch || '-';
     adminUpdateCurrentCommit.textContent = (snapshot.commit || '-').slice(0, 12);
+    if (adminUpdateDirty) adminUpdateDirty.textContent = snapshot.dirty ? 'dirty' : 'clean';
     adminUpdateNewestBranch.textContent = newest.name || '-';
     adminUpdateNewestCommit.textContent = (newest.commit || '-').slice(0, 12);
     adminUpdateLastChecked.textContent = formatUnixTimestamp(state.last_checked);
-    adminUpdateStatus.textContent = state.status || 'idle';
+    adminUpdateStatus.textContent = status;
+    if (adminUpdateLastResult) adminUpdateLastResult.textContent = status;
+    if (adminUpdateLiveStatus) adminUpdateLiveStatus.textContent = status;
+    if (adminUpdateLiveStep) adminUpdateLiveStep.textContent = state.current_step || status || '-';
+    if (adminUpdateLiveTarget) adminUpdateLiveTarget.textContent = state.target_branch || '-';
+    if (adminUpdateLiveStarted) adminUpdateLiveStarted.textContent = formatUnixTimestamp(state.started_at);
+    if (adminUpdateLiveElapsed) adminUpdateLiveElapsed.textContent = formatElapsedSeconds(state.started_at);
+    if (adminUpdateLiveLog) adminUpdateLiveLog.textContent = state.last_log_line || '-';
+    if (adminUpdateLiveError) adminUpdateLiveError.textContent = state.error || '-';
+    if (adminUpdateLiveSmoke) adminUpdateLiveSmoke.textContent = state.smoke_output || '-';
+    if (adminUpdateLiveStash) adminUpdateLiveStash.textContent = state.stash_created === true ? 'yes' : state.stash_created === false ? 'no' : '-';
+    if (adminUpdateLiveRollback) {
+        const rollbackParts = [];
+        if (state.rollback_to?.branch) rollbackParts.push(`branch=${state.rollback_to.branch}`);
+        if (state.rollback_to?.commit) rollbackParts.push(`commit=${String(state.rollback_to.commit).slice(0, 12)}`);
+        if (state.rollback_result) rollbackParts.push(`result=${state.rollback_result}`);
+        if (state.rollback_error) rollbackParts.push(`error=${state.rollback_error}`);
+        adminUpdateLiveRollback.textContent = rollbackParts.join(' • ') || '-';
+    }
+    setAdminUpdateControlsRunning(!ADMIN_UPDATE_TERMINAL_STATES.has(status) && status !== 'idle');
 
     const branches = state.remote_branches || [];
     if (adminUpdateBranchSelect) {
@@ -1284,26 +1382,40 @@ function renderAdminUpdateState(state = {}) {
         adminUpdateBranchSelect.innerHTML = '';
         branches.forEach((entry) => {
             const option = document.createElement('option');
-            option.value = entry.name;
-            option.textContent = `${entry.name} (${(entry.commit || '').slice(0, 10)})`;
+            option.value = entry.full_ref || entry.name;
+            option.textContent = formatAdminBranchLabel(entry.name, entry.commit);
+            option.className = 'admin-update-branch-option';
+            option.title = entry.full_ref || entry.name;
             adminUpdateBranchSelect.appendChild(option);
         });
-        if (existing && branches.some((entry) => entry.name === existing)) {
+        if (existing && branches.some((entry) => (entry.full_ref || entry.name) === existing)) {
             adminUpdateBranchSelect.value = existing;
+        } else if (newest?.name) {
+            adminUpdateBranchSelect.value = newest.full_ref || newest.name;
         }
     }
 }
 
-async function loadAdminUpdateStatus() {
+async function loadAdminUpdateStatus({ includeHistory = true } = {}) {
     if (!userIsAdmin) return;
     try {
         const response = await fetch(`${API_BASE}/admin/updates/status`);
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || 'Failed to load update status');
         renderAdminUpdateState(payload);
-        await loadAdminUpdateHistory();
+        if (!ADMIN_UPDATE_TERMINAL_STATES.has(payload.status || 'idle') && (payload.status || 'idle') !== 'idle') {
+            startAdminUpdatePolling();
+        } else {
+            stopAdminUpdatePolling();
+        }
+        if (includeHistory) {
+            await loadAdminUpdateHistory();
+        }
+        return payload;
     } catch (error) {
         console.error('Failed to load admin update status:', error);
+        adminUpdateStatus.textContent = `error: ${error.message}`;
+        return null;
     }
 }
 
@@ -1317,8 +1429,13 @@ async function loadAdminUpdateHistory() {
         adminUpdateHistory.innerHTML = '';
         events.slice(-5).reverse().forEach((event) => {
             const li = document.createElement('li');
-            li.className = 'bg-gray-900 rounded p-2 text-gray-300';
-            li.textContent = `${event.status || 'unknown'} • ${event.target_branch || '-'} • ${formatUnixTimestamp(event.finished_at || event.started_at)}`;
+            li.className = 'bg-gray-900 rounded p-2 text-gray-300 break-words';
+            const details = [];
+            if (event.failed_step) details.push(`step=${event.failed_step}`);
+            if (event.error) details.push(`error=${event.error}`);
+            if (event.rollback_result) details.push(`rollback=${event.rollback_result}`);
+            if (event.smoke_output) details.push(`smoke=${event.smoke_output}`);
+            li.textContent = `${event.status || 'unknown'} • ${event.target_branch || '-'} • ${formatUnixTimestamp(event.finished_at || event.started_at)}${details.length ? ` • ${details.join(' | ')}` : ''}`;
             adminUpdateHistory.appendChild(li);
         });
         if (!adminUpdateHistory.children.length) {
@@ -1348,8 +1465,13 @@ async function refreshAdminUpdates() {
 
 async function applyAdminUpdate() {
     if (!userIsAdmin || !adminUpdateBranchSelect?.value) return;
+    if (adminUpdateInFlight) {
+        adminUpdateStatus.textContent = 'Update in progress…';
+        return;
+    }
     try {
-        adminUpdateStatus.textContent = 'updating';
+        adminUpdateStatus.textContent = 'Starting update…';
+        setAdminUpdateControlsRunning(true, 'Starting update…');
         const response = await fetch(`${API_BASE}/admin/updates/update`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1360,9 +1482,16 @@ async function applyAdminUpdate() {
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || 'Update failed to start');
-        await loadAdminUpdateStatus();
-        await loadAdminUpdateHistory();
+        renderAdminUpdateState({
+            status: 'checking',
+            current_step: 'checking',
+            target_branch: adminUpdateBranchSelect.value,
+            started_at: Date.now() / 1000,
+            last_log_line: 'Starting update…',
+        });
+        startAdminUpdatePolling();
     } catch (error) {
+        setAdminUpdateControlsRunning(false);
         adminUpdateStatus.textContent = `error: ${error.message}`;
     }
 }
@@ -1818,10 +1947,6 @@ async function handleRename(oldPath) {
                 return;
             }
 
-            if (window.innerWidth < 640) {
-                mainContentWrapper.style.display = 'none';
-            }
-
             // Build Tabs HTML
             let tabsHtml = '<div class="canvas-tabs-row">';
             openTabs.forEach((tab, index) => {
@@ -1881,7 +2006,7 @@ async function handleRename(oldPath) {
                         <button id="canvas-preview-btn">${artifactPreviewVisible ? 'Editor' : 'Preview'}</button>
                         <button id="canvas-copy-btn">Copy</button>
                         <button id="canvas-save-btn">Save</button>
-                        <button id="canvas-close-btn">Close Panel</button>
+                        <button id="canvas-close-btn">${window.innerWidth < 640 ? 'Back to Chat' : 'Close Panel'}</button>
                     </div>
                 </div>
                 <div class="px-2 pb-2 sm:hidden">
@@ -1903,7 +2028,10 @@ async function handleRename(oldPath) {
 
             canvasPanel.classList.remove('hidden');
             canvasPanel.classList.add('flex');
+            canvasPanel.classList.toggle('mobile-fullscreen', window.innerWidth < 640);
             resizer.classList.remove('hidden');
+            resizer.classList.toggle('hidden', window.innerWidth < 640);
+            document.body.classList.toggle('overflow-hidden', window.innerWidth < 640);
 
             // Attach Tab Listeners
             document.querySelectorAll('.canvas-tab').forEach(tabEl => {
@@ -2053,15 +2181,12 @@ async function handleRename(oldPath) {
 
             const canvasPanel = document.getElementById('canvas-panel');
             const resizer = document.getElementById('resizer');
-            const mainContentWrapper = document.getElementById('main-content-wrapper');
-
-            if (window.innerWidth < 640) {
-                mainContentWrapper.style.display = 'flex';
-            }
 
             canvasPanel.classList.add('hidden');
             canvasPanel.classList.remove('flex');
+            canvasPanel.classList.remove('mobile-fullscreen');
             resizer.classList.add('hidden');
+            document.body.classList.remove('overflow-hidden');
 
             if (editor) {
                 editor.getWrapperElement().remove();

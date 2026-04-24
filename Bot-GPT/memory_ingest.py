@@ -4,6 +4,10 @@ from typing import Dict, List
 
 _NOISE_PATTERNS = [
     re.compile(r"^(hi|hello|thanks|ok|okay|cool)[!. ]*$", re.IGNORECASE),
+    re.compile(r".*ai cannot access desktop.*", re.IGNORECASE),
+    re.compile(r".*ml learning: depends on effort.*", re.IGNORECASE),
+    re.compile(r".*user name revealed.*", re.IGNORECASE),
+    re.compile(r".*unknown user's name requested.*", re.IGNORECASE),
 ]
 
 
@@ -13,6 +17,8 @@ def is_memory_worthy(text: str) -> bool:
     if any(pattern.match(text.strip()) for pattern in _NOISE_PATTERNS):
         return False
     lowered = text.lower()
+    if lowered.startswith("assistant:") or lowered.startswith("system:"):
+        return False
     signals = [
         "i prefer",
         "remember",
