@@ -9,11 +9,19 @@ from flask_login import login_user
 from models import save_conversation, add_to_conversation_index, add_user_to_conversation_index
 from repo_index import save_repo_index
 
+
+def mock_chat_stream_sequence(*responses):
+    """Helper to create a valid sequence of responses for mocked call_stream, prepending the classifier response."""
+    sequence = [iter(["{\"mode\": \"standard\", \"confidence\": 0.9}"])]
+    for response in responses:
+        sequence.append(iter([response]))
+    return sequence
+
 def test_chat_message_handling(socketio_test_client, test_user, mocker):
     """Test sending a message and receiving a simple AI response."""
     # Mock the AI response stream
     mock_stream = mocker.patch("chat.call_ollama_chat_stream")
-    mock_stream.return_value = iter(["Hello, this is the AI."])
+    mock_stream.side_effect = mock_chat_stream_sequence("Hello, this is the AI.")
     mocker.patch("chat.update_conversation_title")
 
     socketio_test_client.emit('chat_message', {
@@ -43,7 +51,7 @@ def test_tool_call_in_chat(socketio_test_client, test_user, mocker, app):
 
     tool_call_response = '```json\n{"tool": "list_files", "parameters": {}}\n```'
     final_answer = "Files listed."
-    mock_stream.side_effect = [iter([tool_call_response]), iter([final_answer])]
+    mock_stream.side_effect = mock_chat_stream_sequence(tool_call_response, final_answer)
     mock_handle_tool.return_value = ("file1.txt", False)
 
     with app.app_context():
@@ -74,7 +82,7 @@ def test_write_file_emits_open_canvas(socketio_test_client, test_user, mocker, a
 
     tool_call_response = '```json\n{"tool": "write_file", "parameters": {"path": "test.txt", "content": "hello"}}\n```'
     final_answer = "I have written the file."
-    mock_stream.side_effect = [iter([tool_call_response]), iter([final_answer])]
+    mock_stream.side_effect = mock_chat_stream_sequence(tool_call_response, final_answer)
     mock_handle_tool.return_value = ({"status": "file_written", "path": "test.txt"}, True)
 
     convo_id = "test_convo_123"
@@ -109,7 +117,7 @@ def test_tool_call_parser_handles_mixed_prose_and_nested_json(socketio_test_clie
         "```\n"
         "Then I will summarize."
     )
-    mock_stream.side_effect = [iter([tool_call_response]), iter(["Done."])]
+    mock_stream.side_effect = mock_chat_stream_sequence(tool_call_response, "Done.")
     mock_handle_tool.return_value = ({"status": "file_written", "path": "notes.txt"}, True)
 
     with app.app_context():
@@ -182,7 +190,7 @@ def test_load_conversation_includes_active_run(socketio_test_client, test_user, 
 
 def test_handle_ai_response_archives_memory(app, test_user, mocker):
     mock_stream = mocker.patch("chat.call_ollama_chat_stream")
-    mock_stream.return_value = iter(["Cross-session memory should persist."])
+    mock_stream.side_effect = mock_chat_stream_sequence("Cross-session memory should persist.")
     mocker.patch("chat.update_conversation_title")
     memory_cls = mocker.patch("memory.MemoryManager")
 
@@ -201,7 +209,7 @@ def test_handle_ai_response_archives_memory(app, test_user, mocker):
 
 def test_repo_question_without_tool_call_uses_deterministic_fallback(app, test_user, mocker):
     mock_stream = mocker.patch("chat.call_ollama_chat_stream")
-    mock_stream.return_value = iter(["I will think about it."])
+    mock_stream.side_effect = mock_chat_stream_sequence("I will think about it.")
     mocker.patch("chat.update_conversation_title")
 
     with app.app_context():
@@ -235,7 +243,7 @@ def test_repo_question_without_tool_call_uses_deterministic_fallback(app, test_u
 def test_repo_question_with_no_configured_paths_returns_clean_block_message(app, test_user, mocker):
     app.config["REPO_SCAN_BASE_PATHS"] = "[]"
     mock_stream = mocker.patch("chat.call_ollama_chat_stream")
-    mock_stream.return_value = iter(["Thinking..."])
+    mock_stream.side_effect = mock_chat_stream_sequence("Thinking...")
     mocker.patch("chat.update_conversation_title")
 
     with app.app_context():
@@ -257,7 +265,7 @@ def test_repo_question_with_no_configured_paths_returns_clean_block_message(app,
 
 def test_repo_discovery_timeout_unblocks_ui(app, test_user, mocker):
     mock_stream = mocker.patch("chat.call_ollama_chat_stream")
-    mock_stream.return_value = iter(["No tool calls from model"])
+    mock_stream.side_effect = mock_chat_stream_sequence("No tool calls from model")
     mocker.patch("chat.update_conversation_title")
     mocker.patch("chat_ai.discover_local_repositories", return_value={"status": "error", "error": "Repository discovery timed out before completion.", "repos": []})
     with app.app_context():
@@ -277,7 +285,7 @@ def test_repo_discovery_timeout_unblocks_ui(app, test_user, mocker):
 
 def test_empty_model_response_finalizes_cleanly(app, test_user, mocker):
     mock_stream = mocker.patch("chat.call_ollama_chat_stream")
-    mock_stream.side_effect = [iter(["   "]), iter(["   "])]
+    mock_stream.side_effect = mock_chat_stream_sequence("   ", "   ")
     mocker.patch("chat.update_conversation_title")
 
     with app.test_request_context("/"):
@@ -300,7 +308,7 @@ def test_empty_model_response_finalizes_cleanly(app, test_user, mocker):
 
 def test_terminal_done_event_emitted_on_model_failure(app, test_user, mocker):
     mock_stream = mocker.patch("chat.call_ollama_chat_stream")
-    mock_stream.side_effect = RuntimeError("model backend unavailable")
+    mock_stream.side_effect = [iter(["{\"mode\": \"standard\", \"confidence\": 0.9}"]), RuntimeError("model backend unavailable")]
     mocker.patch("chat.update_conversation_title")
 
     with app.test_request_context("/"):
@@ -318,7 +326,7 @@ def test_terminal_done_event_emitted_on_model_failure(app, test_user, mocker):
 def test_os_capability_refusal_is_overridden_with_policy_message(app, test_user, mocker):
     app.config["OS_AGENT_ENABLED"] = False
     mock_stream = mocker.patch("chat.call_ollama_chat_stream")
-    mock_stream.return_value = iter(["I cannot access your desktop or your system."])
+    mock_stream.side_effect = mock_chat_stream_sequence("I cannot access your desktop or your system.")
     mocker.patch("chat.update_conversation_title")
 
     with app.test_request_context("/"):
