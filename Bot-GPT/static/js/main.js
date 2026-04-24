@@ -70,6 +70,9 @@ let activeTabIndex = -1;
 let conversationRunStates = {};
 let pendingNewConversationRun = null;
 let dependencyBannerDismissedForSession = false;
+
+// Watch mode state
+let canvasWatchModeByPath = {};
 let lastDependencyReport = null;
 let liveActivityState = {
     currentStage: 'idle',
@@ -2228,6 +2231,7 @@ async function handleRename(oldPath) {
                 <div class="canvas-action-bar">
                     <button id="canvas-run-btn" class="canvas-action-btn" ${executionPreset.canRun ? '' : 'disabled'}>Run</button>
                     <button id="canvas-test-btn" class="canvas-action-btn" ${executionPreset.canTest ? '' : 'disabled'}>Test</button>
+                    ${executionPreset.canTest ? `<button id="canvas-watch-btn" class="canvas-action-btn ${canvasWatchModeByPath[activeTab.path] ? 'watch-active' : ''}">Watch</button>` : ''}
                     <button id="canvas-stop-btn" class="canvas-action-btn danger">Stop</button>
                     <button id="canvas-autofix-btn" class="canvas-action-btn autofix ${autoFixState.visible ? '' : 'hidden'}">Auto-Fix</button>
                     <span class="canvas-action-meta">${executionPreset.canRun || executionPreset.canTest ? `Preset: ${activeTab.path.split('.').pop().toLowerCase()}` : 'No execution preset for this file type.'}</span>
@@ -2307,6 +2311,13 @@ async function handleRename(oldPath) {
             });
             document.getElementById('canvas-run-btn').addEventListener('click', () => runCanvasAction('run'));
             document.getElementById('canvas-test-btn').addEventListener('click', () => runCanvasAction('test'));
+            if (document.getElementById('canvas-watch-btn')) {
+                document.getElementById('canvas-watch-btn').addEventListener('click', () => {
+                    const isWatching = canvasWatchModeByPath[activeTab.path];
+                    canvasWatchModeByPath[activeTab.path] = !isWatching;
+                    renderCanvasPanel(); // re-render to update UI and toggle class
+                });
+            }
             document.getElementById('canvas-autofix-btn').addEventListener('click', () => runCanvasAutoFix());
             document.getElementById('canvas-stop-btn').addEventListener('click', () => {
                 if (currentConversationId) {
@@ -2375,6 +2386,11 @@ async function handleRename(oldPath) {
                             last_updated_at: Date.now() / 1000,
                         });
                         setTimeout(() => { saveBtn.textContent = 'Save'; }, 2000);
+
+                        // Trigger Watch Mode test if active
+                        if (canvasWatchModeByPath[activeTab.path] && executionPreset && executionPreset.canTest) {
+                            runCanvasAction('test');
+                        }
                     } catch (error) {
                         alert(`Error saving file: ${error.message}`);
                         saveBtn.textContent = 'Save';
