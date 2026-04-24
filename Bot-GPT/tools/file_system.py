@@ -1,6 +1,7 @@
 import os
 from flask import current_app
 from extensions import socketio
+from artifacts import upsert_artifact_metadata, snapshot_artifact_version
 
 
 def get_workspace_path(conversation_id, owner_id):
@@ -135,9 +136,22 @@ def write_file(path, content, conversation_id=None, user_id=None):
         return {"status": "error", "message": "Error: Access denied."}
 
     try:
+        previous_content = None
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            with open(file_path, "r", encoding="utf-8") as existing:
+                previous_content = existing.read()
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
+        if previous_content is not None and previous_content != content:
+            snapshot_artifact_version(
+                user_id,
+                conversation_id,
+                path,
+                previous_content,
+                change_summary="Updated via tool write_file",
+            )
+        upsert_artifact_metadata(user_id, conversation_id, path)
 
         # After successfully writing the file, emit an event to the room
         socketio.emit(

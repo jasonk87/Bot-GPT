@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from app import create_app, socketio as _socketio
 from models import User, _save_users
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope='function')
 def app(tmp_path_factory):
     """Create and configure a new app instance for the test session."""
     instance_path = tmp_path_factory.mktemp("instance")
