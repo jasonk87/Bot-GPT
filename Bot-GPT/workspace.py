@@ -1,7 +1,7 @@
 import os
 import shutil
 import uuid
-from flask import Blueprint, request, jsonify, current_app, Response
+from flask import Blueprint, request, jsonify, current_app, Response, send_file
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
 from extensions import socketio
@@ -17,7 +17,46 @@ from shared_paths import (
     get_conversation_index_path,
     get_user_conversation_index_path,
 )
+from artifacts import (
+    list_artifacts_for_conversation,
+    set_last_active_artifact,
+    upsert_artifact_metadata,
+    rename_artifact_metadata,
+    remove_artifact_metadata,
+    snapshot_artifact_version,
+    list_artifact_versions,
+    get_artifact_version,
+)
 from tools.file_system import get_workspace_path
+from repo_index import (
+    discover_local_repositories,
+    load_repo_index,
+    select_repository,
+    extract_repo_metadata,
+)
+from memory_store import list_facts, load_memory, save_memory
+from task_scheduler import (
+    create_task,
+    delete_task,
+    get_task,
+    list_notifications,
+    list_tasks,
+    mark_notifications_read,
+    update_task_status,
+)
+from heartbeat import load_heartbeat
+from notification_router import mark_user_activity, get_user_activity
+from telegram_router import create_pairing_code, get_pairing_status_for_user, unpair_telegram_user
+from telegram_router import get_telegram_targets_for_user
+from os_safety import list_pending_approvals, resolve_approval_request
+from workflow_learning import (
+    list_workflows as wf_list_workflows,
+    get_workflow as wf_get_workflow,
+    delete_workflow as wf_delete_workflow,
+    select_best_workflow as wf_select_best_workflow,
+)
+from admin_updates import update_manager
+from admin_auth import is_admin_user
 from tools import (
     get_file_tree,
     is_safe_path,
@@ -27,6 +66,33 @@ from tools import (
 
 workspace = Blueprint("workspace", __name__)
 call_ollama_chat_stream = call_chat_stream
+
+
+def _is_admin_user(user) -> bool:
+    return is_admin_user(user, current_app.config)
+
+
+def _admin_guard():
+    if not _is_admin_user(current_user):
+        return jsonify({"error": "Access denied"}), 403
+    return None
+
+
+def _resolve_user_attachment_path(raw_path: str, user_id: int) -> str:
+    candidate = os.path.abspath(str(raw_path or ""))
+    allowed_roots = [
+        os.path.abspath(os.path.join(current_app.instance_path, str(user_id))),
+        os.path.abspath(os.path.join("/tmp", "botgpt_os_agent", str(user_id))),
+    ]
+    if any(candidate.startswith(root + os.sep) or candidate == root for root in allowed_roots):
+        return candidate
+    raise ValueError("Attachment path is outside allowed roots.")
+
+
+@workspace.before_app_request
+def track_user_activity():
+    if getattr(current_user, "is_authenticated", False):
+        mark_user_activity(current_app.instance_path, int(current_user.id), channel="ui")
 
 def find_conversation_owner(conversation_id):
     """Finds the owner of a conversation using the index."""
@@ -95,9 +161,26 @@ def handle_workspace_file():
             return jsonify({"error": "Access denied for this operation"}), 403
         content = data.get("content")
         try:
+            previous_content = None
+            if os.path.exists(file_path) and os.path.isfile(file_path):
+                with open(file_path, "r", encoding="utf-8") as existing:
+                    previous_content = existing.read()
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
+            if previous_content is not None and previous_content != content:
+                snapshot_artifact_version(
+                    owner_id,
+                    conversation_id,
+                    path,
+                    previous_content,
+                    change_summary="Updated from workspace editor",
+                )
+            upsert_artifact_metadata(
+                owner_id,
+                conversation_id,
+                path,
+            )
             socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=str(conversation_id))
             return jsonify({"success": True, "message": f"File '{path}' saved."})
         except Exception as e:
@@ -109,6 +192,7 @@ def handle_workspace_file():
         try:
             if os.path.isfile(file_path):
                 os.remove(file_path)
+                remove_artifact_metadata(owner_id, conversation_id, path)
             elif os.path.isdir(file_path):
                 shutil.rmtree(file_path)
             else:
@@ -277,7 +361,10 @@ def upload_file():
             "owner_id": owner_id,
             "title": "New Chat",
             "participants": [{'user_id': owner_id, 'role': 'owner'}],
-            "messages": []
+            "messages": [],
+            "artifacts": [],
+            "artifact_versions": {},
+            "last_active_artifact_id": None,
         }
         convo_path = _get_conversation_path(owner_id, conversation_id)
         save_conversation(convo_path, conversation_data)
@@ -295,6 +382,7 @@ def upload_file():
         if file and file.filename:
             filename = secure_filename(file.filename)
             file.save(os.path.join(workspace_path, filename))
+            upsert_artifact_metadata(owner_id, conversation_id, filename)
             filenames.append(filename)
 
     file_list_str = "\\n- ".join(filenames)
@@ -363,5 +451,456 @@ def rename_workspace_item():
 
     os.makedirs(os.path.dirname(destination_path), exist_ok=True)
     shutil.move(source_path, destination_path)
+    rename_artifact_metadata(owner_id, conversation_id, old_path, new_path)
     socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=str(conversation_id))
     return jsonify({"success": True, "message": f"Renamed '{old_path}' to '{new_path}'."})
+
+
+@workspace.route("/api/conversation/<conversation_id>/artifacts", methods=["GET", "POST"])
+@login_required
+def conversation_artifacts(conversation_id):
+    owner_id = find_conversation_owner(conversation_id)
+    if not owner_id:
+        return jsonify({"error": "Conversation not found"}), 404
+
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
+    if not conversation_data or not check_permission(conversation_data, current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    if request.method == "POST":
+        data = request.get_json() or {}
+        artifact_id = data.get("artifact_id")
+        if artifact_id:
+            set_last_active_artifact(owner_id, conversation_id, artifact_id)
+        return jsonify({"success": True})
+
+    artifacts = list_artifacts_for_conversation(owner_id, conversation_id)
+    return jsonify({
+        "artifacts": artifacts,
+        "last_active_artifact_id": conversation_data.get("last_active_artifact_id"),
+    })
+
+
+@workspace.route("/api/artifact/<path:artifact_id>/versions", methods=["GET"])
+@login_required
+def artifact_versions(artifact_id):
+    conversation_id = request.args.get("conversation_id")
+    if not conversation_id:
+        return jsonify({"error": "conversation_id is required"}), 400
+    owner_id = find_conversation_owner(conversation_id)
+    if not owner_id:
+        return jsonify({"error": "Conversation not found"}), 404
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
+    if not conversation_data or not check_permission(conversation_data, current_user):
+        return jsonify({"error": "Access denied"}), 403
+    versions = list_artifact_versions(owner_id, conversation_id, artifact_id)
+    return jsonify({"artifact_id": artifact_id, "versions": versions})
+
+
+@workspace.route("/api/artifact/<path:artifact_id>/version/<version_id>", methods=["GET"])
+@login_required
+def artifact_version_detail(artifact_id, version_id):
+    conversation_id = request.args.get("conversation_id")
+    if not conversation_id:
+        return jsonify({"error": "conversation_id is required"}), 400
+    owner_id = find_conversation_owner(conversation_id)
+    if not owner_id:
+        return jsonify({"error": "Conversation not found"}), 404
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
+    if not conversation_data or not check_permission(conversation_data, current_user):
+        return jsonify({"error": "Access denied"}), 403
+    version = get_artifact_version(owner_id, conversation_id, artifact_id, version_id)
+    if not version:
+        return jsonify({"error": "Version not found"}), 404
+    return jsonify(version)
+
+
+@workspace.route("/api/artifact/<path:artifact_id>/version/<version_id>/restore", methods=["POST"])
+@login_required
+def restore_artifact_version(artifact_id, version_id):
+    data = request.get_json() or {}
+    conversation_id = data.get("conversation_id")
+    if not conversation_id:
+        return jsonify({"error": "conversation_id is required"}), 400
+    owner_id = find_conversation_owner(conversation_id)
+    if not owner_id:
+        return jsonify({"error": "Conversation not found"}), 404
+    convo_path = _get_conversation_path(owner_id, conversation_id)
+    conversation_data = load_conversation(convo_path)
+    if not conversation_data or not check_permission(conversation_data, current_user, level="owner"):
+        return jsonify({"error": "Access denied for this operation"}), 403
+    version = get_artifact_version(owner_id, conversation_id, artifact_id, version_id)
+    if not version:
+        return jsonify({"error": "Version not found"}), 404
+
+    workspace_path = get_workspace_path(conversation_id, owner_id)
+    file_path = os.path.join(workspace_path, artifact_id)
+    if not is_safe_path(workspace_path, file_path):
+        return jsonify({"error": "Invalid path"}), 403
+
+    previous_content = None
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as existing:
+            previous_content = existing.read()
+
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w", encoding="utf-8") as target:
+        target.write(version["content"])
+
+    if previous_content is not None and previous_content != version["content"]:
+        snapshot_artifact_version(
+            owner_id,
+            conversation_id,
+            artifact_id,
+            previous_content,
+            change_summary=f"Restore point before {version_id}",
+        )
+    upsert_artifact_metadata(owner_id, conversation_id, artifact_id)
+    socketio.emit("refresh_files", {"conversation_id": conversation_id}, room=str(conversation_id))
+    return jsonify({"success": True, "artifact_id": artifact_id, "restored_version_id": version_id})
+
+
+@workspace.route("/api/repos/discover", methods=["POST"])
+@login_required
+def discover_repositories():
+    data = request.get_json() or {}
+    base_paths = data.get("base_paths")
+    if base_paths is not None and not isinstance(base_paths, list):
+        return jsonify({"error": "base_paths must be a list"}), 400
+    index = discover_local_repositories(current_user.id, base_paths=base_paths)
+    return jsonify(index)
+
+
+@workspace.route("/api/repos", methods=["GET"])
+@login_required
+def list_repositories():
+    return jsonify(load_repo_index(current_user.id))
+
+
+@workspace.route("/api/repos/select", methods=["POST"])
+@login_required
+def select_repository_api():
+    data = request.get_json() or {}
+    repo = data.get("repo")
+    if not repo:
+        return jsonify({"error": "repo is required"}), 400
+    selected = select_repository(current_user.id, repo)
+    if not selected:
+        return jsonify({"error": "Repository not found"}), 404
+    return jsonify({"selected_repo": selected})
+
+
+@workspace.route("/api/repos/analyze", methods=["POST"])
+@login_required
+def analyze_repository_api():
+    data = request.get_json() or {}
+    repo_path = data.get("path")
+    if not repo_path or not os.path.isdir(repo_path):
+        return jsonify({"error": "A valid repo path is required"}), 400
+    return jsonify({"repo": extract_repo_metadata(repo_path)})
+
+
+@workspace.route("/api/memory", methods=["GET", "DELETE"])
+@login_required
+def memory_inspection_api():
+    if request.method == "GET":
+        scope = request.args.get("scope", "user")
+        project_key = request.args.get("project_key")
+        conversation_id = request.args.get("conversation_id")
+        if conversation_id:
+            payload = load_memory(current_user.id)
+            session_memory = payload.get("sessions", {}).get(conversation_id, {})
+            return jsonify({"scope": "session", "conversation_id": conversation_id, "memory": session_memory})
+        facts = list_facts(current_user.id, scope=scope, project_key=project_key)
+        return jsonify({"scope": scope, "project_key": project_key, "facts": facts})
+
+    data = request.get_json() or {}
+    scope = data.get("scope", "user")
+    key = data.get("key")
+    project_key = data.get("project_key")
+    if not key:
+        return jsonify({"error": "key is required"}), 400
+    memory = load_memory(current_user.id)
+    if scope == "project" and project_key:
+        facts = memory.get("project_facts", {}).get(project_key, [])
+        memory["project_facts"][project_key] = [fact for fact in facts if fact.get("key") != key]
+    else:
+        memory["user_facts"] = [fact for fact in memory.get("user_facts", []) if fact.get("key") != key]
+    save_memory(current_user.id, memory)
+    return jsonify({"success": True, "deleted_key": key})
+
+
+@workspace.route("/api/tasks", methods=["GET", "POST"])
+@login_required
+def tasks_api():
+    if request.method == "GET":
+        user_id = current_user.id
+        if _is_admin_user(current_user) and request.args.get("user_id"):
+            user_id = int(request.args.get("user_id"))
+        return jsonify({"tasks": list_tasks(current_app.instance_path, user_id)})
+
+    payload = request.get_json() or {}
+    if not payload.get("schedule"):
+        return jsonify({"error": "schedule is required"}), 400
+    try:
+        task = create_task(current_app.instance_path, current_user.id, payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(task), 201
+
+
+@workspace.route("/api/tasks/<task_id>", methods=["PATCH", "DELETE", "GET"])
+@login_required
+def task_detail_api(task_id):
+    requester_id = current_user.id
+    target_user_id = requester_id
+    if _is_admin_user(current_user) and request.args.get("user_id"):
+        target_user_id = int(request.args.get("user_id"))
+
+    task = get_task(current_app.instance_path, target_user_id, task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    if task.get("user_id") != requester_id and not _is_admin_user(current_user):
+        return jsonify({"error": "Access denied"}), 403
+
+    if request.method == "GET":
+        return jsonify(task)
+    if request.method == "DELETE":
+        removed = delete_task(current_app.instance_path, target_user_id, task_id)
+        return jsonify({"success": removed, "task_id": task_id})
+
+    status = (request.get_json() or {}).get("status")
+    if status not in {"active", "paused", "failed"}:
+        return jsonify({"error": "status must be one of: active, paused, failed"}), 400
+    updated = update_task_status(current_app.instance_path, target_user_id, task_id, status)
+    return jsonify(updated)
+
+
+@workspace.route("/api/notifications", methods=["GET", "POST"])
+@login_required
+def notifications_api():
+    if request.method == "GET":
+        unread_only = request.args.get("unread_only") == "1"
+        return jsonify({"notifications": list_notifications(current_app.instance_path, current_user.id, unread_only=unread_only)})
+
+    marked = mark_notifications_read(current_app.instance_path, current_user.id)
+    return jsonify({"marked_read": marked})
+
+
+@workspace.route("/api/system/heartbeat", methods=["GET"])
+@login_required
+def heartbeat_api():
+    state = load_heartbeat(current_app.instance_path)
+    state["last_user_activity"] = get_user_activity(current_app.instance_path, current_user.id).get("last_active_at")
+    return jsonify(state)
+
+
+@workspace.route("/api/telegram/pairing-code", methods=["POST"])
+@login_required
+def telegram_pairing_code_api():
+    expiry = int(current_app.config.get("TELEGRAM_PAIRING_EXPIRY", 300))
+    payload = create_pairing_code(current_app.instance_path, current_user.id, expiry_seconds=expiry)
+    return jsonify(payload), 201
+
+
+@workspace.route("/api/telegram/status", methods=["GET"])
+@login_required
+def telegram_status_api():
+    return jsonify(get_pairing_status_for_user(current_app.instance_path, current_user.id))
+
+
+@workspace.route("/api/telegram/pairing", methods=["DELETE"])
+@login_required
+def telegram_unpair_api():
+    telegram_user_id = request.args.get("telegram_user_id")
+    removed = unpair_telegram_user(
+        current_app.instance_path,
+        current_user.id,
+        telegram_user_id=int(telegram_user_id) if telegram_user_id else None,
+    )
+    return jsonify({"removed": removed})
+
+
+@workspace.route("/api/attachments/view", methods=["GET"])
+@login_required
+def attachment_view_api():
+    raw_path = request.args.get("path", "")
+    if not raw_path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_user_attachment_path(raw_path, int(current_user.id))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 403
+    if not os.path.isfile(resolved):
+        return jsonify({"error": "Attachment not found"}), 404
+    as_attachment = request.args.get("download") == "1"
+    return send_file(resolved, as_attachment=as_attachment, download_name=os.path.basename(resolved))
+
+
+@workspace.route("/api/telegram/forward-attachment", methods=["POST"])
+@login_required
+def telegram_forward_attachment_api():
+    payload = request.get_json(silent=True) or {}
+    raw_path = payload.get("path", "")
+    if not raw_path:
+        return jsonify({"error": "path is required"}), 400
+    try:
+        resolved = _resolve_user_attachment_path(raw_path, int(current_user.id))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 403
+    if not os.path.isfile(resolved):
+        return jsonify({"error": "Attachment not found"}), 404
+    bridge = current_app.extensions.get("telegram_bridge")
+    if bridge is None:
+        return jsonify({"error": "Telegram bridge is not enabled"}), 400
+    targets = get_telegram_targets_for_user(current_app.instance_path, int(current_user.id))
+    if not targets:
+        return jsonify({"error": "No paired Telegram targets found"}), 400
+    sent = bridge.send_file(int(targets[0]["telegram_user_id"]), resolved, caption=payload.get("caption", ""))
+    return jsonify({"sent": bool(sent), "target": targets[0]}), (200 if sent else 500)
+
+
+@workspace.route("/api/workflows", methods=["GET"])
+@login_required
+def workflows_api():
+    query = request.args.get("q")
+    if query:
+        match = wf_select_best_workflow(current_app.instance_path, current_user.id, query)
+        return jsonify({"match": match})
+    return jsonify({"workflows": wf_list_workflows(current_app.instance_path, current_user.id)})
+
+
+@workspace.route("/api/workflows/<workflow_id>", methods=["GET", "DELETE"])
+@login_required
+def workflow_detail_api(workflow_id):
+    if request.method == "GET":
+        workflow = wf_get_workflow(current_app.instance_path, current_user.id, workflow_id)
+        if not workflow:
+            return jsonify({"error": "Workflow not found"}), 404
+        return jsonify(workflow)
+
+    removed = wf_delete_workflow(current_app.instance_path, current_user.id, workflow_id)
+    return jsonify({"removed": removed})
+
+
+@workspace.route("/api/workflows/<workflow_id>/run", methods=["POST"])
+@login_required
+def workflow_run_api(workflow_id):
+    from tools.runtime import run_workflow as runtime_run_workflow
+
+    payload = request.get_json(silent=True) or {}
+    result = runtime_run_workflow(
+        workflow_id=workflow_id,
+        user_id=current_user.id,
+        execution_context={
+            "mode": "agent",
+            "os_control_enabled": bool(payload.get("os_control_enabled", False)),
+            "explicit_user_intent": True,
+            "source": "workspace_api",
+        },
+    )
+    return jsonify(result), (200 if result.get("status") == "success" else 400)
+
+
+@workspace.route("/api/os-approvals/pending", methods=["GET"])
+@login_required
+def pending_os_approvals_api():
+    return jsonify({"approvals": list_pending_approvals(current_app.instance_path, user_id=current_user.id)})
+
+
+@workspace.route("/api/os-approvals/status", methods=["GET"])
+@login_required
+def os_approvals_status_api():
+    return jsonify({
+        "os_agent_enabled": bool(current_app.config.get("OS_AGENT_ENABLED", False)),
+        "os_agent_safe_mode": bool(current_app.config.get("OS_AGENT_SAFE_MODE", True)),
+        "require_approval_for_observe": bool(current_app.config.get("OS_AGENT_REQUIRE_APPROVAL_FOR_OBSERVE", False)),
+        "require_approval_for_caution": bool(current_app.config.get("OS_AGENT_REQUIRE_APPROVAL_FOR_CAUTION", True)),
+        "require_approval_for_dangerous": bool(current_app.config.get("OS_AGENT_REQUIRE_APPROVAL_FOR_DANGEROUS", True)),
+    })
+
+
+@workspace.route("/api/os-approvals/<request_id>", methods=["POST"])
+@login_required
+def resolve_os_approval_api(request_id):
+    payload = request.get_json() or {}
+    decision = str(payload.get("decision") or "").strip().lower()
+    if decision not in {"approve", "reject"}:
+        return jsonify({"error": "decision must be approve or reject"}), 400
+
+    pending_for_user = {item.get("request_id") for item in list_pending_approvals(current_app.instance_path, user_id=current_user.id)}
+    if request_id not in pending_for_user:
+        return jsonify({"error": "approval request not found"}), 404
+
+    resolved = resolve_approval_request(
+        current_app.instance_path,
+        request_id,
+        status="approved" if decision == "approve" else "rejected",
+        resolved_by=current_user.id,
+    )
+    if not resolved:
+        return jsonify({"error": "approval request not found"}), 404
+    return jsonify({"approval": resolved})
+
+
+@workspace.route("/api/admin/updates/check", methods=["GET"])
+@login_required
+def admin_updates_check_api():
+    denied = _admin_guard()
+    if denied:
+        return denied
+    try:
+        return jsonify(update_manager.refresh(current_app.instance_path))
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@workspace.route("/api/admin/updates/status", methods=["GET"])
+@login_required
+def admin_updates_status_api():
+    denied = _admin_guard()
+    if denied:
+        return denied
+    return jsonify(update_manager.get_status(current_app.instance_path))
+
+
+@workspace.route("/api/admin/updates/history", methods=["GET"])
+@login_required
+def admin_updates_history_api():
+    denied = _admin_guard()
+    if denied:
+        return denied
+    return jsonify({"events": update_manager.get_history(current_app.instance_path)})
+
+
+@workspace.route("/api/admin/updates/update", methods=["POST"])
+@login_required
+def admin_updates_apply_api():
+    denied = _admin_guard()
+    if denied:
+        return denied
+    payload = request.get_json(silent=True) or {}
+    branch = (payload.get("branch") or "").strip()
+    if not branch:
+        return jsonify({"error": "branch is required"}), 400
+    strategy = (payload.get("strategy") or "abort").strip().lower()
+    if strategy not in {"abort", "stash", "force"}:
+        return jsonify({"error": "strategy must be one of: abort, stash, force"}), 400
+
+    try:
+        max_age = int(current_app.config.get("UPDATE_CACHE_MAX_AGE_SECONDS", 180))
+        if not update_manager.is_state_fresh(current_app.instance_path, max_age_seconds=max_age):
+            update_manager.refresh(current_app.instance_path)
+        result = update_manager.start_update(
+            current_app.instance_path,
+            branch=branch,
+            strategy=strategy,
+            smoke_command=current_app.config.get("UPDATE_SMOKE_COMMAND"),
+            restart_command=current_app.config.get("UPDATE_RESTART_COMMAND"),
+        )
+        return jsonify(result), (200 if result.get("status") != "busy" else 409)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
