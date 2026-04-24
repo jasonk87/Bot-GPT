@@ -176,6 +176,74 @@
         .tool-activity-body .status-running { color: #facc15; }
         .tool-activity-body .status-success { color: #4ade80; }
         .tool-activity-body .status-error { color: #f87171; }
+        .live-activity-bar {
+            border-bottom: 1px solid #1f2937;
+            background: rgba(17, 24, 39, 0.85);
+            padding: 0.5rem 1rem;
+        }
+        .live-activity-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.8125rem;
+            color: #d1d5db;
+        }
+        .live-activity-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: #34d399;
+            box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6);
+            animation: livePulse 1.4s infinite;
+            flex-shrink: 0;
+        }
+        @keyframes livePulse {
+            0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.6); }
+            70% { box-shadow: 0 0 0 7px rgba(52, 211, 153, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+        }
+        .live-activity-panel {
+            margin-top: 0.5rem;
+            font-size: 0.75rem;
+            color: #94a3b8;
+            display: none;
+        }
+        .live-activity-panel[data-open="true"] {
+            display: grid;
+            gap: 0.2rem;
+        }
+        .tool-timeline-container {
+            margin-top: 0.5rem;
+            border-top: 1px solid #1f2937;
+            padding-top: 0.4rem;
+        }
+        .tool-timeline-list {
+            display: none;
+            margin-top: 0.35rem;
+            max-height: 180px;
+            overflow-y: auto;
+        }
+        .tool-timeline-list[data-open="true"] {
+            display: block;
+        }
+        .tool-step {
+            padding: 0.3rem 0.35rem;
+            border-radius: 0.35rem;
+            cursor: pointer;
+        }
+        .tool-step:hover {
+            background: rgba(51, 65, 85, 0.35);
+        }
+        .tool-step-details {
+            display: none;
+            margin-top: 0.2rem;
+            color: #9ca3af;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .tool-step-details[data-open="true"] {
+            display: block;
+        }
 
         .user-bubble, .bot-bubble {
             overflow-wrap: break-word;
@@ -543,6 +611,46 @@
                         <button id="dependency-banner-dismiss" class="text-yellow-100 hover:text-white text-xs px-2 py-1 border border-yellow-600 rounded">
                             Dismiss
                         </button>
+                    </div>
+                </div>
+                <div id="live-activity-bar" class="live-activity-bar">
+                    <div class="flex items-center justify-between gap-2">
+                        <div id="live-activity-status" class="live-activity-status">
+                            <span class="live-activity-dot"></span>
+                            <span id="live-activity-text">Idle</span>
+                        </div>
+                        <button id="activity-panel-toggle" class="text-xs text-gray-400 hover:text-white" type="button">Details</button>
+                    </div>
+                    <div id="live-activity-panel" class="live-activity-panel" data-open="false">
+                        <div>Stage: <span id="activity-stage-text">idle</span></div>
+                        <div>Focus: <span id="activity-focus-text">—</span></div>
+                        <div>Last action: <span id="activity-action-text">Waiting for request.</span></div>
+                        <div class="tool-timeline-container">
+                            <button id="tool-timeline-toggle" class="text-xs text-gray-400 hover:text-white" type="button">Tool timeline</button>
+                            <ul id="tool-timeline-list" class="tool-timeline-list" data-open="false"></ul>
+                        </div>
+                    </div>
+                </div>
+                <div id="proactive-dashboard" class="px-4 py-2 border-b border-gray-700 bg-gray-900/40 text-xs text-gray-300 space-y-2">
+                    <div class="flex items-center justify-between">
+                        <span class="font-semibold text-gray-200">Proactive system</span>
+                        <span id="heartbeat-label" class="text-gray-400">Heartbeat: --</span>
+                    </div>
+                    <div id="task-dashboard-summary" class="text-gray-400">No background tasks configured.</div>
+                    <ul id="task-dashboard-list" class="space-y-1"></ul>
+                    <div id="notification-inbox-summary" class="text-gray-500">Notifications: 0 unread</div>
+                    <div class="flex items-center justify-between gap-2">
+                        <button id="telegram-pair-btn" class="text-[11px] px-2 py-1 rounded border border-gray-600 hover:border-gray-400">
+                            Generate Telegram Pair Code
+                        </button>
+                        <span id="telegram-pair-code" class="font-mono text-gray-300">Not paired</span>
+                    </div>
+                    <div class="pt-1 border-t border-gray-700">
+                        <div class="flex items-center justify-between">
+                            <span class="text-gray-300">Learned workflows</span>
+                            <button id="workflow-refresh-btn" class="text-[11px] px-2 py-1 rounded border border-gray-600 hover:border-gray-400">Refresh</button>
+                        </div>
+                        <ul id="workflow-list" class="space-y-1 mt-1"></ul>
                     </div>
                 </div>
                 <main id="chat-container" class="scrollable-content flex-1 overflow-y-auto p-4 flex flex-col space-y-4">
