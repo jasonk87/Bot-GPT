@@ -4,6 +4,10 @@ from typing import Dict, List
 
 _NOISE_PATTERNS = [
     re.compile(r"^(hi|hello|thanks|ok|okay|cool)[!. ]*$", re.IGNORECASE),
+    re.compile(r".*ai cannot access desktop.*", re.IGNORECASE),
+    re.compile(r".*ml learning: depends on effort.*", re.IGNORECASE),
+    re.compile(r".*user name revealed.*", re.IGNORECASE),
+    re.compile(r".*unknown user's name requested.*", re.IGNORECASE),
 ]
 
 
@@ -13,10 +17,15 @@ def is_memory_worthy(text: str) -> bool:
     if any(pattern.match(text.strip()) for pattern in _NOISE_PATTERNS):
         return False
     lowered = text.lower()
+    if lowered.startswith("assistant:") or lowered.startswith("system:"):
+        return False
     signals = [
         "i prefer",
         "remember",
         "i use",
+        "my name is",
+        "call me",
+        "i am ",
         "my repo",
         "project",
         "we decided",
@@ -43,6 +52,26 @@ def extract_facts_from_message(content: str) -> List[Dict[str, object]]:
             "key": f"preference:{pref}",
             "value": f"User prefers {pref}.",
             "confidence": 0.85,
+        })
+
+    name_match = re.search(r"\bmy name is\s+([a-zA-Z][a-zA-Z0-9 _'-]{0,40})", text, re.IGNORECASE)
+    if name_match:
+        display_name = name_match.group(1).strip()
+        facts.append({
+            "scope": "user",
+            "key": "identity:name",
+            "value": display_name,
+            "confidence": 0.95,
+        })
+
+    call_me_match = re.search(r"\bcall me\s+([a-zA-Z][a-zA-Z0-9 _'-]{0,40})", text, re.IGNORECASE)
+    if call_me_match:
+        display_name = call_me_match.group(1).strip()
+        facts.append({
+            "scope": "user",
+            "key": "identity:display_name",
+            "value": display_name,
+            "confidence": 0.95,
         })
 
     project_match = re.search(r"(project|repo)\s+([a-zA-Z0-9._-]+)", text)

@@ -2,6 +2,9 @@ import os
 import subprocess
 import shlex
 import shutil
+import queue
+import threading
+import time
 from .file_system import get_workspace_path
 
 # A safelist of allowed shell commands to prevent arbitrary execution
@@ -31,7 +34,63 @@ def is_safe_path(path, workspace_root):
     resolved_path = os.path.abspath(os.path.join(workspace_root, path))
     return resolved_path.startswith(workspace_root)
 
-def run_shell_command(command, conversation_id, user_id, user):
+def _stream_process(args, cwd, timeout, stream_callback=None):
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        bufsize=1,
+    )
+    event_queue = queue.Queue()
+
+    def _reader(pipe, stream_name):
+        try:
+            for line in iter(pipe.readline, ''):
+                event_queue.put((stream_name, line))
+        finally:
+            pipe.close()
+
+    threads = [
+        threading.Thread(target=_reader, args=(process.stdout, "stdout"), daemon=True),
+        threading.Thread(target=_reader, args=(process.stderr, "stderr"), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    started = time.time()
+    timed_out = False
+    stdout_chunks, stderr_chunks = [], []
+    while True:
+        if timeout and (time.time() - started) > timeout and process.poll() is None:
+            timed_out = True
+            process.kill()
+        try:
+            stream_name, line = event_queue.get(timeout=0.1)
+            if stream_name == "stdout":
+                stdout_chunks.append(line)
+            else:
+                stderr_chunks.append(line)
+            if stream_callback:
+                stream_callback(stream_name, line.rstrip("\n"))
+        except queue.Empty:
+            if process.poll() is not None and event_queue.empty():
+                break
+            continue
+
+    for thread in threads:
+        thread.join(timeout=0.2)
+
+    return {
+        "returncode": process.returncode,
+        "stdout": "".join(stdout_chunks),
+        "stderr": "".join(stderr_chunks),
+        "timed_out": timed_out,
+    }
+
+
+def run_shell_command(command, conversation_id, user_id, user, stream_callback=None):
     """
     Executes a shell command in a secure, jailed environment.
     """
@@ -75,21 +134,21 @@ def run_shell_command(command, conversation_id, user_id, user):
 
         # Execute the command with a timeout.
         # `cwd` ensures the command runs inside the workspace directory.
-        process = subprocess.run(
+        process = _stream_process(
             args if executable else [cmd, *args[1:]],
-            capture_output=True,
-            text=True,
-            timeout=15,  # Hard timeout of 15 seconds
             cwd=workspace_path,
-            check=False # Do not raise exception on non-zero exit codes
+            timeout=15,
+            stream_callback=stream_callback,
         )
 
         # Combine stdout and stderr for a complete response
         output = ""
-        if process.stdout:
-            output += f"--- STDOUT ---\n{process.stdout}\n"
-        if process.stderr:
-            output += f"--- STDERR ---\n{process.stderr}\n"
+        if process.get("stdout"):
+            output += f"--- STDOUT ---\n{process.get('stdout')}\n"
+        if process.get("stderr"):
+            output += f"--- STDERR ---\n{process.get('stderr')}\n"
+        if process.get("timed_out"):
+            output += "Error: Command timed out after 15 seconds.\n"
 
         if not output:
             output = "Command executed with no output."

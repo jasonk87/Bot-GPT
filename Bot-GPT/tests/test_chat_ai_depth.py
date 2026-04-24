@@ -122,6 +122,66 @@ def test_handle_ai_response_emits_response_mode_and_injects_depth_prompt(mocker)
     assert mock_save.called
 
 
+def test_handle_ai_response_executes_canvas_autofix_action(mocker):
+    mock_init = MagicMock()
+    conversation = {"id": "c-canvas-fix", "owner_id": 1, "messages": []}
+    mock_init.return_value = ("test-model", "BASE SYSTEM", conversation, "/tmp/convo.json")
+    mocker.patch("chat_ai.save_conversation")
+    mocker.patch("chat_ai.current_app", MagicMock())
+    mock_current_user = mocker.patch("chat_ai.current_user")
+    mock_current_user.id = 1
+    execute_batch = MagicMock(return_value={
+        "status": "success",
+        "policy": "continue_on_error_in_order",
+        "success_count": 1,
+        "error_count": 0,
+        "results": [{
+            "tool_name": "implement_and_test_code",
+            "status": "success",
+            "result": "Success! Code implemented and passed tests.",
+            "retryable": False,
+            "validation_status": "valid",
+            "error_type": None,
+            "error_message": None,
+        }],
+    })
+
+    events = list(
+        chat_ai.handle_ai_response(
+            {
+                "messages": json.dumps([{"role": "user", "content": "auto-fix this file"}]),
+                "model": "test-model",
+                "conversation_id": "",
+                "canvas_mode": True,
+                "canvas_action": {
+                    "tool": "implement_and_test_code",
+                    "parameters": {
+                        "target_file": "main.py",
+                        "test_command": "python main.py",
+                        "task_description": "fix script from stderr",
+                        "max_iterations": 2,
+                    },
+                },
+            },
+            initialize_chat=mock_init,
+            call_stream=lambda *_: iter(["unused"]),
+            handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=lambda calls: calls,
+            execute_normalized_tool_call=MagicMock(),
+            execute_tool_call_batch=execute_batch,
+            sanitize_json=lambda s: s,
+            agent_sessions={},
+            update_conversation_title=MagicMock(),
+            write_file=MagicMock(return_value={"status": "file_written", "path": "canvas.py"}),
+        )
+    )
+
+    assert execute_batch.called
+    tool_calls = [event for event in events if event.get("type") == "tool_call"]
+    assert tool_calls and tool_calls[0]["name"] == "implement_and_test_code"
+    assert any(event.get("type") == "done" for event in events)
+
+
 def test_ensure_next_step_line_no_longer_forces_suffix_when_missing():
     content = chat_ai.ensure_next_step_line("Here is a concise answer.")
     assert content == "Here is a concise answer."
@@ -397,6 +457,71 @@ def test_mode_profile_sets_budget_and_branch_limits():
     assert standard["branch_limit"] == 1
     assert deep["branch_limit"] == 3
     assert agent["tool_batch_budget"] is None
+
+
+def test_agent_phase_helpers_exist():
+    assert hasattr(chat_ai, "agent_plan_phase")
+    assert hasattr(chat_ai, "agent_act_phase")
+    assert hasattr(chat_ai, "agent_verify_phase")
+    assert hasattr(chat_ai, "agent_decide_phase")
+
+
+def test_agent_verify_phase_injects_deterministic_repair_directive(mocker):
+    mocker.patch(
+        "chat_ai._run_verification_loop",
+        return_value={
+            "status": "failed",
+            "summary": "pytest failed",
+            "pending_failure": {
+                "classification": "import_error",
+                "command": "pytest -q",
+                "summary": "ModuleNotFoundError",
+            },
+        },
+    )
+    conversation = {"messages": []}
+    state = {"pending_failure": None, "attempts": 0, "max_attempts": 3, "last_summary": ""}
+
+    report = chat_ai.agent_verify_phase(
+        changed_paths=["a.py"],
+        messages=[{"role": "user", "content": "fix code"}],
+        conversation=conversation,
+        verification_state=state,
+    )
+
+    assert report["status"] == "failed"
+    assert state["pending_failure"]["classification"] == "import_error"
+    directives = [m for m in conversation["messages"] if m.get("role") == "tool" and "DETERMINISTIC REPAIR DIRECTIVE" in m.get("content", "")]
+    assert directives
+
+
+def test_agent_decide_phase_returns_unable_to_verify_on_failed_execution():
+    decision = chat_ai.agent_decide_phase(
+        profile={"mode": "standard"},
+        intent_state={"ready_to_answer": True},
+        batch_outcome={"status": "partial_success"},
+        verification_state={"pending_failure": {"classification": "test_failure"}, "attempts": 3, "max_attempts": 3},
+        aggregated_tool_results=[
+            {
+                "tool_name": "run_shell_command",
+                "status": "error",
+                "error_type": "nonzero_exit",
+            }
+        ],
+    )
+    assert decision["action"] == "unable_to_verify"
+    assert "unable to verify" in decision["reason"].lower()
+
+
+def test_agent_decide_phase_breaks_when_validation_allows():
+    decision = chat_ai.agent_decide_phase(
+        profile={"mode": "standard"},
+        intent_state={"ready_to_answer": True},
+        batch_outcome={"status": "success"},
+        verification_state={"pending_failure": None},
+        aggregated_tool_results=[{"tool_name": "read_file", "status": "success"}],
+    )
+    assert decision["action"] == "break"
 
 
 def test_standard_mode_limits_branches_per_batch(mocker):
