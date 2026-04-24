@@ -2,13 +2,151 @@ import logging
 import json
 import re
 import time
+import os
 from collections import Counter
 from threading import Lock
 from flask import current_app
 from flask_login import current_user
 from models import save_conversation
+from verification import (
+    choose_verification_steps,
+    run_verification_step,
+    should_continue_repair,
+    summarize_verification_results,
+)
+from repo_index import get_selected_repository, load_repo_index, discover_local_repositories
+from context_compactor import estimate_context_usage, compact_session_history
+from memory_store import update_session_memory
+from prompts import inject_model_visible_tool_docs
+from tools.runtime import render_model_visible_tool_docs
+from os_safety import evaluate_tool_policy, get_or_create_approval_request
 
 logger = logging.getLogger(__name__)
+REPO_INTENT_KEYWORDS = (
+    "repo",
+    "repository",
+    "repositories",
+    "projects",
+    "project",
+    "branch",
+)
+OS_INTENT_ACTIONS = {
+    "screenshot": "capture_screen",
+    "screen capture": "capture_screen",
+    "take a screenshot": "capture_screen",
+    "click": "click",
+    "open app": "open_app",
+    "type": "type_text",
+    "desktop": "capture_screen",
+    "browser": "open_url",
+    "control desktop": "move_mouse",
+}
+
+
+def _is_repo_intent(message: str) -> bool:
+    lowered = (message or "").strip().lower()
+    if not lowered:
+        return False
+    if not any(token in lowered for token in REPO_INTENT_KEYWORDS):
+        return False
+    signals = (
+        "most active",
+        "analyze my repos",
+        "find my projects",
+        "what repo should i work on",
+        "latest branch",
+        "most recently updated",
+        "which repo",
+    )
+    return any(signal in lowered for signal in signals)
+
+
+def _repo_fallback_result(owner_id: int) -> dict:
+    index = load_repo_index(owner_id)
+    repos = list(index.get("repos") or [])
+    if not repos:
+        discovery = discover_local_repositories(owner_id)
+        if discovery.get("status") in {"blocked", "error"}:
+            return {
+                "status": discovery.get("status"),
+                "message": discovery.get("error") or "Repository discovery failed.",
+                "repos": discovery.get("repos", []),
+            }
+        repos = list(discovery.get("repos") or [])
+    if not repos:
+        return {"status": "blocked", "message": "I need a configured repo folder before I can scan local projects.", "repos": []}
+
+    ranked = sorted(
+        repos,
+        key=lambda repo: (
+            float(repo.get("last_commit_time") or 0),
+            float(repo.get("last_modified_time") or 0),
+            float(repo.get("file_count") or 0),
+        ),
+        reverse=True,
+    )
+    top = ranked[0]
+    return {
+        "status": "success",
+        "message": (
+            f"Most active repo appears to be '{top.get('name')}' "
+            f"(last commit: {int(top.get('last_commit_time') or 0)}, files: {int(top.get('file_count') or 0)})."
+        ),
+        "repos": ranked[:5],
+    }
+
+
+def _detect_os_intent_tool(message: str) -> str:
+    lowered = (message or "").strip().lower()
+    for phrase, tool_name in OS_INTENT_ACTIONS.items():
+        if phrase in lowered:
+            return tool_name
+    return ""
+
+
+def _capability_block_message(latest_user_message: str, profile_mode: str, os_control_enabled: bool, user) -> dict:
+    tool_name = _detect_os_intent_tool(latest_user_message)
+    if not tool_name:
+        return {"detected": False}
+    policy = evaluate_tool_policy(
+        tool_name,
+        user,
+        current_app.config,
+        execution_context={
+            "mode": profile_mode,
+            "os_control_enabled": os_control_enabled,
+            "explicit_user_intent": True,
+            "source": "chat_intent_router",
+        },
+    )
+    if policy.get("allowed") and not policy.get("requires_approval"):
+        return {"detected": True, "status": "allowed", "tool_name": tool_name}
+    if policy.get("requires_approval"):
+        req = get_or_create_approval_request(
+            current_app.instance_path,
+            user_id=int(user.id),
+            tool_name=tool_name,
+            params={},
+            risk_level=policy.get("category", "caution"),
+            reason="OS/browser action requested directly by user from chat.",
+            context={"source": "chat_intent_router", "message": latest_user_message[:120]},
+        )
+        return {
+            "detected": True,
+            "status": "pending_approval",
+            "tool_name": tool_name,
+            "message": "This action requires approval before I proceed.",
+            "approval_request": req,
+        }
+    reason = policy.get("reason") or "OS action blocked by policy."
+    if "disabled" in reason.lower():
+        reason = "I can do that, but OS control is currently disabled."
+    return {
+        "detected": True,
+        "status": "blocked",
+        "tool_name": tool_name,
+        "message": reason,
+    }
 
 
 DEPTH_PROMPT_RULES = {
@@ -203,12 +341,319 @@ def process_final_answer(conversation, canvas_mode, write_file):
     yield {"type": "final_answer", "content": final_answer_content}
 
 
+def _extract_code_fences(content):
+    fences = []
+    cursor = 0
+    while True:
+        start = content.find("```", cursor)
+        if start == -1:
+            break
+        language_end = content.find("\n", start + 3)
+        if language_end == -1:
+            break
+        language = content[start + 3:language_end].strip().lower()
+        end = content.find("```", language_end + 1)
+        if end == -1:
+            break
+        fences.append((language, content[language_end + 1:end]))
+        cursor = end + 3
+    return fences
+
+
+def _decode_json_objects(text):
+    decoder = json.JSONDecoder()
+    objects = []
+    cursor = 0
+    while True:
+        start = text.find("{", cursor)
+        if start == -1:
+            break
+        try:
+            parsed, parsed_len = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            cursor = start + 1
+            continue
+        objects.append(parsed)
+        cursor = start + parsed_len
+    return objects
+
+
+def _extract_tool_calls(full_response_content, sanitize_json):
+    parsed_tool_calls = []
+    seen = set()
+    candidate_regions = [body for language, body in _extract_code_fences(full_response_content) if language in ("", "json")]
+
+    if not candidate_regions:
+        candidate_regions = [full_response_content]
+
+    for region in candidate_regions:
+        sanitized = sanitize_json(region)
+        for parsed in _decode_json_objects(sanitized):
+            if not isinstance(parsed, dict):
+                continue
+            if not isinstance(parsed.get("tool"), str):
+                continue
+            if "parameters" not in parsed:
+                parsed["parameters"] = {}
+            elif not isinstance(parsed.get("parameters"), dict):
+                continue
+
+            dedupe_key = json.dumps(parsed, sort_keys=True)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            parsed_tool_calls.append(parsed)
+
+    return parsed_tool_calls
+
+
+def _tool_call_fingerprint(tool_call):
+    return (
+        tool_call.tool_name,
+        json.dumps(tool_call.normalized_params, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def _format_tool_batch_feedback(batch_outcome, results):
+    compact_results = []
+    for outcome in results:
+        result_payload = outcome.get("result")
+        if isinstance(result_payload, dict):
+            result_preview = {k: result_payload.get(k) for k in ["status", "path", "filename", "message"] if k in result_payload}
+        else:
+            result_preview = str(result_payload)[:240] if result_payload is not None else None
+        usefulness_hint = "useful"
+        if result_payload in (None, "", [], {}):
+            usefulness_hint = "low_signal_empty_result"
+        if outcome.get("status") != "success":
+            usefulness_hint = "failed_call"
+        compact_results.append({
+            "tool_name": outcome.get("tool_name"),
+            "status": outcome.get("status"),
+            "retryable": outcome.get("retryable"),
+            "validation_status": outcome.get("validation_status"),
+            "error_type": outcome.get("error_type"),
+            "error_message": outcome.get("error_message"),
+            "result_preview": result_preview,
+            "usefulness_hint": usefulness_hint,
+            "source_metadata": outcome.get("source_metadata"),
+        })
+    return "TOOL BATCH RESULT:\n" + json.dumps({
+        "batch_status": batch_outcome.get("status"),
+        "policy": batch_outcome.get("policy"),
+        "success_count": batch_outcome.get("success_count"),
+        "error_count": batch_outcome.get("error_count"),
+        "results": compact_results,
+    }, indent=2, default=str)
+
+
+def _initialize_intent_state(messages):
+    objective = _latest_user_message(messages) or "Complete the user's request."
+    return {
+        "objective": objective,
+        "current_focus": "Gather the minimum evidence required to answer.",
+        "completed_items": [],
+        "blocked_items": [],
+        "next_step_hint": "Use the smallest sufficient next tool action.",
+        "ready_to_answer": False,
+    }
+
+
+def _render_intent_state(intent_state):
+    return (
+        "=== INTENT CONTINUITY STATE ===\n"
+        + json.dumps(intent_state, indent=2, default=str)
+        + "\nUse this state to maintain continuity across loops.\n"
+        "===============================\n"
+    )
+
+
+def _render_verification_state(verification_state):
+    if not verification_state:
+        return ""
+    pending = verification_state.get("pending_failure")
+    if not pending:
+        return ""
+    return (
+        "\n=== VERIFICATION LOOP STATE ===\n"
+        f"attempt: {verification_state.get('attempts', 0)} / {verification_state.get('max_attempts', 0)}\n"
+        f"failed_step: {pending.get('step_type')} -> {pending.get('command')}\n"
+        f"classification: {pending.get('classification')}\n"
+        "instruction: apply the smallest patch for this failure, then rerun verification.\n"
+        "===============================\n"
+    )
+
+
+def _render_repo_context(owner_id):
+    repo = get_selected_repository(owner_id)
+    if not repo:
+        return ""
+    entry_points = repo.get("entry_points") or []
+    return (
+        "\n=== REPOSITORY CONTEXT ===\n"
+        f"name: {repo.get('name')}\n"
+        f"path: {repo.get('path')}\n"
+        f"primary_languages: {', '.join(repo.get('primary_languages') or [])}\n"
+        f"preferred_entry_point: {repo.get('preferred_preview_target')}\n"
+        f"detected_entry_points: {', '.join(entry_points[:5])}\n"
+        "When coding, prefer scoped patches in this selected repository.\n"
+        "==========================\n"
+    )
+
+
+def _render_scratchpad(scratchpad):
+    notes = scratchpad.get("notes", []) if isinstance(scratchpad, dict) else []
+    if not notes:
+        return ""
+    return (
+        "\n=== WORKING SCRATCHPAD (RUN-LOCAL) ===\n"
+        + "\n".join(f"- {note}" for note in notes[-6:])
+        + "\n======================================\n"
+    )
+
+
+def _update_intent_state(intent_state, tool_calls, results, batch_outcome):
+    for tool_call, result in zip(tool_calls, results):
+        descriptor = f"{tool_call.tool_name} {tool_call.normalized_params}"
+        if result.get("status") == "success":
+            completion_note = f"Completed: {descriptor}"
+            if completion_note not in intent_state["completed_items"]:
+                intent_state["completed_items"].append(completion_note)
+        elif result.get("retryable") is False:
+            block_note = f"Blocked: {descriptor} -> {result.get('error_type')}"
+            if block_note not in intent_state["blocked_items"]:
+                intent_state["blocked_items"].append(block_note)
+
+    batch_status = batch_outcome.get("status")
+    if batch_status == "success":
+        intent_state["current_focus"] = "Synthesize successful results and determine if answer is ready."
+        intent_state["next_step_hint"] = "Prefer answering if evidence is sufficient; otherwise run one targeted follow-up."
+    elif batch_status == "partial_success":
+        intent_state["current_focus"] = "Continue from successful branches; recover only unresolved failures."
+        intent_state["next_step_hint"] = "Use successful outputs first, then selectively recover failed critical branches."
+    elif batch_status == "error":
+        intent_state["current_focus"] = "Pivot strategy away from blocked/non-productive calls."
+        intent_state["next_step_hint"] = "Change parameters/tool choice or ask a clarifying question."
+    elif batch_status == "empty":
+        intent_state["next_step_hint"] = "No executable calls produced; either clarify, pivot, or answer with current evidence."
+
+    intent_state["ready_to_answer"] = (
+        len(intent_state["completed_items"]) > 0
+        and batch_status in ("success", "partial_success")
+    )
+    return intent_state
+
+
+def _mode_profile(depth_mode, agent_mode):
+    if agent_mode:
+        return {
+            "mode": "agent",
+            "max_iterations": 100,
+            "tool_batch_budget": None,
+            "branch_limit": 5,
+        }
+    if depth_mode == "deep":
+        return {
+            "mode": "deep",
+            "max_iterations": 30,
+            "tool_batch_budget": 5,
+            "branch_limit": 3,
+        }
+    return {
+        "mode": "standard",
+        "max_iterations": 12,
+        "tool_batch_budget": 2,
+        "branch_limit": 1,
+    }
+
+
+def _collect_changed_artifacts(tool_results):
+    changed = []
+    for result in tool_results or []:
+        payload = result.get("result")
+        if not isinstance(payload, dict):
+            continue
+        path = payload.get("path") or payload.get("filename")
+        if isinstance(path, str) and path.strip():
+            changed.append(path.strip())
+    return sorted(set(changed))
+
+
+def _run_verification_loop(changed_paths, latest_user_message, conversation):
+    steps = choose_verification_steps(changed_paths, latest_user_message)
+    if not steps:
+        return {"status": "not_applicable", "results": [], "summary": "No verification steps selected.", "pending_failure": None}
+
+    workspace_path = os.path.join(
+        current_app.instance_path,
+        str(conversation["owner_id"]),
+        "workspaces",
+        str(conversation["id"]),
+    )
+    if not os.path.isdir(workspace_path):
+        return {
+            "status": "blocked",
+            "results": [],
+            "summary": "Verification blocked: workspace path is unavailable.",
+            "pending_failure": {"classification": "command_error", "step_type": "verification", "command": "workspace_lookup"},
+        }
+
+    results = []
+    first_failure = None
+    for step in steps:
+        outcome = run_verification_step(step, workspace_path)
+        results.append(outcome)
+        if not outcome.get("success") and first_failure is None:
+            first_failure = outcome
+
+    status = "passed" if first_failure is None else "failed"
+    return {
+        "status": status,
+        "results": results,
+        "summary": summarize_verification_results(results),
+        "pending_failure": first_failure,
+    }
+
+
+def _render_mode_guidance(profile):
+    if profile["mode"] == "standard":
+        return (
+            "=== MODE DISCIPLINE ===\n"
+            "Mode: standard\n"
+            "- Find the shortest credible path to a good answer.\n"
+            "- Single-path reasoning only; avoid multi-branch exploration.\n"
+            "- Keep tool usage minimal (0-2 batches typical).\n"
+            "- Exit early and answer once evidence is sufficient.\n"
+            "========================\n"
+        )
+    if profile["mode"] == "deep":
+        return (
+            "=== MODE DISCIPLINE ===\n"
+            "Mode: deep\n"
+            "- Use structured, thorough reasoning with controlled branching.\n"
+            "- Allow up to 2-3 distinct hypotheses when justified.\n"
+            "- Moderate tool budget; escalate when narrower attempts are insufficient.\n"
+            "========================\n"
+        )
+    return (
+        "=== MODE DISCIPLINE ===\n"
+        "Mode: agent\n"
+        "- Persistent autonomous execution toward task completion.\n"
+        "- Maintain progress and continuity across multi-step loops.\n"
+        "- Explore broadly only when needed; avoid redundant branches.\n"
+        "========================\n"
+    )
+
+
 def handle_ai_response(
     data,
     *,
     initialize_chat,
     call_stream,
     handle_tool_call,
+    normalize_and_prepare_tool_calls,
+    execute_normalized_tool_call,
+    execute_tool_call_batch,
     sanitize_json,
     agent_sessions,
     update_conversation_title,
@@ -233,12 +678,15 @@ def handle_ai_response(
         save_conversation(conversation_path, conversation)
     except (ValueError, json.JSONDecodeError) as exc:
         yield {"type": "agent_error", "error": str(exc)}
+        yield {"type": "done", "title": "New Chat"}
         return
 
     yield {"type": "conversation_id", "id": conversation["id"]}
     yield {"type": "response_mode", "mode": depth_mode, "source": depth_source}
     yield {"type": "progress_update", "stage": "planning", "label": "Planning approach", "ts": time.time()}
     agent_mode = data.get("agent_mode", False)
+    os_control_enabled = bool(data.get("os_control_enabled", False))
+    explicit_user_intent = bool(data.get("explicit_os_intent", False))
     agent_sessions[conversation["id"]] = {
         "stop_requested": False,
         "running": True,
@@ -248,10 +696,67 @@ def handle_ai_response(
         "tool_name": None,
         "tool_params": None,
         "error": None,
+        "os_control_enabled": os_control_enabled,
     }
 
-    max_iterations = 100 if agent_mode else 15
+    profile = _mode_profile(depth_mode, agent_mode)
+    latest_user_query = _latest_user_message(messages)
+    os_intent_gate = _capability_block_message(latest_user_query, profile["mode"], os_control_enabled, current_user)
+    filtered_tool_docs = render_model_visible_tool_docs(
+        mode=profile["mode"],
+        user=current_user,
+        os_control_enabled=os_control_enabled,
+        explicit_user_intent=explicit_user_intent,
+    )
+    system_prompt = inject_model_visible_tool_docs(system_prompt, filtered_tool_docs)
+    system_prompt = (
+        f"{system_prompt}\n\n"
+        "You have access to system tools including screen capture, input automation, and browser control, "
+        "but must follow safety policies."
+    )
+
+    if os_intent_gate.get("detected") and os_intent_gate.get("status") in {"blocked", "pending_approval"}:
+        stage = "error" if os_intent_gate.get("status") == "blocked" else "completed"
+        yield {
+            "type": "activity_update",
+            "stage": stage,
+            "focus": "os_capability_routing",
+            "last_action": os_intent_gate.get("message"),
+            "active_tool": os_intent_gate.get("tool_name"),
+        }
+        conversation["messages"].append({"role": "assistant", "content": os_intent_gate.get("message")})
+        yield {"type": "progress_update", "stage": "finalizing", "label": "Finalizing answer", "ts": time.time()}
+        yield from process_final_answer(conversation, data.get("canvas_mode", False), write_file)
+        update_conversation_title(conversation, conversation_path, model)
+        conversation["messages"] = [m for m in conversation["messages"] if m.get("role") in ["user", "assistant"]]
+        save_conversation(conversation_path, conversation)
+        yield {"type": "done", "title": conversation.get("title", "New Chat")}
+        return
+    max_iterations = profile["max_iterations"]
     tool_calls = []
+    intent_state = _initialize_intent_state(messages)
+    blocked_tool_fingerprints = set()
+    last_success_state_by_fingerprint = {}
+    workspace_state_version = 0
+    executed_tool_batches = 0
+    verification_state = {
+        "pending_failure": None,
+        "attempts": 0,
+        "max_attempts": 3,
+        "last_summary": "",
+    }
+    scratchpad = {"notes": []}
+    mutating_tools = {
+        "write_file",
+        "create_and_open_canvas",
+        "run_shell_command",
+        "execute_python",
+        "implement_and_test_code",
+        "git_add",
+        "git_commit",
+        "git_pull",
+        "git_push",
+    }
     logger.info("chat_run_start conversation_id=%s agent_mode=%s max_iterations=%s", conversation["id"], agent_mode, max_iterations)
     try:
         for _ in range(max_iterations):
@@ -262,7 +767,13 @@ def handle_ai_response(
             full_response_content = ""
             yield {"type": "progress_update", "stage": "executing", "label": "Generating response", "ts": time.time()}
             try:
-                for chunk in call_stream(model, conversation["messages"], system_prompt):
+                iteration_prompt = (
+                    f"{system_prompt}\n{_render_mode_guidance(profile)}\n"
+                    f"{_render_intent_state(intent_state)}{_render_verification_state(verification_state)}"
+                    f"{_render_repo_context(conversation['owner_id'])}"
+                    f"{_render_scratchpad(scratchpad)}"
+                )
+                for chunk in call_stream(model, conversation["messages"], iteration_prompt):
                     full_response_content += chunk
                     agent_sessions[conversation["id"]]["partial_response"] = full_response_content
                     agent_sessions[conversation["id"]]["stage"] = "answering"
@@ -272,6 +783,47 @@ def handle_ai_response(
                 agent_sessions[conversation["id"]]["error"] = str(e)
                 yield {"type": "agent_error", "error": f"Could not connect to AI: {e}"}
                 break
+
+            trimmed_response = (full_response_content or "").strip()
+            empty_like_response = (not trimmed_response) or trimmed_response in {".", "..."}
+            if empty_like_response:
+                retry_prompt = (
+                    f"{iteration_prompt}\n"
+                    "IMPORTANT: Your previous response was empty. "
+                    "Return a concise answer or one valid tool_call JSON block."
+                )
+                retry_content = ""
+                try:
+                    for chunk in call_stream(model, conversation["messages"], retry_prompt):
+                        retry_content += chunk
+                        agent_sessions[conversation["id"]]["partial_response"] = retry_content
+                        agent_sessions[conversation["id"]]["stage"] = "answering"
+                        yield {"type": "assistant_chunk", "content": chunk}
+                except Exception:
+                    retry_content = ""
+                if not (retry_content or "").strip() or (retry_content or "").strip() in {".", "..."}:
+                    full_response_content = (
+                        "I couldn't generate a usable model response this turn. "
+                        "Please retry, or rephrase your repo question and I will run deterministic repo discovery."
+                    )
+                else:
+                    full_response_content = retry_content
+
+            if os_intent_gate.get("detected"):
+                refusal_markers = (
+                    "cannot access your desktop",
+                    "cannot access your system",
+                    "can't access your desktop",
+                    "can't access your system",
+                )
+                lowered_response = (full_response_content or "").lower()
+                if any(marker in lowered_response for marker in refusal_markers):
+                    if os_intent_gate.get("status") == "allowed":
+                        full_response_content = (
+                            "I can do that. I'll proceed via the available OS/browser tools under current safety policy."
+                        )
+                    else:
+                        full_response_content = os_intent_gate.get("message") or "I can do that, but policy currently blocks it."
 
             finalized_response_content = ensure_next_step_line(full_response_content)
             yield {"type": "progress_update", "stage": "verifying", "label": "Verifying response and next step", "ts": time.time()}
@@ -284,48 +836,316 @@ def handle_ai_response(
                 yield {"type": "assistant_chunk", "content": trailing_delta}
             yield {"type": "assistant_end"}
 
-            tool_calls = re.findall(r"```json\s*(\{[\s\S]*?\})\s*```", full_response_content)
-            if not tool_calls:
+            context_usage = estimate_context_usage(conversation["messages"])
+            if context_usage >= 0.75:
+                compacted = compact_session_history(conversation["messages"], keep_recent=8)
+                if compacted.get("summary"):
+                    conversation["messages"] = compacted["trimmed_messages"]
+                    conversation["messages"].insert(0, {
+                        "role": "system",
+                        "content": f"Session memory summary: {compacted['summary']}",
+                    })
+                    update_session_memory(
+                        current_user.id,
+                        conversation["id"],
+                        compacted["summary"],
+                        compacted.get("key_notes", []),
+                    )
+                    scratchpad["notes"].append(f"Compacted context at {int(context_usage * 100)}% usage")
+
+            tool_call_candidates = _extract_tool_calls(full_response_content, sanitize_json)
+            if not tool_call_candidates:
+                if os_intent_gate.get("detected") and os_intent_gate.get("status") == "allowed":
+                    forced_tool = os_intent_gate.get("tool_name")
+                    forced_params = {}
+                    if forced_tool == "open_url":
+                        url_match = re.search(r"https?://\\S+", latest_user_query or "")
+                        if url_match:
+                            forced_params["url"] = url_match.group(0)
+                        else:
+                            conversation["messages"].append({"role": "assistant", "content": "I can do browser actions, but I need a URL to proceed."})
+                            break
+                    normalized_forced = normalize_and_prepare_tool_calls([{"tool": forced_tool, "parameters": forced_params}])
+                    forced_batch = execute_tool_call_batch(
+                        normalized_forced,
+                        conversation,
+                        current_user,
+                        execution_context={
+                            "mode": profile["mode"],
+                            "os_control_enabled": os_control_enabled,
+                            "explicit_user_intent": True,
+                            "source": "chat_os_intent_fallback",
+                        },
+                    )
+                    forced_result = forced_batch.get("results", [{}])[0]
+                    yield {
+                        "type": "activity_update",
+                        "stage": "completed" if forced_result.get("status") == "success" else "error",
+                        "focus": "os_capability_routing",
+                        "last_action": forced_result.get("error_message") or f"Executed {forced_tool}",
+                        "active_tool": forced_tool,
+                    }
+                    if forced_result.get("status") == "success":
+                        conversation["messages"].append({"role": "assistant", "content": f"Completed `{forced_tool}` successfully."})
+                    else:
+                        conversation["messages"].append({
+                            "role": "assistant",
+                            "content": (
+                                forced_result.get("error_message")
+                                or "I can do that, but the action is currently blocked by policy."
+                            ),
+                        })
+                    break
+                if _is_repo_intent(_latest_user_message(messages)):
+                    fallback = _repo_fallback_result(conversation["owner_id"])
+                    fallback_status = "completed" if fallback.get("status") == "success" else "error"
+                    yield {
+                        "type": "activity_update",
+                        "stage": fallback_status,
+                        "focus": "repo_intelligence",
+                        "last_action": fallback.get("message"),
+                        "active_tool": "github_skill",
+                    }
+                    conversation["messages"].append({"role": "assistant", "content": fallback.get("message")})
+                    break
+                if should_continue_repair(
+                    verification_state.get("pending_failure"),
+                    verification_state.get("attempts", 0),
+                    verification_state.get("max_attempts", 0),
+                ):
+                    conversation["messages"].append({
+                        "role": "tool",
+                        "content": (
+                            "VERIFICATION LOOP NOTICE:\n"
+                            "A verification failure is still unresolved. Apply the smallest patch and rerun verification."
+                        ),
+                    })
+                    continue
+                if verification_state.get("pending_failure"):
+                    pending = verification_state["pending_failure"]
+                    yield {
+                        "type": "agent_error",
+                        "error": (
+                            "Verification blocked completion after maximum safe repair attempts. "
+                            f"Last failure classification: {pending.get('classification')}."
+                        ),
+                    }
                 break
 
+            if profile["tool_batch_budget"] is not None and executed_tool_batches >= profile["tool_batch_budget"]:
+                conversation["messages"].append({
+                    "role": "tool",
+                    "content": "TOOL BUDGET NOTICE:\nReached mode tool-batch budget; answer with current evidence unless user requests deeper exploration.",
+                })
+                break
+
+            tool_calls = normalize_and_prepare_tool_calls(tool_call_candidates)
+            if len(tool_calls) > profile["branch_limit"]:
+                tool_calls = tool_calls[: profile["branch_limit"]]
+            guard_outcomes_by_fp = {}
+            executable_calls = []
+            for tool_call in tool_calls:
+                fingerprint = _tool_call_fingerprint(tool_call)
+                if fingerprint in blocked_tool_fingerprints:
+                    guard_outcomes_by_fp[fingerprint] = {
+                        "tool_name": tool_call.tool_name,
+                        "status": "error",
+                        "result": None,
+                        "error_type": "loop_guard_non_retryable_repeat",
+                        "error_message": "Repeated identical call after non-retryable/validation failure. Change parameters or approach.",
+                        "retryable": False,
+                        "validation_status": tool_call.validation_status,
+                        "source_metadata": tool_call.source_metadata,
+                        "file_creation_tool_used": False,
+                    }
+                elif last_success_state_by_fingerprint.get(fingerprint) == workspace_state_version:
+                    guard_outcomes_by_fp[fingerprint] = {
+                        "tool_name": tool_call.tool_name,
+                        "status": "error",
+                        "result": None,
+                        "error_type": "redundant_call_same_context",
+                        "error_message": "Repeated identical call in unchanged context. Escalate or choose a different tool.",
+                        "retryable": False,
+                        "validation_status": tool_call.validation_status,
+                        "source_metadata": tool_call.source_metadata,
+                        "file_creation_tool_used": False,
+                    }
+                else:
+                    executable_calls.append(tool_call)
+
+            batch_outcome = execute_tool_call_batch(
+                executable_calls,
+                conversation,
+                current_user,
+                execution_context={
+                    "mode": profile["mode"],
+                    "os_control_enabled": os_control_enabled,
+                    "explicit_user_intent": explicit_user_intent,
+                    "source": "chat",
+                },
+            )
+            execution_results_by_fp = {
+                _tool_call_fingerprint(call): outcome
+                for call, outcome in zip(executable_calls, batch_outcome.get("results", []))
+            }
             aggregated_tool_results = []
-            for tool_call_str in tool_calls:
+            for tool_call in tool_calls:
+                fingerprint = _tool_call_fingerprint(tool_call)
+                execution_result = guard_outcomes_by_fp.get(fingerprint) or execution_results_by_fp.get(fingerprint)
+                if not execution_result:
+                    execution_result = {
+                        "tool_name": tool_call.tool_name,
+                        "status": "error",
+                        "result": None,
+                        "error_type": "runtime_mismatch",
+                        "error_message": "No execution outcome available.",
+                        "retryable": False,
+                        "validation_status": tool_call.validation_status,
+                        "source_metadata": tool_call.source_metadata,
+                        "file_creation_tool_used": False,
+                    }
                 tool_call_id = f"tool_{int(time.time() * 1000)}"
                 try:
-                    tool_call = json.loads(sanitize_json(tool_call_str))
-                    logger.info("chat_tool_call conversation_id=%s tool=%s", conversation["id"], tool_call.get("tool"))
+                    logger.info("chat_tool_call conversation_id=%s tool=%s", conversation["id"], tool_call.tool_name)
                     yield {
                         "type": "progress_update",
                         "stage": "executing",
-                        "label": f"Running tool: {tool_call.get('tool')}",
+                        "label": f"Running tool: {tool_call.tool_name}",
                         "ts": time.time(),
                     }
                     agent_sessions[conversation["id"]]["stage"] = "tool_call"
-                    agent_sessions[conversation["id"]]["tool_name"] = tool_call.get("tool")
-                    agent_sessions[conversation["id"]]["tool_params"] = tool_call.get("parameters")
-                    yield {"type": "tool_call", "tool_call_id": tool_call_id, "name": tool_call.get("tool"), "params": tool_call.get("parameters")}
+                    agent_sessions[conversation["id"]]["tool_name"] = tool_call.tool_name
+                    agent_sessions[conversation["id"]]["tool_params"] = tool_call.normalized_params
+                    yield {"type": "tool_call", "tool_call_id": tool_call_id, "name": tool_call.tool_name, "params": tool_call.normalized_params}
+                    if execution_result.get("status") == "success":
+                        tool_result = execution_result.get("result")
+                        if isinstance(tool_result, dict):
+                            if tool_result.get("status") == "canvas_created" or (tool_result.get("status") == "file_written" and tool_call.tool_name in ["create_and_open_canvas", "write_file"]):
+                                yield {"type": "open_canvas", "filename": tool_result.get("path") or tool_result.get("filename")}
+                            elif tool_result.get("status") == "file_written":
+                                yield {"type": "file_updated", "path": tool_result.get("path"), "content": tool_result.get("content")}
+                            elif tool_result.get("status") == "repo_selected" and tool_result.get("entry_point"):
+                                yield {"type": "open_canvas", "filename": tool_result.get("entry_point")}
 
-                    tool_result, _ = handle_tool_call(tool_call, conversation, current_user)
-                    if isinstance(tool_result, dict):
-                        if tool_result.get("status") == "canvas_created" or (tool_result.get("status") == "file_written" and tool_call.get("tool") in ["create_and_open_canvas", "write_file"]):
-                            yield {"type": "open_canvas", "filename": tool_result.get("path") or tool_result.get("filename")}
-                        elif tool_result.get("status") == "file_written":
-                            yield {"type": "file_updated", "path": tool_result.get("path"), "content": tool_result.get("content")}
-
-                    aggregated_tool_results.append(str(tool_result))
-                    agent_sessions[conversation["id"]]["stage"] = "after_tool"
-                    yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": tool_result}
+                        aggregated_tool_results.append(execution_result)
+                        scratchpad["notes"].append(f"Tool success: {tool_call.tool_name}")
+                        last_success_state_by_fingerprint[fingerprint] = workspace_state_version
+                        if tool_call.tool_name in mutating_tools:
+                            workspace_state_version += 1
+                        agent_sessions[conversation["id"]]["stage"] = "after_tool"
+                        yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": tool_result, "meta": execution_result}
+                    else:
+                        error_message = (
+                            f"[{execution_result.get('error_type')}] {execution_result.get('error_message')} "
+                            f"(retryable={execution_result.get('retryable')})"
+                        )
+                        if (
+                            execution_result.get("validation_status") != "valid"
+                            or execution_result.get("retryable") is False
+                        ):
+                            blocked_tool_fingerprints.add(fingerprint)
+                        aggregated_tool_results.append(execution_result)
+                        scratchpad["notes"].append(
+                            f"Tool failure ({execution_result.get('error_type')}): {tool_call.tool_name}"
+                        )
+                        agent_sessions[conversation["id"]]["stage"] = "tool_error"
+                        agent_sessions[conversation["id"]]["error"] = error_message
+                        yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": error_message, "meta": execution_result}
                 except Exception as e:
-                    error_message = f"Error processing tool: {e}"
-                    aggregated_tool_results.append(error_message)
+                    fallback_result = {
+                        "tool_name": tool_call.tool_name,
+                        "status": "error",
+                        "result": None,
+                        "error_type": "chat_runtime_error",
+                        "error_message": str(e),
+                        "retryable": False,
+                        "validation_status": "unknown",
+                        "source_metadata": tool_call.source_metadata,
+                    }
+                    aggregated_tool_results.append(fallback_result)
                     agent_sessions[conversation["id"]]["stage"] = "tool_error"
-                    agent_sessions[conversation["id"]]["error"] = error_message
-                    yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": error_message}
+                    agent_sessions[conversation["id"]]["error"] = str(e)
+                    yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": str(e)}
 
-            conversation["messages"].append({"role": "tool", "content": "TOOL RESPONSES:\n---\n" + "\n---\n".join(aggregated_tool_results) + "\n---"})
+            conversation["messages"].append({
+                "role": "tool",
+                "content": _format_tool_batch_feedback(batch_outcome, aggregated_tool_results),
+            })
+            changed_paths = _collect_changed_artifacts(aggregated_tool_results)
+            ran_mutating = any(
+                result.get("status") == "success" and call.tool_name in mutating_tools
+                for call, result in zip(tool_calls, aggregated_tool_results)
+            )
+            if ran_mutating and changed_paths:
+                yield {
+                    "type": "progress_update",
+                    "stage": "verifying",
+                    "label": "Running verification loop",
+                    "ts": time.time(),
+                }
+                verification_report = _run_verification_loop(
+                    changed_paths,
+                    _latest_user_message(messages),
+                    conversation,
+                )
+                verification_state["last_summary"] = verification_report.get("summary", "")
+                if verification_report.get("status") == "failed":
+                    verification_state["pending_failure"] = verification_report.get("pending_failure")
+                    verification_state["attempts"] += 1
+                    failure = verification_state["pending_failure"] or {}
+                    yield {
+                        "type": "activity_update",
+                        "stage": "analyzing",
+                        "focus": "verification_failure",
+                        "last_action": f"Verification failed: {failure.get('classification')}",
+                        "active_tool": "verification",
+                    }
+                    scratchpad["notes"].append(
+                        f"Verification failed: {failure.get('classification')} ({failure.get('command')})"
+                    )
+                elif verification_report.get("status") == "passed":
+                    verification_state["pending_failure"] = None
+                    verification_state["attempts"] = 0
+                    yield {
+                        "type": "activity_update",
+                        "stage": "analyzing",
+                        "focus": "verification_passed",
+                        "last_action": "Verification passed",
+                        "active_tool": "verification",
+                    }
+                    scratchpad["notes"].append("Verification passed")
+                conversation["messages"].append({
+                    "role": "tool",
+                    "content": verification_report.get("summary", "Verification completed."),
+                })
+            intent_state = _update_intent_state(intent_state, tool_calls, aggregated_tool_results, batch_outcome)
+            yield {
+                "type": "activity_update",
+                "stage": "analyzing",
+                "focus": intent_state.get("current_focus"),
+                "last_action": intent_state.get("next_step_hint"),
+                "active_tool": None,
+            }
+            executed_tool_batches += 1
+            if (
+                profile["mode"] == "standard"
+                and intent_state.get("ready_to_answer")
+                and batch_outcome.get("status") in ("success", "partial_success")
+                and verification_state.get("pending_failure") is None
+            ):
+                break
         else:
             if agent_mode:
                 yield {"type": "agent_error", "error": "Agent reached maximum iterations."}
+    except Exception as exc:
+        yield {"type": "agent_error", "error": f"Chat run failed: {exc}"}
+        yield {
+            "type": "activity_update",
+            "stage": "error",
+            "focus": "chat_runtime_failure",
+            "last_action": str(exc),
+            "active_tool": None,
+        }
     finally:
         agent_sessions.pop(conversation["id"], None)
 
