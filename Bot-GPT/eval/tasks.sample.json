@@ -1,17 +1,184 @@
 [
   {
-    "id": "bug_triage",
+    "id": "qa_dependency_triage",
+    "category": "Q&A",
     "prompt": "Our Flask app fails at startup with missing dependencies. What should we do first?",
-    "expected_keywords": ["dependency", "required", "next step"],
-    "min_keyword_recall": 0.66,
-    "require_next_step": true
+    "expected_keywords": ["dependency", "requirements", "next step"],
+    "min_keyword_recall": 0.67,
+    "require_next_step": true,
+    "expected_verification_pass": true,
+    "forbidden_patterns": ["I am not sure"]
   },
   {
-    "id": "depth_mode",
-    "prompt": "Should this be a standard response or deep response for architecture tradeoffs?",
-    "expected_keywords": ["standard", "deep", "tradeoff"],
-    "min_keyword_recall": 0.66,
+    "id": "qa_architecture_tradeoff",
+    "category": "Q&A",
+    "prompt": "Compare monolith vs microservices for a 6-person startup and include key tradeoffs.",
+    "expected_keywords": ["tradeoff", "latency", "operational complexity", "next step"],
+    "min_keyword_recall": 0.5,
     "require_next_step": true,
-    "forbidden_patterns": ["I am not sure"]
+    "expected_verification_pass": true
+  },
+  {
+    "id": "qa_incident_postmortem",
+    "category": "Q&A",
+    "prompt": "Summarize what a good outage postmortem should include.",
+    "expected_keywords": ["timeline", "root cause", "action items", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "qa_security_review",
+    "category": "Q&A",
+    "prompt": "What are the top security checks before deploying a public API?",
+    "expected_keywords": ["authentication", "rate limiting", "secrets", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "qa_sql_performance",
+    "category": "Q&A",
+    "prompt": "A query is slow on a large table. Give a concise diagnosis checklist.",
+    "expected_keywords": ["index", "query plan", "cardinality", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "qa_release_rollout",
+    "category": "Q&A",
+    "prompt": "Outline a safe progressive rollout strategy for a risky backend change.",
+    "expected_keywords": ["canary", "monitoring", "rollback", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "qa_prompt_quality",
+    "category": "Q&A",
+    "prompt": "What makes a benchmark prompt measurable and hard to game?",
+    "expected_keywords": ["criteria", "ground truth", "evaluation", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "code_fix_syntax_error",
+    "category": "Coding Edits",
+    "prompt": "Fix a Python file with a missing colon in an if statement and explain the patch.",
+    "expected_keywords": ["syntax", "if", "colon", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "code_refactor_function",
+    "category": "Coding Edits",
+    "prompt": "Refactor a long function into smaller helpers without changing behavior.",
+    "expected_keywords": ["helper", "refactor", "behavior", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "code_add_validation",
+    "category": "Coding Edits",
+    "prompt": "Add input validation to a JSON API endpoint and return helpful errors.",
+    "expected_keywords": ["validation", "error", "schema", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "code_test_repair",
+    "category": "Coding Edits",
+    "prompt": "A unit test fails due to changed return type. Update implementation and tests safely.",
+    "expected_keywords": ["unit test", "return type", "compatibility", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "code_logging_upgrade",
+    "category": "Coding Edits",
+    "prompt": "Replace print debugging with structured logging and include correlation IDs.",
+    "expected_keywords": ["structured logging", "correlation", "context", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "code_error_handling",
+    "category": "Coding Edits",
+    "prompt": "Improve exception handling for network retries with backoff and jitter.",
+    "expected_keywords": ["retry", "backoff", "jitter", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "code_migration_plan",
+    "category": "Coding Edits",
+    "prompt": "Plan a safe database migration that adds a non-null column to a large table.",
+    "expected_keywords": ["backfill", "migration", "rollback", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "tool_shell_inspect",
+    "category": "Tool Workflows",
+    "prompt": "Run a shell command to inspect the repository root and summarize what matters.",
+    "expected_keywords": ["run_shell_command", "output", "summary", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true,
+    "forbidden_patterns": ["cannot run commands"]
+  },
+  {
+    "id": "tool_execute_python",
+    "category": "Tool Workflows",
+    "prompt": "Execute a Python script and explain the result and any failures.",
+    "expected_keywords": ["execute_python", "stdout", "stderr", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "tool_file_patch_verify",
+    "category": "Tool Workflows",
+    "prompt": "Update a file, run verification, and report pass/fail with exact command output.",
+    "expected_keywords": ["write_file", "verification", "pass", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "tool_repo_search",
+    "category": "Tool Workflows",
+    "prompt": "Search the codebase for a feature flag and produce a concise change plan.",
+    "expected_keywords": ["search", "feature flag", "plan", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "tool_web_then_write",
+    "category": "Tool Workflows",
+    "prompt": "Collect recent release notes, then save a structured summary to a local file.",
+    "expected_keywords": ["source", "summary", "file", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
+  },
+  {
+    "id": "tool_multi_step_debug",
+    "category": "Tool Workflows",
+    "prompt": "Diagnose a failing test by reading code, running the test, patching, and rerunning.",
+    "expected_keywords": ["test", "patch", "rerun", "next step"],
+    "min_keyword_recall": 0.5,
+    "require_next_step": true,
+    "expected_verification_pass": true
   }
 ]

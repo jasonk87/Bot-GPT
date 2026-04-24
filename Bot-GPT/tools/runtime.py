@@ -8,6 +8,8 @@ import re
 import inspect
 import json
 import time
+import queue
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List
 from flask import current_app, has_app_context
@@ -79,7 +81,7 @@ from visual_intelligence import (
     verify_visual_state as vi_verify_visual_state,
 )
 from .optional_sql import get_db_schema, run_sql_query
-from .shell import run_shell_command
+from .shell import run_shell_command as base_run_shell_command
 from .ai_service import call_chat_stream
 from .self_healing import implement_and_test_code
 from skills.github_skill import github_skill
@@ -406,6 +408,82 @@ def update_task_status(
     return f"Status of step {step_index} updated to {status}."
 
 
+def _emit_tool_stream(conversation_id: str, tool_name: str, stream_name: str, line: str):
+    if not conversation_id:
+        return
+    socketio.emit(
+        "ai_response",
+        {
+            "type": "tool_stream",
+            "tool": tool_name,
+            "stream": stream_name,
+            "content": line,
+            "ts": time.time(),
+        },
+        room=conversation_id,
+    )
+
+
+def _stream_process_output(process, *, timeout: int, conversation_id: str, tool_name: str):
+    output_queue = queue.Queue()
+    stdout_chunks = []
+    stderr_chunks = []
+
+    def _reader(pipe, stream_name):
+        try:
+            for line in iter(pipe.readline, ""):
+                output_queue.put((stream_name, line))
+        finally:
+            pipe.close()
+
+    threads = [
+        threading.Thread(target=_reader, args=(process.stdout, "stdout"), daemon=True),
+        threading.Thread(target=_reader, args=(process.stderr, "stderr"), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+
+    started = time.time()
+    timed_out = False
+    while True:
+        if timeout and (time.time() - started) > timeout and process.poll() is None:
+            timed_out = True
+            process.kill()
+        try:
+            stream_name, line = output_queue.get(timeout=0.1)
+            if stream_name == "stdout":
+                stdout_chunks.append(line)
+            else:
+                stderr_chunks.append(line)
+            _emit_tool_stream(conversation_id, tool_name, stream_name, line.rstrip("\n"))
+        except queue.Empty:
+            if process.poll() is not None and output_queue.empty():
+                break
+
+    for thread in threads:
+        thread.join(timeout=0.2)
+
+    return {
+        "stdout": "".join(stdout_chunks),
+        "stderr": "".join(stderr_chunks),
+        "returncode": process.returncode,
+        "timed_out": timed_out,
+    }
+
+
+def run_shell_command(command, conversation_id, user_id, user, timeout=15, **kwargs):
+    def _stream_cb(stream_name, line):
+        _emit_tool_stream(conversation_id, "run_shell_command", stream_name, line)
+
+    return base_run_shell_command(
+        command,
+        conversation_id=conversation_id,
+        user_id=user_id,
+        user=user,
+        stream_callback=_stream_cb,
+    )
+
+
 def execute_python(path, conversation_id, user_id, timeout=10, run_in_background=False, **kwargs):
     """
     Executes a Python script within the conversation's workspace.
@@ -430,71 +508,43 @@ def execute_python(path, conversation_id, user_id, timeout=10, run_in_background
         return "Error: Access denied or not a Python file."
 
     try:
-        # Use Popen to have more control over the process
+        process = subprocess.Popen(
+            [sys.executable, file_path],
+            cwd=workspace_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            creationflags=subprocess.CREATE_NEW_CONSOLE if (os.name == 'nt' and run_in_background) else 0,
+        )
+
         if run_in_background:
-            # For background processes, we don't want to capture output in a way that blocks
-            # But we might want to see if it crashes immediately.
-            try:
-                # Start the process
-                process = subprocess.Popen(
-                    [sys.executable, file_path],
-                    cwd=workspace_path,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0 # Detach on Windows?
-                    # On Windows, CREATE_NEW_CONSOLE might open a new window, which might be what the user wants for GUIs.
-                    # But for now, let's keep it simple. If we want it "stuck on done" but not finishing,
-                    # we just want to NOT kill it.
-                )
-                
-                # Wait for the specified timeout to see if it crashes or finishes early
-                try:
-                    stdout, stderr = process.communicate(timeout=timeout)
-                    # If we get here, the process finished within the timeout
-                    output = stdout
-                    if stderr:
-                        output += f"\n--- ERRORS ---\n{stderr}"
-                    return output
-                except Exception as e:
-                    if isinstance(e, subprocess.TimeoutExpired):
-                         # Process is still running after timeout
-                        if run_in_background:
-                            # We leave it running.
-                            return f"Script '{path}' started successfully and is running in the background (PID: {process.pid}). Execution timed out after {timeout} seconds but process was left running as requested."
-                        else:
-                            raise e
-                    else:
-                        raise e
-
-            except Exception as e:
-                # If communicate raised TimeoutExpired and run_in_background is False, we re-raise or handle it
-                 if isinstance(e, subprocess.TimeoutExpired) and not run_in_background:
-                     process.kill()
-                     stdout, stderr = process.communicate()
-                     output = stdout if stdout else ""
-                     if stderr:
-                         output += f"\n--- ERRORS ---\n{stderr}"
-                     output += f"\n\nError: Execution timed out after {timeout} seconds. Process killed."
-                     return output
-                 raise e
-
-        else:
-            # Standard synchronous execution with timeout
-            process = subprocess.run(
-                [sys.executable, file_path],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=workspace_path,
+            thread = threading.Thread(
+                target=_stream_process_output,
+                kwargs={
+                    "process": process,
+                    "timeout": timeout,
+                    "conversation_id": conversation_id,
+                    "tool_name": "execute_python",
+                },
+                daemon=True,
             )
-            output = process.stdout
-            if process.stderr:
-                output += f"\n--- ERRORS ---\n{process.stderr}"
-            return output
+            thread.start()
+            return f"Script '{path}' started successfully in background (PID: {process.pid})."
 
-    except subprocess.TimeoutExpired:
-        return f"Error: Execution timed out after {timeout} seconds. (Process killed)"
+        streamed = _stream_process_output(
+            process,
+            timeout=timeout,
+            conversation_id=conversation_id,
+            tool_name="execute_python",
+        )
+        output = streamed.get("stdout", "")
+        if streamed.get("stderr"):
+            output += f"\n--- ERRORS ---\n{streamed.get('stderr')}"
+        if streamed.get("timed_out"):
+            output += f"\n\nError: Execution timed out after {timeout} seconds. Process killed."
+        return output or "Command executed with no output."
+
     except Exception as e:
         return f"Error: {str(e)}"
 

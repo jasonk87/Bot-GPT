@@ -399,6 +399,71 @@ def test_mode_profile_sets_budget_and_branch_limits():
     assert agent["tool_batch_budget"] is None
 
 
+def test_agent_phase_helpers_exist():
+    assert hasattr(chat_ai, "agent_plan_phase")
+    assert hasattr(chat_ai, "agent_act_phase")
+    assert hasattr(chat_ai, "agent_verify_phase")
+    assert hasattr(chat_ai, "agent_decide_phase")
+
+
+def test_agent_verify_phase_injects_deterministic_repair_directive(mocker):
+    mocker.patch(
+        "chat_ai._run_verification_loop",
+        return_value={
+            "status": "failed",
+            "summary": "pytest failed",
+            "pending_failure": {
+                "classification": "import_error",
+                "command": "pytest -q",
+                "summary": "ModuleNotFoundError",
+            },
+        },
+    )
+    conversation = {"messages": []}
+    state = {"pending_failure": None, "attempts": 0, "max_attempts": 3, "last_summary": ""}
+
+    report = chat_ai.agent_verify_phase(
+        changed_paths=["a.py"],
+        messages=[{"role": "user", "content": "fix code"}],
+        conversation=conversation,
+        verification_state=state,
+    )
+
+    assert report["status"] == "failed"
+    assert state["pending_failure"]["classification"] == "import_error"
+    directives = [m for m in conversation["messages"] if m.get("role") == "tool" and "DETERMINISTIC REPAIR DIRECTIVE" in m.get("content", "")]
+    assert directives
+
+
+def test_agent_decide_phase_returns_unable_to_verify_on_failed_execution():
+    decision = chat_ai.agent_decide_phase(
+        profile={"mode": "standard"},
+        intent_state={"ready_to_answer": True},
+        batch_outcome={"status": "partial_success"},
+        verification_state={"pending_failure": {"classification": "test_failure"}, "attempts": 3, "max_attempts": 3},
+        aggregated_tool_results=[
+            {
+                "tool_name": "run_shell_command",
+                "status": "error",
+                "error_type": "nonzero_exit",
+            }
+        ],
+    )
+    assert decision["action"] == "unable_to_verify"
+    assert "unable to verify" in decision["reason"].lower()
+
+
+def test_agent_decide_phase_breaks_when_validation_allows():
+    decision = chat_ai.agent_decide_phase(
+        profile={"mode": "standard"},
+        intent_state={"ready_to_answer": True},
+        batch_outcome={"status": "success"},
+        verification_state={"pending_failure": None},
+        aggregated_tool_results=[{"tool_name": "read_file", "status": "success"}],
+    )
+    assert decision["action"] == "break"
+
+
 def test_standard_mode_limits_branches_per_batch(mocker):
     class DummyCall:
         def __init__(self, name, params):
