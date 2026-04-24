@@ -76,6 +76,16 @@ def test_handle_ai_response_emits_response_mode_and_injects_depth_prompt(mocker)
     mock_current_user = mocker.patch("chat_ai.current_user")
     mock_current_user.id = 1
     mocker.patch("chat_ai.current_app", MagicMock())
+    mocker.patch(
+        "chat_ai.get_selected_repository",
+        return_value={
+            "name": "sample-repo",
+            "path": "/tmp/sample-repo",
+            "primary_languages": ["Python"],
+            "preferred_preview_target": "app.py",
+            "entry_points": ["app.py"],
+        },
+    )
 
     events = list(
         chat_ai.handle_ai_response(
@@ -88,6 +98,9 @@ def test_handle_ai_response_emits_response_mode_and_injects_depth_prompt(mocker)
             initialize_chat=mock_init,
             call_stream=fake_call_stream,
             handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=lambda calls: [],
+            execute_normalized_tool_call=MagicMock(),
+            execute_tool_call_batch=lambda calls, conversation, user: {"status": "empty", "policy": "continue_on_error_in_order", "success_count": 0, "error_count": 0, "results": []},
             sanitize_json=lambda s: s,
             agent_sessions={},
             update_conversation_title=mock_update_title,
@@ -103,17 +116,452 @@ def test_handle_ai_response_emits_response_mode_and_injects_depth_prompt(mocker)
     assert any(event.get("stage") == "verifying" for event in progress_events)
     assert any(event.get("stage") == "finalizing" for event in progress_events)
     assert "Response depth: Deep" in captured_system_prompt["value"]
-    assert "Always end your final user-facing response" in captured_system_prompt["value"]
-    assistant_chunks = [event for event in events if event.get("type") == "assistant_chunk"]
-    assert any("Next step:" in event["content"] for event in assistant_chunks)
+    assert "INTENT CONTINUITY STATE" in captured_system_prompt["value"]
+    assert "REPOSITORY CONTEXT" in captured_system_prompt["value"]
+    assert "Include a 'Next step:' line only when a concrete next action is genuinely useful." in captured_system_prompt["value"]
     assert mock_save.called
 
 
-def test_ensure_next_step_line_adds_suffix_when_missing():
+def test_ensure_next_step_line_no_longer_forces_suffix_when_missing():
     content = chat_ai.ensure_next_step_line("Here is a concise answer.")
-    assert "Next step:" in content
+    assert content == "Here is a concise answer."
 
 
 def test_ensure_next_step_line_keeps_existing_next_step():
     content = "Summary complete.\n\nNext step: Run the tests."
     assert chat_ai.ensure_next_step_line(content) == content
+
+
+def test_ensure_next_step_line_removes_empty_next_step():
+    content = "Summary complete.\n\nNext step:None"
+    assert chat_ai.ensure_next_step_line(content) == "Summary complete."
+
+
+def test_handle_ai_response_emits_structured_batch_tool_feedback(mocker):
+    class DummyCall:
+        def __init__(self, name, params):
+            self.tool_name = name
+            self.normalized_params = params
+            self.validation_status = "valid"
+            self.source_metadata = {"index": 0}
+
+    stream_responses = [
+        '```json\n{"tool":"write_file","parameters":{"path":"a.txt"}}\n```',
+        "Done.",
+    ]
+
+    def fake_call_stream(_model, _messages, _system_prompt):
+        return iter([stream_responses.pop(0)])
+
+    conversation = {"id": "c1", "owner_id": 1, "messages": []}
+    mock_init = MagicMock(return_value=("test-model", "BASE", conversation, "/tmp/convo.json"))
+    mocker.patch("chat_ai.save_conversation")
+    mocker.patch(
+        "chat_ai._extract_tool_calls",
+        side_effect=[
+            [{"tool": "write_file", "parameters": {"path": "a.txt"}}],
+            [],
+        ],
+    )
+    mock_current_user = mocker.patch("chat_ai.current_user")
+    mock_current_user.id = 1
+    mocker.patch("chat_ai.current_app", MagicMock())
+
+    normalized_calls = [DummyCall("write_file", {"path": "a.txt"}), DummyCall("write_file", {"path": "b.txt"})]
+    batch = {
+        "status": "partial_success",
+        "policy": "continue_on_error_in_order",
+        "success_count": 1,
+        "error_count": 1,
+        "results": [
+            {"tool_name": "write_file", "status": "success", "result": {"status": "file_written", "path": "a.txt"}, "error_type": None, "error_message": None, "retryable": False},
+            {"tool_name": "write_file", "status": "error", "result": None, "error_type": "validation_error", "error_message": "bad param", "retryable": False},
+        ],
+    }
+
+    events = list(
+        chat_ai.handle_ai_response(
+            {"messages": json.dumps([{"role": "user", "content": "do files"}]), "model": "test-model", "conversation_id": "", "response_mode_preference": "deep"},
+            initialize_chat=mock_init,
+            call_stream=fake_call_stream,
+            handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=lambda calls: normalized_calls,
+            execute_normalized_tool_call=MagicMock(),
+            execute_tool_call_batch=lambda calls, convo, user, **kwargs: batch,
+            sanitize_json=lambda s: s,
+            agent_sessions={},
+            update_conversation_title=MagicMock(),
+            write_file=MagicMock(),
+        )
+    )
+
+    result_events = [e for e in events if e.get("type") == "tool_result"]
+    error_events = [e for e in events if e.get("type") == "tool_error"]
+    activity_events = [e for e in events if e.get("type") == "activity_update"]
+    assert len(result_events) == 1
+    assert len(error_events) == 1
+    assert len(activity_events) >= 1
+    assert "meta" in result_events[0]
+    assert "meta" in error_events[0]
+    assert "[validation_error] bad param (retryable=False)" in error_events[0]["error"]
+
+
+def test_loop_guard_blocks_identical_non_retryable_repeat(mocker):
+    class DummyCall:
+        def __init__(self, name, params):
+            self.tool_name = name
+            self.normalized_params = params
+            self.validation_status = "valid"
+            self.source_metadata = {"index": 0}
+
+    stream_responses = [
+        '```json\n{"tool":"write_file","parameters":{"path":"same.txt"}}\n```',
+        '```json\n{"tool":"write_file","parameters":{"path":"same.txt"}}\n```',
+        "done",
+    ]
+
+    def fake_call_stream(_model, _messages, _system_prompt):
+        return iter([stream_responses.pop(0)])
+
+    call = DummyCall("write_file", {"path": "same.txt"})
+    mock_batch = MagicMock(
+        side_effect=[
+            {
+                "status": "error",
+                "policy": "continue_on_error_in_order",
+                "success_count": 0,
+                "error_count": 1,
+                "results": [
+                    {"tool_name": "write_file", "status": "error", "result": None, "error_type": "execution_error", "error_message": "permission denied", "retryable": False, "validation_status": "valid", "source_metadata": {"index": 0}},
+                ],
+            },
+            {
+                "status": "empty",
+                "policy": "continue_on_error_in_order",
+                "success_count": 0,
+                "error_count": 0,
+                "results": [],
+            },
+        ]
+    )
+
+    conversation = {"id": "c-loop", "owner_id": 1, "messages": []}
+    mock_init = MagicMock(return_value=("test-model", "BASE", conversation, "/tmp/convo.json"))
+    mocker.patch("chat_ai.save_conversation")
+    mocker.patch("chat_ai._extract_tool_calls", side_effect=[[{"tool": "write_file", "parameters": {"path": "same.txt"}}], [{"tool": "write_file", "parameters": {"path": "same.txt"}}], []])
+    mock_current_user = mocker.patch("chat_ai.current_user")
+    mock_current_user.id = 1
+    mocker.patch("chat_ai.current_app", MagicMock())
+
+    events = list(
+        chat_ai.handle_ai_response(
+            {"messages": json.dumps([{"role": "user", "content": "do it"}]), "model": "test-model", "conversation_id": ""},
+            initialize_chat=mock_init,
+            call_stream=fake_call_stream,
+            handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=lambda calls: [call],
+            execute_normalized_tool_call=MagicMock(),
+            execute_tool_call_batch=mock_batch,
+            sanitize_json=lambda s: s,
+            agent_sessions={},
+            update_conversation_title=MagicMock(),
+            write_file=MagicMock(),
+        )
+    )
+
+    error_events = [e for e in events if e.get("type") == "tool_error"]
+    assert any("loop_guard_non_retryable_repeat" in e.get("error", "") for e in error_events)
+    assert mock_batch.call_count == 2
+
+
+def test_format_tool_batch_feedback_contains_recovery_fields():
+    content = chat_ai._format_tool_batch_feedback(
+        {"status": "partial_success", "policy": "continue_on_error_in_order", "success_count": 1, "error_count": 1},
+        [
+            {"tool_name": "read_file", "status": "success", "result": {"status": "ok", "path": "a.txt"}, "retryable": False, "validation_status": "valid", "error_type": None, "error_message": None, "source_metadata": {"index": 0}},
+            {"tool_name": "write_file", "status": "error", "result": None, "retryable": False, "validation_status": "valid", "error_type": "execution_error", "error_message": "permission denied", "source_metadata": {"index": 1}},
+        ],
+    )
+    assert "batch_status" in content
+    assert "tool_name" in content
+    assert "retryable" in content
+    assert "error_type" in content
+    assert "usefulness_hint" in content
+
+
+def test_redundant_identical_success_call_is_blocked_in_same_context(mocker):
+    class DummyCall:
+        def __init__(self, name, params):
+            self.tool_name = name
+            self.normalized_params = params
+            self.validation_status = "valid"
+            self.source_metadata = {"index": 0}
+
+    stream_responses = [
+        '```json\n{"tool":"list_files","parameters":{"path":"."}}\n```',
+        '```json\n{"tool":"list_files","parameters":{"path":"."}}\n```',
+        "done",
+    ]
+
+    def fake_call_stream(_model, _messages, _system_prompt):
+        return iter([stream_responses.pop(0)])
+
+    call = DummyCall("list_files", {"path": "."})
+    mock_batch = MagicMock(
+        side_effect=[
+            {
+                "status": "success",
+                "policy": "continue_on_error_in_order",
+                "success_count": 1,
+                "error_count": 0,
+                "results": [
+                    {"tool_name": "list_files", "status": "success", "result": ["a.txt"], "error_type": None, "error_message": None, "retryable": False, "validation_status": "valid", "source_metadata": {"index": 0}},
+                ],
+            },
+            {
+                "status": "empty",
+                "policy": "continue_on_error_in_order",
+                "success_count": 0,
+                "error_count": 0,
+                "results": [],
+            },
+        ]
+    )
+
+    conversation = {"id": "c-redundant", "owner_id": 1, "messages": []}
+    mock_init = MagicMock(return_value=("test-model", "BASE", conversation, "/tmp/convo.json"))
+    mocker.patch("chat_ai.save_conversation")
+    mocker.patch("chat_ai._extract_tool_calls", side_effect=[[{"tool": "list_files", "parameters": {"path": "."}}], [{"tool": "list_files", "parameters": {"path": "."}}], []])
+    mock_current_user = mocker.patch("chat_ai.current_user")
+    mock_current_user.id = 1
+    mocker.patch("chat_ai.current_app", MagicMock())
+
+    events = list(
+        chat_ai.handle_ai_response(
+            {"messages": json.dumps([{"role": "user", "content": "list files"}]), "model": "test-model", "conversation_id": "", "response_mode_preference": "deep"},
+            initialize_chat=mock_init,
+            call_stream=fake_call_stream,
+            handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=lambda calls: [call],
+            execute_normalized_tool_call=MagicMock(),
+            execute_tool_call_batch=mock_batch,
+            sanitize_json=lambda s: s,
+            agent_sessions={},
+            update_conversation_title=MagicMock(),
+            write_file=MagicMock(),
+        )
+    )
+
+    error_events = [e for e in events if e.get("type") == "tool_error"]
+    assert any("redundant_call_same_context" in e.get("error", "") for e in error_events)
+
+
+def test_intent_state_initializes_from_latest_user_objective():
+    state = chat_ai._initialize_intent_state(
+        [{"role": "assistant", "content": "x"}, {"role": "user", "content": "Fix the failing migration tests"}]
+    )
+    assert state["objective"] == "Fix the failing migration tests"
+    assert state["ready_to_answer"] is False
+
+
+def test_intent_state_updates_on_success_and_partial_progress():
+    class DummyCall:
+        def __init__(self, name, params):
+            self.tool_name = name
+            self.normalized_params = params
+
+    state = chat_ai._initialize_intent_state([{"role": "user", "content": "Audit auth bug"}])
+    calls = [DummyCall("read_file", {"path": "a.py"}), DummyCall("run_shell_command", {"command": "pytest -q"})]
+    results = [
+        {"status": "success", "retryable": False, "error_type": None},
+        {"status": "error", "retryable": False, "error_type": "execution_error"},
+    ]
+    updated = chat_ai._update_intent_state(state, calls, results, {"status": "partial_success"})
+    assert any("Completed: read_file" in item for item in updated["completed_items"])
+    assert any("Blocked: run_shell_command" in item for item in updated["blocked_items"])
+    assert updated["ready_to_answer"] is True
+    assert "successful branches" in updated["current_focus"]
+
+
+def test_intent_state_empty_batch_updates_next_hint():
+    state = chat_ai._initialize_intent_state([{"role": "user", "content": "Summarize logs"}])
+    updated = chat_ai._update_intent_state(state, [], [], {"status": "empty"})
+    assert "No executable calls" in updated["next_step_hint"]
+
+
+def test_mode_profile_sets_budget_and_branch_limits():
+    standard = chat_ai._mode_profile("standard", False)
+    deep = chat_ai._mode_profile("deep", False)
+    agent = chat_ai._mode_profile("standard", True)
+    assert standard["tool_batch_budget"] == 2
+    assert standard["branch_limit"] == 1
+    assert deep["branch_limit"] == 3
+    assert agent["tool_batch_budget"] is None
+
+
+def test_standard_mode_limits_branches_per_batch(mocker):
+    class DummyCall:
+        def __init__(self, name, params):
+            self.tool_name = name
+            self.normalized_params = params
+            self.validation_status = "valid"
+            self.source_metadata = {"index": 0}
+
+    def fake_call_stream(_model, _messages, _system_prompt):
+        return iter(['```json\n{"tool":"list_files","parameters":{"path":"."}}\n```'])
+
+    calls = [DummyCall("list_files", {"path": "."}), DummyCall("read_file", {"path": "a.py"})]
+    execute_batch = MagicMock(return_value={"status": "success", "policy": "continue_on_error_in_order", "success_count": 1, "error_count": 0, "results": [{"tool_name": "list_files", "status": "success", "result": [], "retryable": False, "validation_status": "valid", "error_type": None, "error_message": None}]})
+    conversation = {"id": "c-branch", "owner_id": 1, "messages": []}
+    mock_init = MagicMock(return_value=("test-model", "BASE", conversation, "/tmp/convo.json"))
+    mocker.patch("chat_ai.save_conversation")
+    mocker.patch("chat_ai._extract_tool_calls", side_effect=[[{"tool": "list_files", "parameters": {"path": "."}}], []])
+    mock_current_user = mocker.patch("chat_ai.current_user")
+    mock_current_user.id = 1
+    mocker.patch("chat_ai.current_app", MagicMock())
+
+    list(
+        chat_ai.handle_ai_response(
+            {"messages": json.dumps([{"role": "user", "content": "quick check"}]), "model": "test-model", "conversation_id": "", "response_mode_preference": "standard"},
+            initialize_chat=mock_init,
+            call_stream=fake_call_stream,
+            handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=lambda _: calls,
+            execute_normalized_tool_call=MagicMock(),
+            execute_tool_call_batch=execute_batch,
+            sanitize_json=lambda s: s,
+            agent_sessions={},
+            update_conversation_title=MagicMock(),
+            write_file=MagicMock(),
+        )
+    )
+    assert len(execute_batch.call_args[0][0]) == 1
+
+
+def test_standard_mode_tool_batch_budget_fast_exit(mocker):
+    class DummyCall:
+        def __init__(self):
+            self.tool_name = "list_files"
+            self.normalized_params = {"path": "."}
+            self.validation_status = "valid"
+            self.source_metadata = {"index": 0}
+
+    stream_responses = [
+        '```json\n{"tool":"list_files","parameters":{"path":"."}}\n```',
+        '```json\n{"tool":"list_files","parameters":{"path":"."}}\n```',
+        '```json\n{"tool":"list_files","parameters":{"path":"."}}\n```',
+    ]
+
+    def fake_call_stream(_model, _messages, _system_prompt):
+        return iter([stream_responses.pop(0)]) if stream_responses else iter(["done"])
+
+    execute_batch = MagicMock(return_value={"status": "error", "policy": "continue_on_error_in_order", "success_count": 0, "error_count": 1, "results": [{"tool_name": "list_files", "status": "error", "result": None, "retryable": True, "validation_status": "valid", "error_type": "execution_error", "error_message": "temporary timeout"}]})
+    conversation = {"id": "c-budget", "owner_id": 1, "messages": []}
+    mock_init = MagicMock(return_value=("test-model", "BASE", conversation, "/tmp/convo.json"))
+    mocker.patch("chat_ai.save_conversation")
+    mocker.patch("chat_ai._extract_tool_calls", side_effect=[[{"tool": "list_files", "parameters": {"path": "."}}], [{"tool": "list_files", "parameters": {"path": "."}}], [{"tool": "list_files", "parameters": {"path": "."}}], []])
+    mock_current_user = mocker.patch("chat_ai.current_user")
+    mock_current_user.id = 1
+    mocker.patch("chat_ai.current_app", MagicMock())
+
+    list(
+        chat_ai.handle_ai_response(
+            {"messages": json.dumps([{"role": "user", "content": "quick check"}]), "model": "test-model", "conversation_id": "", "response_mode_preference": "standard"},
+            initialize_chat=mock_init,
+            call_stream=fake_call_stream,
+            handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=lambda _: [DummyCall()],
+            execute_normalized_tool_call=MagicMock(),
+            execute_tool_call_batch=execute_batch,
+            sanitize_json=lambda s: s,
+            agent_sessions={},
+            update_conversation_title=MagicMock(),
+            write_file=MagicMock(),
+        )
+    )
+    assert execute_batch.call_count == 2
+
+
+def test_verification_loop_continues_until_pass_or_blocked(mocker):
+    class DummyCall:
+        def __init__(self, content):
+            self.tool_name = "write_file"
+            self.normalized_params = {"path": "a.py", "content": content}
+            self.validation_status = "valid"
+            self.source_metadata = {"index": 0}
+
+    stream_responses = [
+        '```json\n{"tool":"write_file","parameters":{"path":"a.py","content":"v1"}}\n```',
+        '```json\n{"tool":"write_file","parameters":{"path":"a.py","content":"v2"}}\n```',
+        "final",
+    ]
+
+    def fake_call_stream(_model, _messages, _system_prompt):
+        return iter([stream_responses.pop(0)])
+
+    conversation = {"id": "c-verify", "owner_id": 1, "messages": []}
+    mock_init = MagicMock(return_value=("test-model", "BASE", conversation, "/tmp/convo.json"))
+    mocker.patch("chat_ai.save_conversation")
+    mocker.patch("chat_ai.current_app", MagicMock(instance_path="/tmp"))
+    mock_current_user = mocker.patch("chat_ai.current_user")
+    mock_current_user.id = 1
+    mocker.patch(
+        "chat_ai._extract_tool_calls",
+        side_effect=[
+            [{"tool": "write_file", "parameters": {"path": "a.py", "content": "v1"}}],
+            [{"tool": "write_file", "parameters": {"path": "a.py", "content": "v2"}}],
+            [],
+        ],
+    )
+    mocker.patch(
+        "chat_ai._run_verification_loop",
+        side_effect=[
+            {
+                "status": "failed",
+                "summary": "Verification results: FAIL",
+                "pending_failure": {"classification": "syntax_error", "step_type": "lint", "command": "python -m py_compile a.py"},
+            },
+            {
+                "status": "passed",
+                "summary": "Verification results: PASS",
+                "pending_failure": None,
+            },
+        ],
+    )
+
+    batch = {
+        "status": "success",
+        "policy": "continue_on_error_in_order",
+        "success_count": 1,
+        "error_count": 0,
+        "results": [{
+            "tool_name": "write_file",
+            "status": "success",
+            "result": {"status": "file_written", "path": "a.py", "content": "v"},
+            "retryable": False,
+            "validation_status": "valid",
+            "error_type": None,
+            "error_message": None,
+        }],
+    }
+
+    events = list(
+        chat_ai.handle_ai_response(
+            {"messages": json.dumps([{"role": "user", "content": "Fix and verify fully"}]), "model": "test-model", "conversation_id": ""},
+            initialize_chat=mock_init,
+            call_stream=fake_call_stream,
+            handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=lambda calls: [DummyCall("v")],
+            execute_normalized_tool_call=MagicMock(),
+            execute_tool_call_batch=lambda *_args, **_kwargs: batch,
+            sanitize_json=lambda s: s,
+            agent_sessions={},
+            update_conversation_title=MagicMock(),
+            write_file=MagicMock(),
+        )
+    )
+
+    actions = [e.get("last_action", "") for e in events if e.get("type") == "activity_update"]
+    assert any("Verification failed" in action for action in actions)
+    assert any("Verification passed" in action for action in actions)
+    assert any(e.get("type") == "done" for e in events)

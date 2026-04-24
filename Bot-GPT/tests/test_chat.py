@@ -7,6 +7,7 @@ import chat
 import os
 from flask_login import login_user
 from models import save_conversation, add_to_conversation_index, add_user_to_conversation_index
+from repo_index import save_repo_index
 
 def test_chat_message_handling(socketio_test_client, test_user, mocker):
     """Test sending a message and receiving a simple AI response."""
@@ -95,6 +96,40 @@ def test_write_file_emits_open_canvas(socketio_test_client, test_user, mocker, a
     assert open_canvas_events[0]['filename'] == 'test.txt'
 
 
+def test_tool_call_parser_handles_mixed_prose_and_nested_json(socketio_test_client, test_user, mocker, app):
+    """Tool call extraction should work even with prose and nested braces."""
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream")
+    mock_handle_tool = mocker.patch("chat.handle_tool_call")
+    mocker.patch("chat.update_conversation_title")
+
+    tool_call_response = (
+        "I will gather context first.\n\n"
+        "```json\n"
+        "{\"tool\":\"write_file\",\"parameters\":{\"path\":\"notes.txt\",\"content\":\"{\\\"nested\\\":{\\\"ok\\\":true}}\"}}\n"
+        "```\n"
+        "Then I will summarize."
+    )
+    mock_stream.side_effect = [iter([tool_call_response]), iter(["Done."])]
+    mock_handle_tool.return_value = ({"status": "file_written", "path": "notes.txt"}, True)
+
+    with app.app_context():
+        socketio_test_client.emit('chat_message', {
+            'messages': json.dumps([{'role': 'user', 'content': 'write notes'}]),
+            'model': 'test-model',
+            'conversation_id': ''
+        })
+
+    received = socketio_test_client.get_received()
+    tool_call_events = [
+        args['args'][0] for args in received
+        if args['name'] == 'ai_response' and args['args'][0].get('type') == 'tool_call'
+    ]
+
+    assert len(tool_call_events) == 1
+    assert tool_call_events[0]['name'] == 'write_file'
+    assert tool_call_events[0]['params']['path'] == 'notes.txt'
+
+
 def test_load_conversation_includes_active_run(socketio_test_client, test_user, app):
     """Test that reloading a conversation includes active run state for the UI."""
     convo_id = "active_run_convo"
@@ -107,6 +142,15 @@ def test_load_conversation_includes_active_run(socketio_test_client, test_user, 
             'title': 'Running Chat',
             'participants': [{'user_id': test_user.id, 'role': 'owner'}],
             'messages': [{'role': 'user', 'content': 'keep going'}],
+            'artifacts': [{
+                'artifact_id': 'utils.py',
+                'conversation_id': convo_id,
+                'artifact_type': 'code',
+                'last_updated_at': 1710000000,
+                'title': 'utils.py',
+            }],
+            'artifact_versions': {'utils.py': []},
+            'last_active_artifact_id': 'utils.py',
         })
         index_path = os.path.join(app.instance_path, 'conversation_index.json')
         add_to_conversation_index(index_path, convo_id, test_user.id)
@@ -130,6 +174,8 @@ def test_load_conversation_includes_active_run(socketio_test_client, test_user, 
     assert len(payloads) == 1
     assert payloads[0]['active_run']['is_running'] is True
     assert payloads[0]['active_run']['partial_response'] == 'Still working'
+    assert payloads[0]['last_active_artifact_id'] == 'utils.py'
+    assert payloads[0]['artifacts'][0]['artifact_id'] == 'utils.py'
 
     chat.AGENT_SESSIONS.pop(convo_id, None)
 
@@ -151,3 +197,140 @@ def test_handle_ai_response_archives_memory(app, test_user, mocker):
     done_events = [event for event in events if event.get("type") == "done"]
     assert len(done_events) == 1
     memory_cls.return_value.archive_conversation.assert_called_once()
+
+
+def test_repo_question_without_tool_call_uses_deterministic_fallback(app, test_user, mocker):
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream")
+    mock_stream.return_value = iter(["I will think about it."])
+    mocker.patch("chat.update_conversation_title")
+
+    with app.app_context():
+        save_repo_index(
+            test_user.id,
+            {
+                "repos": [
+                    {"name": "alpha", "path": "/tmp/alpha", "last_commit_time": 200, "last_modified_time": 180, "file_count": 10},
+                    {"name": "beta", "path": "/tmp/beta", "last_commit_time": 100, "last_modified_time": 220, "file_count": 5},
+                ],
+                "selected_repo_path": None,
+                "updated_at": None,
+            },
+        )
+
+    with app.test_request_context("/"):
+        login_user(test_user)
+        events = list(chat.handle_ai_response({
+            "messages": json.dumps([{"role": "user", "content": "Which one of my repos is the most active?"}]),
+            "model": "test-model",
+            "conversation_id": "",
+        }))
+
+    final_answers = [event for event in events if event.get("type") == "final_answer"]
+    done_events = [event for event in events if event.get("type") == "done"]
+    assert done_events
+    assert final_answers
+    assert "Most active repo appears to be" in final_answers[-1]["content"]
+
+
+def test_repo_question_with_no_configured_paths_returns_clean_block_message(app, test_user, mocker):
+    app.config["REPO_SCAN_BASE_PATHS"] = "[]"
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream")
+    mock_stream.return_value = iter(["Thinking..."])
+    mocker.patch("chat.update_conversation_title")
+
+    with app.app_context():
+        save_repo_index(test_user.id, {"repos": [], "selected_repo_path": None, "updated_at": None})
+
+    with app.test_request_context("/"):
+        login_user(test_user)
+        events = list(chat.handle_ai_response({
+            "messages": json.dumps([{"role": "user", "content": "Analyze my repos"}]),
+            "model": "test-model",
+            "conversation_id": "",
+        }))
+
+    final_answers = [event for event in events if event.get("type") == "final_answer"]
+    assert final_answers
+    assert "configured repo folder" in final_answers[-1]["content"]
+    assert any(event.get("type") == "done" for event in events)
+
+
+def test_repo_discovery_timeout_unblocks_ui(app, test_user, mocker):
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream")
+    mock_stream.return_value = iter(["No tool calls from model"])
+    mocker.patch("chat.update_conversation_title")
+    mocker.patch("chat_ai.discover_local_repositories", return_value={"status": "error", "error": "Repository discovery timed out before completion.", "repos": []})
+    with app.app_context():
+        save_repo_index(test_user.id, {"repos": [], "selected_repo_path": None, "updated_at": None})
+
+    with app.test_request_context("/"):
+        login_user(test_user)
+        events = list(chat.handle_ai_response({
+            "messages": json.dumps([{"role": "user", "content": "most recently updated repo?"}]),
+            "model": "test-model",
+            "conversation_id": "",
+        }))
+
+    assert any(event.get("type") == "activity_update" and event.get("stage") == "error" for event in events)
+    assert any(event.get("type") == "done" for event in events)
+
+
+def test_empty_model_response_finalizes_cleanly(app, test_user, mocker):
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream")
+    mock_stream.side_effect = [iter(["   "]), iter(["   "])]
+    mocker.patch("chat.update_conversation_title")
+
+    with app.test_request_context("/"):
+        login_user(test_user)
+        events = list(chat.handle_ai_response({
+            "messages": json.dumps([{"role": "user", "content": "Which one of my repos is the most active?"}]),
+            "model": "test-model",
+            "conversation_id": "",
+        }))
+
+    final_answers = [event for event in events if event.get("type") == "final_answer"]
+    assert final_answers
+    assert (
+        "usable model response" in final_answers[-1]["content"]
+        or "Most active repo appears" in final_answers[-1]["content"]
+        or "configured repo folder" in final_answers[-1]["content"]
+    )
+    assert any(event.get("type") == "done" for event in events)
+
+
+def test_terminal_done_event_emitted_on_model_failure(app, test_user, mocker):
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream")
+    mock_stream.side_effect = RuntimeError("model backend unavailable")
+    mocker.patch("chat.update_conversation_title")
+
+    with app.test_request_context("/"):
+        login_user(test_user)
+        events = list(chat.handle_ai_response({
+            "messages": json.dumps([{"role": "user", "content": "hello"}]),
+            "model": "test-model",
+            "conversation_id": "",
+        }))
+
+    assert any(event.get("type") == "agent_error" for event in events)
+    assert any(event.get("type") == "done" for event in events)
+
+
+def test_os_capability_refusal_is_overridden_with_policy_message(app, test_user, mocker):
+    app.config["OS_AGENT_ENABLED"] = False
+    mock_stream = mocker.patch("chat.call_ollama_chat_stream")
+    mock_stream.return_value = iter(["I cannot access your desktop or your system."])
+    mocker.patch("chat.update_conversation_title")
+
+    with app.test_request_context("/"):
+        login_user(test_user)
+        events = list(chat.handle_ai_response({
+            "messages": json.dumps([{"role": "user", "content": "Take a screenshot of my desktop"}]),
+            "model": "test-model",
+            "conversation_id": "",
+            "os_control_enabled": True,
+        }))
+
+    final_answers = [event for event in events if event.get("type") == "final_answer"]
+    assert final_answers
+    assert "OS control is currently disabled" in final_answers[-1]["content"]
+    assert "cannot access your desktop" not in final_answers[-1]["content"].lower()
