@@ -1,7 +1,8 @@
 from unittest.mock import Mock
+import os
 from models import get_all_conversations_for_user
 from shared_paths import get_users_path
-from models import _load_users
+from models import _load_users, _save_users, User
 
 def test_index_route(client):
     """Test the main index route."""
@@ -11,8 +12,13 @@ def test_index_route(client):
 
 def test_profile_route_unauthenticated(client):
     """Test that the profile route requires login."""
+    with client.session_transaction() as sess:
+        sess.clear()
+    client.delete_cookie("session")
+    client.delete_cookie("remember_token")
     response = client.get('/profile')
     assert response.status_code == 302 # Redirect to login
+    assert "/login" in response.headers.get("Location", "")
 
 def test_profile_route_authenticated(logged_in_client, test_user, app):
     """Test the profile route for an authenticated user."""
@@ -87,6 +93,25 @@ def test_settings_include_and_persist_response_mode(logged_in_client, test_user)
     assert saved_user.get('thought_panel_expanded') is True
 
 
+def test_settings_include_and_persist_github_username(logged_in_client, test_user):
+    response = logged_in_client.get('/api/settings')
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload.get('github_username') == ''
+    assert payload.get('is_admin') is True
+
+    update = logged_in_client.post('/api/settings', json={'github_username': 'octocat'})
+    assert update.status_code == 200
+
+    settings_after = logged_in_client.get('/api/settings')
+    assert settings_after.status_code == 200
+    assert settings_after.get_json().get('github_username') == 'octocat'
+
+    users = _load_users(get_users_path())
+    saved_user = users.get(str(test_user.id), {})
+    assert saved_user.get('github_username') == 'octocat'
+
+
 def test_depth_metrics_endpoint_returns_json(logged_in_client):
     response = logged_in_client.get('/api/depth_metrics')
     assert response.status_code == 200
@@ -109,3 +134,74 @@ def test_health_endpoint_includes_degraded_mode_flag(client):
     data = response.get_json()
     assert data.get('status') in {'ok', 'degraded'}
     assert isinstance(data.get('degraded_mode'), bool)
+
+
+def test_settings_tab_ownership_and_mobile_layout_markers(client):
+    response = client.get('/')
+    assert response.status_code == 200
+    html = response.data.decode('utf-8')
+    assert 'settings-tabs-scroll' in html
+    assert 'settings-content-scroll' in html
+    assert 'settings-modal-shell' in html
+    assert 'w-[calc(100vw-24px)]' in html
+    assert 'overflow-x-hidden' in html
+    assert 'settings-footer-actions' in html
+    assert 'Default chat model' in html
+    assert 'Deep chat model' in html
+    assert 'Utility model' in html
+
+    assert html.count('telegram-pair-btn') == 1
+    assert html.count('telegram-unpair-btn') == 1
+    assert html.count('workflow-refresh-btn') == 1
+    assert html.count('workflow-list') == 1
+    assert 'Telegram pairing is managed from this tab via Proactive panel controls.' not in html
+    assert 'Learned workflows are available in the Proactive tab.' not in html
+
+    assert 'admin-update-current-branch' in html
+    assert 'admin-update-newest-branch' in html
+    assert 'admin-update-history' in html
+
+
+def test_admin_updates_tab_visibility_flag_for_non_admin(client, app):
+    with app.app_context():
+        users_path = get_users_path()
+        user = User(id=2, username='nonadmin', password_hash=None)
+        user.set_password('password')
+        _save_users(users_path, {'2': user.to_dict()})
+    with client.session_transaction() as sess:
+        sess['_user_id'] = '2'
+        sess['_fresh'] = True
+
+    response = client.get('/api/settings')
+    assert response.status_code == 200
+    assert response.get_json().get('is_admin') is False
+
+
+def test_admin_updates_frontend_wires_check_and_apply_apis():
+    with open('Bot-GPT/static/js/main.js', 'r', encoding='utf-8') as handle:
+        script = handle.read()
+    assert '/admin/updates/check' in script
+    assert '/admin/updates/update' in script
+
+
+def test_os_safety_status_endpoint_returns_flags(logged_in_client):
+    response = logged_in_client.get('/api/os-approvals/status')
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert 'os_agent_enabled' in payload
+    assert 'os_agent_safe_mode' in payload
+
+
+def test_attachment_view_endpoint_blocks_outside_paths(logged_in_client):
+    response = logged_in_client.get('/api/attachments/view?path=/etc/passwd')
+    assert response.status_code == 403
+
+
+def test_attachment_view_endpoint_serves_allowed_user_file(logged_in_client, app, test_user):
+    target_dir = os.path.join(app.instance_path, str(test_user.id), 'conversations', 'c1')
+    os.makedirs(target_dir, exist_ok=True)
+    image_path = os.path.join(target_dir, 'x.png')
+    with open(image_path, 'wb') as handle:
+        handle.write(b'png')
+    response = logged_in_client.get(f'/api/attachments/view?path={image_path}')
+    assert response.status_code == 200
