@@ -34,6 +34,9 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     githubUsernameInput, adminUpdatesTabBtn, adminUpdatesPane, adminUpdateRefreshBtn, adminUpdateStatus,
     adminUpdateBranchSelect, adminUpdateStrategySelect, adminUpdateApplyBtn,
     adminUpdateCurrentBranch, adminUpdateCurrentCommit, adminUpdateNewestBranch, adminUpdateNewestCommit, adminUpdateLastChecked, adminUpdateHistory,
+    adminUpdateDirty, adminUpdateLastResult,
+    adminUpdateLiveStatus, adminUpdateLiveStep, adminUpdateLiveTarget, adminUpdateLiveStarted, adminUpdateLiveElapsed,
+    adminUpdateLiveLog, adminUpdateLiveError, adminUpdateLiveRollback, adminUpdateLiveSmoke, adminUpdateLiveStash,
     dependencyBanner, dependencyBannerText, dependencyBannerDismiss, dependencyBannerDetails,
     dependencyDetailsModal, dependencyDetailsContent, closeDependencyDetailsBtn, copyDependencyDetailsBtn,
     attachmentModal, attachmentModalImage, attachmentModalTitle, attachmentCloseBtn, attachmentDownloadBtn, attachmentTelegramBtn;
@@ -94,6 +97,11 @@ let proactiveDashboardTimer = null;
 let activeAttachmentPath = null;
 let userIsAdmin = false;
 let activityTicker = null;
+let adminUpdatePollTimer = null;
+let adminUpdateInFlight = false;
+const ADMIN_UPDATE_TERMINAL_STATES = new Set(['success', 'failed', 'rolled_back', 'restart_required']);
+let canvasExecutionLogsByPath = new Map();
+let canvasActiveExecution = null;
 
 function getCurrentConversationStorageKey() {
     return currentUsername ? `botgpt_current_conversation_id_${currentUsername}` : 'botgpt_current_conversation_id';
@@ -484,6 +492,18 @@ async function initializeApp(username) {
     adminUpdateNewestCommit = document.getElementById('admin-update-newest-commit');
     adminUpdateLastChecked = document.getElementById('admin-update-last-checked');
     adminUpdateHistory = document.getElementById('admin-update-history');
+    adminUpdateDirty = document.getElementById('admin-update-dirty');
+    adminUpdateLastResult = document.getElementById('admin-update-last-result');
+    adminUpdateLiveStatus = document.getElementById('admin-update-live-status');
+    adminUpdateLiveStep = document.getElementById('admin-update-live-step');
+    adminUpdateLiveTarget = document.getElementById('admin-update-live-target');
+    adminUpdateLiveStarted = document.getElementById('admin-update-live-started');
+    adminUpdateLiveElapsed = document.getElementById('admin-update-live-elapsed');
+    adminUpdateLiveLog = document.getElementById('admin-update-live-log');
+    adminUpdateLiveError = document.getElementById('admin-update-live-error');
+    adminUpdateLiveRollback = document.getElementById('admin-update-live-rollback');
+    adminUpdateLiveSmoke = document.getElementById('admin-update-live-smoke');
+    adminUpdateLiveStash = document.getElementById('admin-update-live-stash');
 
     // Image Upload Elements
     attachImageBtn = document.getElementById('attach-image-btn');
@@ -818,17 +838,39 @@ async function initializeApp(username) {
                     updateAgentStatus(currentAgentBubble, `Tool finished. Analyzing results...`);
                     updateToolTimelineFromEvent('tool_result', data);
                     updateLiveActivity({ stage: 'analyzing', action: 'Analyzing tool results…', activeTool: null });
+                    if (canvasActiveExecution && canvasActiveExecution.conversationId === currentConversationId) {
+                        appendCanvasLogLine(canvasActiveExecution.path, '=== Execution finished successfully ===', 'meta');
+                    }
                     if (data?.result?.path && String(data.result.path).match(/\.(png|jpg|jpeg|webp|gif)$/i)) {
                         appendMessage('Captured image', 'user', true, [data.result.path]);
                     } else if (data?.result?.image_path) {
                         appendMessage('Captured image', 'user', true, [data.result.image_path]);
                     }
                     break;
+                case 'tool_stream': {
+                    const streamLabel = data.stream === 'stderr' ? 'stderr' : 'stdout';
+                    const streamLine = String(data.content || '');
+                    if (streamLine) {
+                        updateAgentStatus(currentAgentBubble, `[${streamLabel}] ${streamLine}`);
+                        updateLiveActivity({
+                            stage: 'tool_execution',
+                            activeTool: data.tool || null,
+                            action: `${data.tool || 'tool'}: ${streamLine}`,
+                        });
+                        if (canvasActiveExecution && canvasActiveExecution.conversationId === currentConversationId) {
+                            appendCanvasLogLine(canvasActiveExecution.path, streamLine, streamLabel);
+                        }
+                    }
+                    break;
+                }
                 case 'tool_error':
                     markConversationRunState(currentConversationId, { isRunning: true, stage: 'tool_error', error: data.error });
                     updateAgentStatus(currentAgentBubble, `Tool Error: ${data.error}. Thinking...`, true);
                     updateToolTimelineFromEvent('tool_error', data);
                     updateLiveActivity({ stage: 'analyzing', action: 'Tool failed. Re-evaluating next step…', activeTool: null });
+                    if (canvasActiveExecution && canvasActiveExecution.conversationId === currentConversationId) {
+                        appendCanvasLogLine(canvasActiveExecution.path, `=== Execution failed: ${data.error} ===`, 'meta');
+                    }
                     break;
                 case 'final_answer':
                     // This is now the definitive final answer from the agent.
@@ -855,6 +897,7 @@ async function initializeApp(username) {
                     // Reset content for the next user message
                     currentResponseContent = "";
                     updateLiveActivity({ stage: 'idle', action: 'Ready for your next request.', activeTool: null, resetTimer: true });
+                    canvasActiveExecution = null;
                     break;
                 case 'agent_error':
                     if (data.error === 'Conversation not found.') {
@@ -866,6 +909,10 @@ async function initializeApp(username) {
                     updateAgentStatus(currentAgentBubble, `An error occurred: ${data.error}`, true);
                     updateLiveActivity({ stage: 'error', action: `Issue: ${data.error}`, activeTool: null });
                     setAgentRunning(false);
+                    if (canvasActiveExecution && canvasActiveExecution.conversationId === currentConversationId) {
+                        appendCanvasLogLine(canvasActiveExecution.path, `=== Agent error: ${data.error} ===`, 'meta');
+                        canvasActiveExecution = null;
+                    }
                     break;
                 case 'refresh_files':
                     if (data.conversation_id === currentConversationId) {
@@ -1267,16 +1314,96 @@ function formatUnixTimestamp(seconds) {
     }
 }
 
+function formatElapsedSeconds(startedAt) {
+    if (!startedAt) return '0s';
+    const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - Number(startedAt)));
+    if (elapsed < 60) return `${elapsed}s`;
+    const minutes = Math.floor(elapsed / 60);
+    const rem = elapsed % 60;
+    return `${minutes}m ${rem}s`;
+}
+
+function formatAdminBranchLabel(name = '', commit = '') {
+    const shortCommit = (commit || '').slice(0, 10);
+    return `${name}${shortCommit ? ` (${shortCommit})` : ''}`;
+}
+
+function setAdminUpdateControlsRunning(running, statusText = null) {
+    adminUpdateInFlight = running;
+    if (adminUpdateApplyBtn) {
+        adminUpdateApplyBtn.disabled = running;
+        adminUpdateApplyBtn.classList.toggle('opacity-60', running);
+        adminUpdateApplyBtn.classList.toggle('cursor-not-allowed', running);
+        adminUpdateApplyBtn.textContent = running ? 'Update in progress…' : 'Update to Selected Branch';
+    }
+    if (adminUpdateRefreshBtn) {
+        adminUpdateRefreshBtn.disabled = running;
+        adminUpdateRefreshBtn.classList.toggle('opacity-60', running);
+        adminUpdateRefreshBtn.classList.toggle('cursor-not-allowed', running);
+    }
+    if (statusText && adminUpdateStatus) {
+        adminUpdateStatus.textContent = statusText;
+    }
+}
+
+function stopAdminUpdatePolling() {
+    if (adminUpdatePollTimer) {
+        clearInterval(adminUpdatePollTimer);
+        adminUpdatePollTimer = null;
+    }
+}
+
+function startAdminUpdatePolling() {
+    stopAdminUpdatePolling();
+    adminUpdatePollTimer = setInterval(async () => {
+        const state = await loadAdminUpdateStatus({ includeHistory: false });
+        if (!state) return;
+        if (ADMIN_UPDATE_TERMINAL_STATES.has(state.status)) {
+            stopAdminUpdatePolling();
+            setAdminUpdateControlsRunning(false);
+            await refreshAdminPostTerminalState();
+        }
+    }, 1500);
+}
+
+async function refreshAdminPostTerminalState() {
+    await Promise.allSettled([
+        refreshAdminUpdates(),
+        loadAdminUpdateHistory(),
+    ]);
+}
+
 function renderAdminUpdateState(state = {}) {
     if (!adminUpdatesPane || !userIsAdmin) return;
     const snapshot = state.snapshot || {};
     const newest = state.newest_remote || (state.remote_branches || [])[0] || {};
+    const status = state.status || 'idle';
     adminUpdateCurrentBranch.textContent = snapshot.branch || '-';
     adminUpdateCurrentCommit.textContent = (snapshot.commit || '-').slice(0, 12);
+    if (adminUpdateDirty) adminUpdateDirty.textContent = snapshot.dirty ? 'dirty' : 'clean';
     adminUpdateNewestBranch.textContent = newest.name || '-';
     adminUpdateNewestCommit.textContent = (newest.commit || '-').slice(0, 12);
     adminUpdateLastChecked.textContent = formatUnixTimestamp(state.last_checked);
-    adminUpdateStatus.textContent = state.status || 'idle';
+    adminUpdateStatus.textContent = status;
+    if (adminUpdateLastResult) adminUpdateLastResult.textContent = status;
+    if (adminUpdateLiveStatus) adminUpdateLiveStatus.textContent = status;
+    if (adminUpdateLiveStep) adminUpdateLiveStep.textContent = state.current_step || status || '-';
+    if (adminUpdateLiveTarget) adminUpdateLiveTarget.textContent = state.target_branch || '-';
+    if (adminUpdateLiveStarted) adminUpdateLiveStarted.textContent = formatUnixTimestamp(state.started_at);
+    if (adminUpdateLiveElapsed) adminUpdateLiveElapsed.textContent = formatElapsedSeconds(state.started_at);
+    if (adminUpdateLiveLog) adminUpdateLiveLog.textContent = state.last_log_line || '-';
+    if (adminUpdateLiveError) adminUpdateLiveError.textContent = state.error || '-';
+    if (adminUpdateLiveSmoke) adminUpdateLiveSmoke.textContent = state.smoke_output || '-';
+    if (adminUpdateLiveStash) adminUpdateLiveStash.textContent = state.stash_created === true ? 'yes' : state.stash_created === false ? 'no' : '-';
+    if (adminUpdateLiveRollback) {
+        const rollbackParts = [];
+        if (state.rollback_to?.branch) rollbackParts.push(`branch=${state.rollback_to.branch}`);
+        if (state.rollback_to?.commit) rollbackParts.push(`commit=${String(state.rollback_to.commit).slice(0, 12)}`);
+        if (state.rollback_result) rollbackParts.push(`result=${state.rollback_result}`);
+        if (state.rollback_error) rollbackParts.push(`error=${state.rollback_error}`);
+        adminUpdateLiveRollback.textContent = rollbackParts.join(' • ') || '-';
+    }
+    setAdminUpdateControlsRunning(!ADMIN_UPDATE_TERMINAL_STATES.has(status) && status !== 'idle');
 
     const branches = state.remote_branches || [];
     if (adminUpdateBranchSelect) {
@@ -1284,26 +1411,40 @@ function renderAdminUpdateState(state = {}) {
         adminUpdateBranchSelect.innerHTML = '';
         branches.forEach((entry) => {
             const option = document.createElement('option');
-            option.value = entry.name;
-            option.textContent = `${entry.name} (${(entry.commit || '').slice(0, 10)})`;
+            option.value = entry.full_ref || entry.name;
+            option.textContent = formatAdminBranchLabel(entry.name, entry.commit);
+            option.className = 'admin-update-branch-option';
+            option.title = entry.full_ref || entry.name;
             adminUpdateBranchSelect.appendChild(option);
         });
-        if (existing && branches.some((entry) => entry.name === existing)) {
+        if (existing && branches.some((entry) => (entry.full_ref || entry.name) === existing)) {
             adminUpdateBranchSelect.value = existing;
+        } else if (newest?.name) {
+            adminUpdateBranchSelect.value = newest.full_ref || newest.name;
         }
     }
 }
 
-async function loadAdminUpdateStatus() {
+async function loadAdminUpdateStatus({ includeHistory = true } = {}) {
     if (!userIsAdmin) return;
     try {
         const response = await fetch(`${API_BASE}/admin/updates/status`);
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || 'Failed to load update status');
         renderAdminUpdateState(payload);
-        await loadAdminUpdateHistory();
+        if (!ADMIN_UPDATE_TERMINAL_STATES.has(payload.status || 'idle') && (payload.status || 'idle') !== 'idle') {
+            startAdminUpdatePolling();
+        } else {
+            stopAdminUpdatePolling();
+        }
+        if (includeHistory) {
+            await loadAdminUpdateHistory();
+        }
+        return payload;
     } catch (error) {
         console.error('Failed to load admin update status:', error);
+        adminUpdateStatus.textContent = `error: ${error.message}`;
+        return null;
     }
 }
 
@@ -1317,8 +1458,13 @@ async function loadAdminUpdateHistory() {
         adminUpdateHistory.innerHTML = '';
         events.slice(-5).reverse().forEach((event) => {
             const li = document.createElement('li');
-            li.className = 'bg-gray-900 rounded p-2 text-gray-300';
-            li.textContent = `${event.status || 'unknown'} • ${event.target_branch || '-'} • ${formatUnixTimestamp(event.finished_at || event.started_at)}`;
+            li.className = 'bg-gray-900 rounded p-2 text-gray-300 break-words';
+            const details = [];
+            if (event.failed_step) details.push(`step=${event.failed_step}`);
+            if (event.error) details.push(`error=${event.error}`);
+            if (event.rollback_result) details.push(`rollback=${event.rollback_result}`);
+            if (event.smoke_output) details.push(`smoke=${event.smoke_output}`);
+            li.textContent = `${event.status || 'unknown'} • ${event.target_branch || '-'} • ${formatUnixTimestamp(event.finished_at || event.started_at)}${details.length ? ` • ${details.join(' | ')}` : ''}`;
             adminUpdateHistory.appendChild(li);
         });
         if (!adminUpdateHistory.children.length) {
@@ -1348,8 +1494,13 @@ async function refreshAdminUpdates() {
 
 async function applyAdminUpdate() {
     if (!userIsAdmin || !adminUpdateBranchSelect?.value) return;
+    if (adminUpdateInFlight) {
+        adminUpdateStatus.textContent = 'Update in progress…';
+        return;
+    }
     try {
-        adminUpdateStatus.textContent = 'updating';
+        adminUpdateStatus.textContent = 'Starting update…';
+        setAdminUpdateControlsRunning(true, 'Starting update…');
         const response = await fetch(`${API_BASE}/admin/updates/update`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1360,9 +1511,16 @@ async function applyAdminUpdate() {
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || 'Update failed to start');
-        await loadAdminUpdateStatus();
-        await loadAdminUpdateHistory();
+        renderAdminUpdateState({
+            status: 'checking',
+            current_step: 'checking',
+            target_branch: adminUpdateBranchSelect.value,
+            started_at: Date.now() / 1000,
+            last_log_line: 'Starting update…',
+        });
+        startAdminUpdatePolling();
     } catch (error) {
+        setAdminUpdateControlsRunning(false);
         adminUpdateStatus.textContent = `error: ${error.message}`;
     }
 }
@@ -1808,6 +1966,107 @@ async function handleRename(oldPath) {
     }
 }
 
+        function getCanvasExecutionPreset(path = '') {
+            const lower = String(path || '').toLowerCase();
+            const basename = String(path || '').split('/').pop();
+            if (lower.endsWith('.py')) {
+                return {
+                    canRun: true,
+                    canTest: true,
+                    run: { tool: 'execute_python', parameters: { path } },
+                    test: { tool: 'run_shell_command', parameters: { command: `pytest -q ${basename}` } },
+                };
+            }
+            if (lower.endsWith('.js')) {
+                return {
+                    canRun: true,
+                    canTest: true,
+                    run: { tool: 'run_shell_command', parameters: { command: `node ${path}` } },
+                    test: { tool: 'run_shell_command', parameters: { command: `npm test -- ${basename}` } },
+                };
+            }
+            if (lower.endsWith('.sh')) {
+                return {
+                    canRun: true,
+                    canTest: true,
+                    run: { tool: 'run_shell_command', parameters: { command: `bash ${path}` } },
+                    test: { tool: 'run_shell_command', parameters: { command: `bash -n ${path}` } },
+                };
+            }
+            return { canRun: false, canTest: false, run: null, test: null };
+        }
+
+        function appendCanvasLogLine(path, line, stream = 'meta') {
+            if (!path) return;
+            const lines = canvasExecutionLogsByPath.get(path) || [];
+            lines.push({ ts: Date.now(), line: String(line || ''), stream });
+            canvasExecutionLogsByPath.set(path, lines.slice(-1000));
+            if (openTabs[activeTabIndex]?.path === path) {
+                const logPane = document.getElementById('canvas-execution-log');
+                if (logPane) {
+                    const row = document.createElement('div');
+                    row.className = `canvas-log-line ${stream === 'stderr' ? 'stderr' : stream === 'stdout' ? 'stdout' : 'meta'}`;
+                    row.textContent = row.classList.contains('meta') ? line : `[${stream}] ${line}`;
+                    logPane.appendChild(row);
+                    logPane.scrollTop = logPane.scrollHeight;
+                }
+            }
+        }
+
+        function renderCanvasLogPane(path) {
+            const logPane = document.getElementById('canvas-execution-log');
+            if (!logPane) return;
+            const lines = canvasExecutionLogsByPath.get(path) || [];
+            logPane.innerHTML = '';
+            if (!lines.length) {
+                const empty = document.createElement('div');
+                empty.className = 'canvas-log-line meta';
+                empty.textContent = 'No execution logs yet. Run or test from the action bar.';
+                logPane.appendChild(empty);
+                return;
+            }
+            lines.forEach((entry) => {
+                const row = document.createElement('div');
+                row.className = `canvas-log-line ${entry.stream === 'stderr' ? 'stderr' : entry.stream === 'stdout' ? 'stdout' : 'meta'}`;
+                row.textContent = row.classList.contains('meta') ? entry.line : `[${entry.stream}] ${entry.line}`;
+                logPane.appendChild(row);
+            });
+            logPane.scrollTop = logPane.scrollHeight;
+        }
+
+        function runCanvasAction(actionType) {
+            const activeTab = openTabs[activeTabIndex];
+            if (!activeTab || !currentConversationId || !socket) return;
+            const preset = getCanvasExecutionPreset(activeTab.path);
+            const action = actionType === 'test' ? preset.test : preset.run;
+            if (!action) return;
+
+            const stamp = new Date().toLocaleTimeString();
+            appendCanvasLogLine(activeTab.path, `=== ${actionType.toUpperCase()} started at ${stamp} ===`, 'meta');
+            canvasActiveExecution = {
+                conversationId: currentConversationId,
+                path: activeTab.path,
+                actionType,
+                startedAt: Date.now(),
+            };
+
+            const params = {
+                messages: JSON.stringify(conversationHistory),
+                model: userModel,
+                default_chat_model: defaultChatModel || userModel,
+                deep_chat_model: deepChatModel || userModel,
+                utility_model: utilityModel || userModel,
+                conversation_id: currentConversationId || '',
+                canvas_mode: true,
+                agent_mode: false,
+                response_mode_preference: selectedResponseModePreference,
+                canvas_action: action,
+            };
+            markConversationRunState(currentConversationId, { isRunning: true, stage: 'tool_call', partialResponse: '' });
+            setAgentRunning(true);
+            socket.emit('chat_message', params);
+        }
+
         function renderCanvasPanel() {
             const canvasPanel = document.getElementById('canvas-panel');
             const resizer = document.getElementById('resizer');
@@ -1816,10 +2075,6 @@ async function handleRename(oldPath) {
             if (openTabs.length === 0) {
                 hideCanvasPanel();
                 return;
-            }
-
-            if (window.innerWidth < 640) {
-                mainContentWrapper.style.display = 'none';
             }
 
             // Build Tabs HTML
@@ -1838,6 +2093,7 @@ async function handleRename(oldPath) {
 
             const activeTab = openTabs[activeTabIndex];
             const artifactMeta = artifactStatusText();
+            const executionPreset = getCanvasExecutionPreset(activeTab.path);
             const workspaceRows = artifactList.length > 0
                 ? artifactList.map((artifact) => {
                     const isActive = artifact.artifact_id === activeTab.path ? 'bg-blue-900 text-blue-100' : 'text-gray-300 hover:bg-gray-800';
@@ -1881,8 +2137,14 @@ async function handleRename(oldPath) {
                         <button id="canvas-preview-btn">${artifactPreviewVisible ? 'Editor' : 'Preview'}</button>
                         <button id="canvas-copy-btn">Copy</button>
                         <button id="canvas-save-btn">Save</button>
-                        <button id="canvas-close-btn">Close Panel</button>
+                        <button id="canvas-close-btn">${window.innerWidth < 640 ? 'Back to Chat' : 'Close Panel'}</button>
                     </div>
+                </div>
+                <div class="canvas-action-bar">
+                    <button id="canvas-run-btn" class="canvas-action-btn" ${executionPreset.canRun ? '' : 'disabled'}>Run</button>
+                    <button id="canvas-test-btn" class="canvas-action-btn" ${executionPreset.canTest ? '' : 'disabled'}>Test</button>
+                    <button id="canvas-stop-btn" class="canvas-action-btn danger">Stop</button>
+                    <span class="canvas-action-meta">${executionPreset.canRun || executionPreset.canTest ? `Preset: ${activeTab.path.split('.').pop().toLowerCase()}` : 'No execution preset for this file type.'}</span>
                 </div>
                 <div class="px-2 pb-2 sm:hidden">
                     <button id="workspace-mobile-toggle" class="text-xs border border-gray-700 rounded px-2 py-1 text-gray-300">${workspacePanelCollapsedMobile ? 'Show Workspace' : 'Hide Workspace'}</button>
@@ -1899,11 +2161,18 @@ async function handleRename(oldPath) {
                         <div id="artifact-preview" class="flex-1 p-2 ${artifactPreviewVisible ? '' : 'hidden'}"></div>
                     </div>
                 </div>
+                <div class="canvas-log-wrap">
+                    <div class="canvas-log-title">Execution Log</div>
+                    <div id="canvas-execution-log" class="canvas-log-pane" aria-live="polite"></div>
+                </div>
             `;
 
             canvasPanel.classList.remove('hidden');
             canvasPanel.classList.add('flex');
+            canvasPanel.classList.toggle('mobile-fullscreen', window.innerWidth < 640);
             resizer.classList.remove('hidden');
+            resizer.classList.toggle('hidden', window.innerWidth < 640);
+            document.body.classList.toggle('overflow-hidden', window.innerWidth < 640);
 
             // Attach Tab Listeners
             document.querySelectorAll('.canvas-tab').forEach(tabEl => {
@@ -1949,6 +2218,14 @@ async function handleRename(oldPath) {
             document.getElementById('canvas-preview-btn').addEventListener('click', () => {
                 artifactPreviewVisible = !artifactPreviewVisible;
                 renderCanvasPanel();
+            });
+            document.getElementById('canvas-run-btn').addEventListener('click', () => runCanvasAction('run'));
+            document.getElementById('canvas-test-btn').addEventListener('click', () => runCanvasAction('test'));
+            document.getElementById('canvas-stop-btn').addEventListener('click', () => {
+                if (currentConversationId) {
+                    socket.emit('stop_agent', { conversation_id: currentConversationId });
+                    appendCanvasLogLine(activeTab.path, '=== Stop requested ===', 'meta');
+                }
             });
             const workspaceToggleBtn = document.getElementById('workspace-mobile-toggle');
             if (workspaceToggleBtn) {
@@ -2022,6 +2299,7 @@ async function handleRename(oldPath) {
 
             initializeEditor(activeTab.content, activeTab.mode);
             renderArtifactPreview(activeTab.content, activeTab.path);
+            renderCanvasLogPane(activeTab.path);
         }
 
         function closeTab(index) {
@@ -2053,15 +2331,12 @@ async function handleRename(oldPath) {
 
             const canvasPanel = document.getElementById('canvas-panel');
             const resizer = document.getElementById('resizer');
-            const mainContentWrapper = document.getElementById('main-content-wrapper');
-
-            if (window.innerWidth < 640) {
-                mainContentWrapper.style.display = 'flex';
-            }
 
             canvasPanel.classList.add('hidden');
             canvasPanel.classList.remove('flex');
+            canvasPanel.classList.remove('mobile-fullscreen');
             resizer.classList.add('hidden');
+            document.body.classList.remove('overflow-hidden');
 
             if (editor) {
                 editor.getWrapperElement().remove();

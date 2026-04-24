@@ -3,7 +3,19 @@ import re
 from typing import Dict, List, Optional
 
 from memory_store import list_facts, get_session_memory
-from memory import MemoryManager
+
+_UI_NOISE_MARKERS = (
+    "ai cannot access desktop",
+    "ml learning: depends on effort",
+    "user name revealed",
+    "unknown user's name requested",
+    "sidebar",
+    "title:",
+)
+_DISALLOWED_PHRASES = (
+    "i am a language model",
+    "i do not retain memory",
+)
 
 
 def _tokenize(text: str) -> set:
@@ -21,6 +33,62 @@ def _score_fact(query: str, fact: Dict[str, object]) -> float:
     return overlap * 0.7 + math.log1p(max(recency, 1)) * 0.000001 + float(fact.get("confidence") or 0) * 0.3
 
 
+def _is_noise_text(text: str) -> bool:
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return True
+    if lowered.startswith("assistant:") or lowered.startswith("system:"):
+        return True
+    if any(phrase in lowered for phrase in _DISALLOWED_PHRASES):
+        return True
+    return any(marker in lowered for marker in _UI_NOISE_MARKERS)
+
+
+def _is_relevant_fact(fact: Dict[str, object]) -> bool:
+    key = str(fact.get("key") or "")
+    value = str(fact.get("value") or "")
+    return not _is_noise_text(f"{key} {value}")
+
+
+def _derive_display_name_from_facts(user_id: Optional[int]) -> Optional[str]:
+    if not user_id:
+        return None
+    try:
+        facts = list_facts(user_id, scope="user")
+    except Exception:
+        return None
+    for fact in facts:
+        key = str(fact.get("key") or "").lower()
+        value = str(fact.get("value") or "").strip()
+        if not value:
+            continue
+        if key.startswith("identity:display_name"):
+            return value
+        if key.startswith("identity:name"):
+            return value
+    return None
+
+
+def build_user_memory_block(user) -> str:
+    username = getattr(user, "username", "") or "unknown"
+    display_name = _derive_display_name_from_facts(getattr(user, "id", None))
+    lines = [
+        "=== USER MEMORY ===",
+        f"username: {username}",
+    ]
+    if display_name:
+        lines.append(f"display_name: {display_name}")
+    lines.append("This is trusted user identity memory. Use it when relevant.")
+    lines.append("===================")
+    return "\n".join(lines)
+
+
+def _is_identity_query(query: str) -> bool:
+    lowered = (query or "").strip().lower()
+    prompts = ("what is my name", "do you know my name", "who am i")
+    return any(prompt in lowered for prompt in prompts)
+
+
 def retrieve_relevant_memory(
     user_id: int,
     query: str,
@@ -30,16 +98,21 @@ def retrieve_relevant_memory(
 ) -> Dict[str, List[Dict[str, object]]]:
     project_facts = list_facts(user_id, scope="project", project_key=project_key) if project_key else []
     user_facts = list_facts(user_id, scope="user")
+    project_facts = [fact for fact in project_facts if _is_relevant_fact(fact)]
+    user_facts = [fact for fact in user_facts if _is_relevant_fact(fact)]
 
     ranked_project = sorted(project_facts, key=lambda f: _score_fact(query, f), reverse=True)[: max(0, top_k // 2)]
     ranked_user = sorted(user_facts, key=lambda f: _score_fact(query, f), reverse=True)[: top_k - len(ranked_project)]
-
+    if _is_identity_query(query):
+        ranked_user = sorted(
+            ranked_user,
+            key=lambda fact: (
+                "name" in str(fact.get("key", "")).lower() or "name" in str(fact.get("value", "")).lower(),
+                _score_fact(query, fact),
+            ),
+            reverse=True,
+        )
     vector_matches = []
-    try:
-        memory_manager = MemoryManager(user_id=user_id)
-        vector_matches = memory_manager.query_memory(query, scope="user", n_results=3)
-    except Exception:
-        vector_matches = []
 
     return {
         "project_facts": ranked_project,
@@ -59,12 +132,15 @@ def build_memory_injection_block(
     retrieved = retrieve_relevant_memory(user_id, query, project_key=project_key, top_k=7)
     session = get_session_memory(user_id, conversation_id)
 
-    lines = ["=== HYBRID MEMORY CONTEXT ==="]
+    lines = ["=== RELEVANT CONTEXT ONLY ==="]
     if session:
-        lines.append("Session memory:")
-        lines.append(f"- summary: {session.get('summary', '')}")
+        summary = str(session.get("summary", "") or "")
+        if summary and not _is_noise_text(summary):
+            lines.append("Session memory:")
+            lines.append(f"- summary: {summary}")
         for note in session.get("key_notes", [])[:5]:
-            lines.append(f"- note: {note}")
+            if note and not _is_noise_text(str(note)):
+                lines.append(f"- note: {note}")
 
     if retrieved["project_facts"]:
         lines.append("Project facts:")
@@ -84,15 +160,6 @@ def build_memory_injection_block(
                 f"[source: convo={source.get('conversation_id')} msg={source.get('message_index')}]"
             )
 
-    if retrieved["vector_matches"]:
-        lines.append("Semantic memory matches:")
-        for match in retrieved["vector_matches"][:3]:
-            meta = match.get("metadata", {})
-            lines.append(
-                f"- {match.get('content')} "
-                f"[source: convo={meta.get('conversation_id')} ts={meta.get('timestamp')}]"
-            )
-
-    lines.append("=== END HYBRID MEMORY CONTEXT ===")
+    lines.append("=== END RELEVANT CONTEXT ONLY ===")
     block = "\n".join(lines)
     return block[:max_chars]

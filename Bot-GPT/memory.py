@@ -119,7 +119,7 @@ class MemoryManager:
         archived = 0
         for index, message in enumerate(conversation.get("messages", [])):
             role = message.get("role")
-            if role not in {"user", "assistant"}:
+            if role != "user":
                 continue
 
             content = self._clean_content(message.get("content"))

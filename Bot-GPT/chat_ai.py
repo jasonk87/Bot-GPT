@@ -646,6 +646,298 @@ def _render_mode_guidance(profile):
     )
 
 
+def agent_plan_phase(
+    *,
+    model,
+    conversation,
+    call_stream,
+    system_prompt,
+    profile,
+    intent_state,
+    verification_state,
+    scratchpad,
+    agent_sessions,
+    conversation_id,
+    sanitize_json,
+):
+    full_response_content = ""
+    iteration_prompt = (
+        f"{system_prompt}\n{_render_mode_guidance(profile)}\n"
+        f"{_render_intent_state(intent_state)}{_render_verification_state(verification_state)}"
+        f"{_render_repo_context(conversation['owner_id'])}"
+        f"{_render_scratchpad(scratchpad)}"
+    )
+    try:
+        for chunk in call_stream(model, conversation["messages"], iteration_prompt):
+            full_response_content += chunk
+            agent_sessions[conversation_id]["partial_response"] = full_response_content
+            agent_sessions[conversation_id]["stage"] = "answering"
+            yield {"type": "assistant_chunk", "content": chunk}
+    except Exception as e:
+        agent_sessions[conversation_id]["stage"] = "error"
+        agent_sessions[conversation_id]["error"] = str(e)
+        yield {"type": "agent_error", "error": f"Could not connect to AI: {e}"}
+        return {"status": "error", "tool_call_candidates": []}
+
+    trimmed_response = (full_response_content or "").strip()
+    empty_like_response = (not trimmed_response) or trimmed_response in {".", "..."}
+    if empty_like_response:
+        retry_prompt = (
+            f"{iteration_prompt}\n"
+            "IMPORTANT: Your previous response was empty. "
+            "Return a concise answer or one valid tool_call JSON block."
+        )
+        retry_content = ""
+        try:
+            for chunk in call_stream(model, conversation["messages"], retry_prompt):
+                retry_content += chunk
+                agent_sessions[conversation_id]["partial_response"] = retry_content
+                agent_sessions[conversation_id]["stage"] = "answering"
+                yield {"type": "assistant_chunk", "content": chunk}
+        except Exception:
+            retry_content = ""
+        if not (retry_content or "").strip() or (retry_content or "").strip() in {".", "..."}:
+            full_response_content = (
+                "I couldn't generate a usable model response this turn. "
+                "Please retry, or rephrase your repo question and I will run deterministic repo discovery."
+            )
+        else:
+            full_response_content = retry_content
+
+    finalized_response_content = ensure_next_step_line(full_response_content)
+    trailing_delta = finalized_response_content[len(full_response_content):]
+    full_response_content = finalized_response_content
+    agent_sessions[conversation_id]["partial_response"] = full_response_content
+    conversation["messages"].append({"role": "assistant", "content": full_response_content})
+    agent_sessions[conversation_id]["stage"] = "thinking"
+    if trailing_delta:
+        yield {"type": "assistant_chunk", "content": trailing_delta}
+    yield {"type": "assistant_end"}
+    return {
+        "status": "ok",
+        "tool_call_candidates": _extract_tool_calls(full_response_content, sanitize_json),
+    }
+
+
+def agent_act_phase(
+    *,
+    tool_call_candidates,
+    profile,
+    normalize_and_prepare_tool_calls,
+    execute_tool_call_batch,
+    conversation,
+    os_control_enabled,
+    explicit_user_intent,
+    blocked_tool_fingerprints,
+    last_success_state_by_fingerprint,
+    workspace_state_version,
+    agent_sessions,
+    mutating_tools,
+    scratchpad,
+):
+    tool_calls = normalize_and_prepare_tool_calls(tool_call_candidates)
+    if len(tool_calls) > profile["branch_limit"]:
+        tool_calls = tool_calls[: profile["branch_limit"]]
+    guard_outcomes_by_fp = {}
+    executable_calls = []
+    for tool_call in tool_calls:
+        fingerprint = _tool_call_fingerprint(tool_call)
+        if fingerprint in blocked_tool_fingerprints:
+            guard_outcomes_by_fp[fingerprint] = {
+                "tool_name": tool_call.tool_name,
+                "status": "error",
+                "result": None,
+                "error_type": "loop_guard_non_retryable_repeat",
+                "error_message": "Repeated identical call after non-retryable/validation failure. Change parameters or approach.",
+                "retryable": False,
+                "validation_status": tool_call.validation_status,
+                "source_metadata": tool_call.source_metadata,
+                "file_creation_tool_used": False,
+            }
+        elif last_success_state_by_fingerprint.get(fingerprint) == workspace_state_version:
+            guard_outcomes_by_fp[fingerprint] = {
+                "tool_name": tool_call.tool_name,
+                "status": "error",
+                "result": None,
+                "error_type": "redundant_call_same_context",
+                "error_message": "Repeated identical call in unchanged context. Escalate or choose a different tool.",
+                "retryable": False,
+                "validation_status": tool_call.validation_status,
+                "source_metadata": tool_call.source_metadata,
+                "file_creation_tool_used": False,
+            }
+        else:
+            executable_calls.append(tool_call)
+
+    batch_outcome = execute_tool_call_batch(
+        executable_calls,
+        conversation,
+        current_user,
+        execution_context={
+            "mode": profile["mode"],
+            "os_control_enabled": os_control_enabled,
+            "explicit_user_intent": explicit_user_intent,
+            "source": "chat",
+        },
+    )
+    execution_results_by_fp = {
+        _tool_call_fingerprint(call): outcome
+        for call, outcome in zip(executable_calls, batch_outcome.get("results", []))
+    }
+    aggregated_tool_results = []
+    for tool_call in tool_calls:
+        fingerprint = _tool_call_fingerprint(tool_call)
+        execution_result = guard_outcomes_by_fp.get(fingerprint) or execution_results_by_fp.get(fingerprint)
+        if not execution_result:
+            execution_result = {
+                "tool_name": tool_call.tool_name,
+                "status": "error",
+                "result": None,
+                "error_type": "runtime_mismatch",
+                "error_message": "No execution outcome available.",
+                "retryable": False,
+                "validation_status": tool_call.validation_status,
+                "source_metadata": tool_call.source_metadata,
+                "file_creation_tool_used": False,
+            }
+        tool_call_id = f"tool_{int(time.time() * 1000)}"
+        try:
+            logger.info("chat_tool_call conversation_id=%s tool=%s", conversation["id"], tool_call.tool_name)
+            yield {
+                "type": "progress_update",
+                "stage": "executing",
+                "label": f"Running tool: {tool_call.tool_name}",
+                "ts": time.time(),
+            }
+            agent_sessions[conversation["id"]]["stage"] = "tool_call"
+            agent_sessions[conversation["id"]]["tool_name"] = tool_call.tool_name
+            agent_sessions[conversation["id"]]["tool_params"] = tool_call.normalized_params
+            yield {"type": "tool_call", "tool_call_id": tool_call_id, "name": tool_call.tool_name, "params": tool_call.normalized_params}
+            if execution_result.get("status") == "success":
+                tool_result = execution_result.get("result")
+                if isinstance(tool_result, dict):
+                    if tool_result.get("status") == "canvas_created" or (tool_result.get("status") == "file_written" and tool_call.tool_name in ["create_and_open_canvas", "write_file"]):
+                        yield {"type": "open_canvas", "filename": tool_result.get("path") or tool_result.get("filename")}
+                    elif tool_result.get("status") == "file_written":
+                        yield {"type": "file_updated", "path": tool_result.get("path"), "content": tool_result.get("content")}
+                    elif tool_result.get("status") == "repo_selected" and tool_result.get("entry_point"):
+                        yield {"type": "open_canvas", "filename": tool_result.get("entry_point")}
+
+                aggregated_tool_results.append(execution_result)
+                scratchpad["notes"].append(f"Tool success: {tool_call.tool_name}")
+                last_success_state_by_fingerprint[fingerprint] = workspace_state_version
+                if tool_call.tool_name in mutating_tools:
+                    workspace_state_version += 1
+                agent_sessions[conversation["id"]]["stage"] = "after_tool"
+                yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": tool_result, "meta": execution_result}
+            else:
+                error_message = (
+                    f"[{execution_result.get('error_type')}] {execution_result.get('error_message')} "
+                    f"(retryable={execution_result.get('retryable')})"
+                )
+                if execution_result.get("validation_status") != "valid" or execution_result.get("retryable") is False:
+                    blocked_tool_fingerprints.add(fingerprint)
+                aggregated_tool_results.append(execution_result)
+                scratchpad["notes"].append(f"Tool failure ({execution_result.get('error_type')}): {tool_call.tool_name}")
+                agent_sessions[conversation["id"]]["stage"] = "tool_error"
+                agent_sessions[conversation["id"]]["error"] = error_message
+                yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": error_message, "meta": execution_result}
+        except Exception as e:
+            fallback_result = {
+                "tool_name": tool_call.tool_name,
+                "status": "error",
+                "result": None,
+                "error_type": "chat_runtime_error",
+                "error_message": str(e),
+                "retryable": False,
+                "validation_status": "unknown",
+                "source_metadata": tool_call.source_metadata,
+            }
+            aggregated_tool_results.append(fallback_result)
+            agent_sessions[conversation["id"]]["stage"] = "tool_error"
+            agent_sessions[conversation["id"]]["error"] = str(e)
+            yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": str(e)}
+
+    return {
+        "tool_calls": tool_calls,
+        "batch_outcome": batch_outcome,
+        "aggregated_tool_results": aggregated_tool_results,
+        "workspace_state_version": workspace_state_version,
+    }
+
+
+def agent_verify_phase(*, changed_paths, messages, conversation, verification_state):
+    verification_report = _run_verification_loop(
+        changed_paths,
+        _latest_user_message(messages),
+        conversation,
+    )
+    verification_state["last_summary"] = verification_report.get("summary", "")
+    if verification_report.get("status") == "failed":
+        verification_state["pending_failure"] = verification_report.get("pending_failure")
+        verification_state["attempts"] += 1
+        failure = verification_state["pending_failure"] or {}
+        conversation["messages"].append({
+            "role": "tool",
+            "content": (
+                "DETERMINISTIC REPAIR DIRECTIVE:\n"
+                f"Fix verification failure classification={failure.get('classification')} "
+                f"command={failure.get('command')} summary={failure.get('summary')}.\n"
+                "Do not start new ideas until this exact failure is resolved."
+            ),
+        })
+    elif verification_report.get("status") == "passed":
+        verification_state["pending_failure"] = None
+        verification_state["attempts"] = 0
+    return verification_report
+
+
+def _validation_gate_decision(*, profile, intent_state, batch_outcome, verification_state, aggregated_tool_results):
+    if profile["mode"] != "standard" or not intent_state.get("ready_to_answer"):
+        return {"status": "allow", "reason": ""}
+    if batch_outcome.get("status") not in ("success", "partial_success"):
+        return {"status": "allow", "reason": ""}
+    if verification_state.get("pending_failure") is not None:
+        pending = verification_state.get("pending_failure") or {}
+        if verification_state.get("attempts", 0) >= verification_state.get("max_attempts", 0):
+            reason = (
+                "I’m unable to verify this result yet because verification is still failing "
+                f"({pending.get('classification') or 'unknown_failure'})."
+            )
+            return {"status": "unable_to_verify", "reason": reason}
+        return {"status": "allow", "reason": ""}
+
+    risky_tools = {"execute_python", "run_shell_command", "implement_and_test_code"}
+    for result in aggregated_tool_results or []:
+        if result.get("status") == "error" and result.get("tool_name") in risky_tools:
+            reason = (
+                "I’m unable to verify this confidently because an execution/test step failed "
+                f"({result.get('tool_name')}: {result.get('error_type') or 'error'})."
+            )
+            return {"status": "unable_to_verify", "reason": reason}
+    return {"status": "allow", "reason": ""}
+
+
+def agent_decide_phase(*, profile, intent_state, batch_outcome, verification_state, aggregated_tool_results):
+    validation_gate = _validation_gate_decision(
+        profile=profile,
+        intent_state=intent_state,
+        batch_outcome=batch_outcome,
+        verification_state=verification_state,
+        aggregated_tool_results=aggregated_tool_results,
+    )
+    if validation_gate.get("status") == "unable_to_verify":
+        return {"action": "unable_to_verify", "reason": validation_gate.get("reason")}
+    if (
+        profile["mode"] == "standard"
+        and intent_state.get("ready_to_answer")
+        and batch_outcome.get("status") in ("success", "partial_success")
+        and verification_state.get("pending_failure") is None
+    ):
+        return {"action": "break"}
+    return {"action": "continue"}
+
+
 def handle_ai_response(
     data,
     *,
@@ -763,6 +1055,52 @@ def handle_ai_response(
         "git_pull",
         "git_push",
     }
+    canvas_action = data.get("canvas_action")
+    if canvas_action:
+        if isinstance(canvas_action, str):
+            try:
+                canvas_action = json.loads(canvas_action)
+            except json.JSONDecodeError:
+                canvas_action = {}
+        tool_name = (canvas_action or {}).get("tool")
+        tool_params = (canvas_action or {}).get("parameters") or {}
+        if tool_name in {"execute_python", "run_shell_command"}:
+            normalized = normalize_and_prepare_tool_calls([{"tool": tool_name, "parameters": tool_params}])
+            yield {"type": "progress_update", "stage": "executing", "label": f"Canvas action: {tool_name}", "ts": time.time()}
+            tool_call_id = f"tool_{int(time.time() * 1000)}"
+            yield {"type": "tool_call", "tool_call_id": tool_call_id, "name": tool_name, "params": tool_params}
+            batch = execute_tool_call_batch(
+                normalized,
+                conversation,
+                current_user,
+                execution_context={
+                    "mode": profile["mode"],
+                    "os_control_enabled": os_control_enabled,
+                    "explicit_user_intent": True,
+                    "source": "canvas_action_bar",
+                },
+            )
+            result = (batch.get("results") or [{}])[0]
+            if result.get("status") == "success":
+                yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": result.get("result"), "meta": result}
+                conversation["messages"].append({
+                    "role": "assistant",
+                    "content": f"Canvas `{tool_name}` completed successfully.",
+                })
+            else:
+                error_message = result.get("error_message") or f"{tool_name} failed."
+                yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": error_message, "meta": result}
+                conversation["messages"].append({
+                    "role": "assistant",
+                    "content": f"Canvas `{tool_name}` failed: {error_message}",
+                })
+            yield {"type": "progress_update", "stage": "finalizing", "label": "Finalizing answer", "ts": time.time()}
+            yield from process_final_answer(conversation, data.get("canvas_mode", False), write_file)
+            update_conversation_title(conversation, conversation_path, utility_model or model)
+            conversation["messages"] = [m for m in conversation["messages"] if m.get("role") in ["user", "assistant"]]
+            save_conversation(conversation_path, conversation)
+            yield {"type": "done", "title": conversation.get("title", "New Chat")}
+            return
     logger.info("chat_run_start conversation_id=%s agent_mode=%s max_iterations=%s", conversation["id"], agent_mode, max_iterations)
     try:
         for _ in range(max_iterations):
@@ -770,50 +1108,23 @@ def handle_ai_response(
                 yield {"type": "agent_error", "error": "Agent run stopped by user."}
                 break
 
-            full_response_content = ""
             yield {"type": "progress_update", "stage": "executing", "label": "Generating response", "ts": time.time()}
-            try:
-                iteration_prompt = (
-                    f"{system_prompt}\n{_render_mode_guidance(profile)}\n"
-                    f"{_render_intent_state(intent_state)}{_render_verification_state(verification_state)}"
-                    f"{_render_repo_context(conversation['owner_id'])}"
-                    f"{_render_scratchpad(scratchpad)}"
-                )
-                for chunk in call_stream(model, conversation["messages"], iteration_prompt):
-                    full_response_content += chunk
-                    agent_sessions[conversation["id"]]["partial_response"] = full_response_content
-                    agent_sessions[conversation["id"]]["stage"] = "answering"
-                    yield {"type": "assistant_chunk", "content": chunk}
-            except Exception as e:
-                agent_sessions[conversation["id"]]["stage"] = "error"
-                agent_sessions[conversation["id"]]["error"] = str(e)
-                yield {"type": "agent_error", "error": f"Could not connect to AI: {e}"}
+            plan_result = yield from agent_plan_phase(
+                model=model,
+                conversation=conversation,
+                call_stream=call_stream,
+                system_prompt=system_prompt,
+                profile=profile,
+                intent_state=intent_state,
+                verification_state=verification_state,
+                scratchpad=scratchpad,
+                agent_sessions=agent_sessions,
+                conversation_id=conversation["id"],
+                sanitize_json=sanitize_json,
+            )
+            if plan_result.get("status") == "error":
                 break
-
-            trimmed_response = (full_response_content or "").strip()
-            empty_like_response = (not trimmed_response) or trimmed_response in {".", "..."}
-            if empty_like_response:
-                retry_prompt = (
-                    f"{iteration_prompt}\n"
-                    "IMPORTANT: Your previous response was empty. "
-                    "Return a concise answer or one valid tool_call JSON block."
-                )
-                retry_content = ""
-                try:
-                    for chunk in call_stream(model, conversation["messages"], retry_prompt):
-                        retry_content += chunk
-                        agent_sessions[conversation["id"]]["partial_response"] = retry_content
-                        agent_sessions[conversation["id"]]["stage"] = "answering"
-                        yield {"type": "assistant_chunk", "content": chunk}
-                except Exception:
-                    retry_content = ""
-                if not (retry_content or "").strip() or (retry_content or "").strip() in {".", "..."}:
-                    full_response_content = (
-                        "I couldn't generate a usable model response this turn. "
-                        "Please retry, or rephrase your repo question and I will run deterministic repo discovery."
-                    )
-                else:
-                    full_response_content = retry_content
+            tool_call_candidates = plan_result.get("tool_call_candidates", [])
 
             if os_intent_gate.get("detected"):
                 refusal_markers = (
@@ -822,6 +1133,7 @@ def handle_ai_response(
                     "can't access your desktop",
                     "can't access your system",
                 )
+                full_response_content = conversation["messages"][-1].get("content", "")
                 lowered_response = (full_response_content or "").lower()
                 if any(marker in lowered_response for marker in refusal_markers):
                     if os_intent_gate.get("status") == "allowed":
@@ -831,16 +1143,7 @@ def handle_ai_response(
                     else:
                         full_response_content = os_intent_gate.get("message") or "I can do that, but policy currently blocks it."
 
-            finalized_response_content = ensure_next_step_line(full_response_content)
             yield {"type": "progress_update", "stage": "verifying", "label": "Verifying response and next step", "ts": time.time()}
-            trailing_delta = finalized_response_content[len(full_response_content):]
-            full_response_content = finalized_response_content
-            agent_sessions[conversation["id"]]["partial_response"] = full_response_content
-            conversation["messages"].append({"role": "assistant", "content": full_response_content})
-            agent_sessions[conversation["id"]]["stage"] = "thinking"
-            if trailing_delta:
-                yield {"type": "assistant_chunk", "content": trailing_delta}
-            yield {"type": "assistant_end"}
 
             context_usage = estimate_context_usage(conversation["messages"])
             if context_usage >= 0.75:
@@ -859,7 +1162,6 @@ def handle_ai_response(
                     )
                     scratchpad["notes"].append(f"Compacted context at {int(context_usage * 100)}% usage")
 
-            tool_call_candidates = _extract_tool_calls(full_response_content, sanitize_json)
             if not tool_call_candidates:
                 if os_intent_gate.get("detected") and os_intent_gate.get("status") == "allowed":
                     forced_tool = os_intent_gate.get("tool_name")
@@ -945,133 +1247,25 @@ def handle_ai_response(
                 })
                 break
 
-            tool_calls = normalize_and_prepare_tool_calls(tool_call_candidates)
-            if len(tool_calls) > profile["branch_limit"]:
-                tool_calls = tool_calls[: profile["branch_limit"]]
-            guard_outcomes_by_fp = {}
-            executable_calls = []
-            for tool_call in tool_calls:
-                fingerprint = _tool_call_fingerprint(tool_call)
-                if fingerprint in blocked_tool_fingerprints:
-                    guard_outcomes_by_fp[fingerprint] = {
-                        "tool_name": tool_call.tool_name,
-                        "status": "error",
-                        "result": None,
-                        "error_type": "loop_guard_non_retryable_repeat",
-                        "error_message": "Repeated identical call after non-retryable/validation failure. Change parameters or approach.",
-                        "retryable": False,
-                        "validation_status": tool_call.validation_status,
-                        "source_metadata": tool_call.source_metadata,
-                        "file_creation_tool_used": False,
-                    }
-                elif last_success_state_by_fingerprint.get(fingerprint) == workspace_state_version:
-                    guard_outcomes_by_fp[fingerprint] = {
-                        "tool_name": tool_call.tool_name,
-                        "status": "error",
-                        "result": None,
-                        "error_type": "redundant_call_same_context",
-                        "error_message": "Repeated identical call in unchanged context. Escalate or choose a different tool.",
-                        "retryable": False,
-                        "validation_status": tool_call.validation_status,
-                        "source_metadata": tool_call.source_metadata,
-                        "file_creation_tool_used": False,
-                    }
-                else:
-                    executable_calls.append(tool_call)
-
-            batch_outcome = execute_tool_call_batch(
-                executable_calls,
-                conversation,
-                current_user,
-                execution_context={
-                    "mode": profile["mode"],
-                    "os_control_enabled": os_control_enabled,
-                    "explicit_user_intent": explicit_user_intent,
-                    "source": "chat",
-                },
+            act_result = yield from agent_act_phase(
+                tool_call_candidates=tool_call_candidates,
+                profile=profile,
+                normalize_and_prepare_tool_calls=normalize_and_prepare_tool_calls,
+                execute_tool_call_batch=execute_tool_call_batch,
+                conversation=conversation,
+                os_control_enabled=os_control_enabled,
+                explicit_user_intent=explicit_user_intent,
+                blocked_tool_fingerprints=blocked_tool_fingerprints,
+                last_success_state_by_fingerprint=last_success_state_by_fingerprint,
+                workspace_state_version=workspace_state_version,
+                agent_sessions=agent_sessions,
+                mutating_tools=mutating_tools,
+                scratchpad=scratchpad,
             )
-            execution_results_by_fp = {
-                _tool_call_fingerprint(call): outcome
-                for call, outcome in zip(executable_calls, batch_outcome.get("results", []))
-            }
-            aggregated_tool_results = []
-            for tool_call in tool_calls:
-                fingerprint = _tool_call_fingerprint(tool_call)
-                execution_result = guard_outcomes_by_fp.get(fingerprint) or execution_results_by_fp.get(fingerprint)
-                if not execution_result:
-                    execution_result = {
-                        "tool_name": tool_call.tool_name,
-                        "status": "error",
-                        "result": None,
-                        "error_type": "runtime_mismatch",
-                        "error_message": "No execution outcome available.",
-                        "retryable": False,
-                        "validation_status": tool_call.validation_status,
-                        "source_metadata": tool_call.source_metadata,
-                        "file_creation_tool_used": False,
-                    }
-                tool_call_id = f"tool_{int(time.time() * 1000)}"
-                try:
-                    logger.info("chat_tool_call conversation_id=%s tool=%s", conversation["id"], tool_call.tool_name)
-                    yield {
-                        "type": "progress_update",
-                        "stage": "executing",
-                        "label": f"Running tool: {tool_call.tool_name}",
-                        "ts": time.time(),
-                    }
-                    agent_sessions[conversation["id"]]["stage"] = "tool_call"
-                    agent_sessions[conversation["id"]]["tool_name"] = tool_call.tool_name
-                    agent_sessions[conversation["id"]]["tool_params"] = tool_call.normalized_params
-                    yield {"type": "tool_call", "tool_call_id": tool_call_id, "name": tool_call.tool_name, "params": tool_call.normalized_params}
-                    if execution_result.get("status") == "success":
-                        tool_result = execution_result.get("result")
-                        if isinstance(tool_result, dict):
-                            if tool_result.get("status") == "canvas_created" or (tool_result.get("status") == "file_written" and tool_call.tool_name in ["create_and_open_canvas", "write_file"]):
-                                yield {"type": "open_canvas", "filename": tool_result.get("path") or tool_result.get("filename")}
-                            elif tool_result.get("status") == "file_written":
-                                yield {"type": "file_updated", "path": tool_result.get("path"), "content": tool_result.get("content")}
-                            elif tool_result.get("status") == "repo_selected" and tool_result.get("entry_point"):
-                                yield {"type": "open_canvas", "filename": tool_result.get("entry_point")}
-
-                        aggregated_tool_results.append(execution_result)
-                        scratchpad["notes"].append(f"Tool success: {tool_call.tool_name}")
-                        last_success_state_by_fingerprint[fingerprint] = workspace_state_version
-                        if tool_call.tool_name in mutating_tools:
-                            workspace_state_version += 1
-                        agent_sessions[conversation["id"]]["stage"] = "after_tool"
-                        yield {"type": "tool_result", "tool_call_id": tool_call_id, "result": tool_result, "meta": execution_result}
-                    else:
-                        error_message = (
-                            f"[{execution_result.get('error_type')}] {execution_result.get('error_message')} "
-                            f"(retryable={execution_result.get('retryable')})"
-                        )
-                        if (
-                            execution_result.get("validation_status") != "valid"
-                            or execution_result.get("retryable") is False
-                        ):
-                            blocked_tool_fingerprints.add(fingerprint)
-                        aggregated_tool_results.append(execution_result)
-                        scratchpad["notes"].append(
-                            f"Tool failure ({execution_result.get('error_type')}): {tool_call.tool_name}"
-                        )
-                        agent_sessions[conversation["id"]]["stage"] = "tool_error"
-                        agent_sessions[conversation["id"]]["error"] = error_message
-                        yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": error_message, "meta": execution_result}
-                except Exception as e:
-                    fallback_result = {
-                        "tool_name": tool_call.tool_name,
-                        "status": "error",
-                        "result": None,
-                        "error_type": "chat_runtime_error",
-                        "error_message": str(e),
-                        "retryable": False,
-                        "validation_status": "unknown",
-                        "source_metadata": tool_call.source_metadata,
-                    }
-                    aggregated_tool_results.append(fallback_result)
-                    agent_sessions[conversation["id"]]["stage"] = "tool_error"
-                    agent_sessions[conversation["id"]]["error"] = str(e)
-                    yield {"type": "tool_error", "tool_call_id": tool_call_id, "error": str(e)}
+            tool_calls = act_result.get("tool_calls", [])
+            batch_outcome = act_result.get("batch_outcome", {})
+            aggregated_tool_results = act_result.get("aggregated_tool_results", [])
+            workspace_state_version = act_result.get("workspace_state_version", workspace_state_version)
 
             conversation["messages"].append({
                 "role": "tool",
@@ -1089,15 +1283,14 @@ def handle_ai_response(
                     "label": "Running verification loop",
                     "ts": time.time(),
                 }
-                verification_report = _run_verification_loop(
-                    changed_paths,
-                    _latest_user_message(messages),
-                    conversation,
+                verification_report = agent_verify_phase(
+                    changed_paths=changed_paths,
+                    messages=messages,
+                    conversation=conversation,
+                    verification_state=verification_state,
                 )
                 verification_state["last_summary"] = verification_report.get("summary", "")
                 if verification_report.get("status") == "failed":
-                    verification_state["pending_failure"] = verification_report.get("pending_failure")
-                    verification_state["attempts"] += 1
                     failure = verification_state["pending_failure"] or {}
                     yield {
                         "type": "activity_update",
@@ -1133,12 +1326,23 @@ def handle_ai_response(
                 "active_tool": None,
             }
             executed_tool_batches += 1
-            if (
-                profile["mode"] == "standard"
-                and intent_state.get("ready_to_answer")
-                and batch_outcome.get("status") in ("success", "partial_success")
-                and verification_state.get("pending_failure") is None
-            ):
+            decision = agent_decide_phase(
+                profile=profile,
+                intent_state=intent_state,
+                batch_outcome=batch_outcome,
+                verification_state=verification_state,
+                aggregated_tool_results=aggregated_tool_results,
+            )
+            if decision.get("action") == "unable_to_verify":
+                conversation["messages"].append({
+                    "role": "assistant",
+                    "content": (
+                        f"{decision.get('reason')} "
+                        "I can continue with additional checks if you want me to keep iterating."
+                    ),
+                })
+                break
+            if decision.get("action") == "break":
                 break
         else:
             if agent_mode:

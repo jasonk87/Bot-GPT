@@ -160,6 +160,11 @@ def test_settings_tab_ownership_and_mobile_layout_markers(client):
     assert 'admin-update-current-branch' in html
     assert 'admin-update-newest-branch' in html
     assert 'admin-update-history' in html
+    assert 'admin-update-live-status' in html
+    assert 'admin-update-live-step' in html
+    assert 'admin-update-live-error' in html
+    assert 'mobile-fullscreen' in html
+    assert 'admin-update-status-panel' in html
 
 
 def test_admin_updates_tab_visibility_flag_for_non_admin(client, app):
@@ -217,6 +222,21 @@ def test_admin_updates_frontend_wires_check_and_apply_apis():
         script = handle.read()
     assert '/admin/updates/check' in script
     assert '/admin/updates/update' in script
+    assert 'startAdminUpdatePolling' in script
+    assert 'ADMIN_UPDATE_TERMINAL_STATES' in script
+    assert 'Update in progress…' in script
+    assert 'branch: adminUpdateBranchSelect.value' in script
+
+
+def test_frontend_has_mobile_canvas_fullscreen_guards():
+    with open('Bot-GPT/static/js/main.js', 'r', encoding='utf-8') as handle:
+        script = handle.read()
+    with open('Bot-GPT/templates/index.html', 'r', encoding='utf-8') as handle:
+        html = handle.read()
+    assert "canvasPanel.classList.toggle('mobile-fullscreen'" in script
+    assert "document.body.classList.toggle('overflow-hidden'" in script
+    assert "Back to Chat" in script
+    assert '#file-viewer, #artifact-preview, #workspace-panel' in html
 
 
 def test_os_safety_status_endpoint_returns_flags(logged_in_client):
