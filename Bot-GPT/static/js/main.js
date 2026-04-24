@@ -93,6 +93,7 @@ let selectedArtifactVersionId = null;
 let proactiveDashboardTimer = null;
 let activeAttachmentPath = null;
 let userIsAdmin = false;
+let activityTicker = null;
 
 function getCurrentConversationStorageKey() {
     return currentUsername ? `botgpt_current_conversation_id_${currentUsername}` : 'botgpt_current_conversation_id';
@@ -2282,7 +2283,18 @@ function setAgentRunning(isRunning, agentMode = false) {
     isAgentRunning = isRunning;
     chatInput.disabled = isRunning;
 
+    if (activityTicker) {
+        clearInterval(activityTicker);
+        activityTicker = null;
+    }
+
     if (isRunning) {
+        activityTicker = setInterval(() => {
+            renderLiveActivityState();
+            refreshAgentStatusMessage();
+        }, 1000);
+        renderLiveActivityState();
+        refreshAgentStatusMessage();
         if (agentMode) {
             // Transform to a Stop button
             sendButton.innerHTML = `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a.5.5 0 01.5-.5h3a.5.5 0 010 1h-3A.5.5 0 018 7zm2 4a.5.5 0 01.5.5v3a.5.5 0 01-1 0v-3a.5.5 0 01.5-.5z" clip-rule="evenodd"></path></svg>`;
@@ -2297,6 +2309,7 @@ function setAgentRunning(isRunning, agentMode = false) {
             sendButton.innerHTML = `<svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
         }
     } else {
+        renderLiveActivityState();
         // Revert to Send button
         sendButton.disabled = false;
         sendButton.classList.remove('bg-gray-500', 'cursor-not-allowed', 'bg-red-600', 'hover:bg-red-700');
@@ -2325,7 +2338,12 @@ function getConversationRunState(conversationId) {
 function showRecoveredRunIndicator(bubbleElement, text = 'Still working...') {
     if (!bubbleElement) return;
     const agentStatus = bubbleElement.querySelector('.agent-status');
-    agentStatus.textContent = text;
+    agentStatus.innerHTML = `
+        <div class="thinking-indicator">
+            <span></span><span></span><span></span>
+        </div>
+        <div class="agent-status-label text-xs text-gray-400 mt-1">${text}</div>
+    `;
     agentStatus.style.display = 'block';
     agentStatus.classList.remove('text-red-400');
 }
@@ -2364,6 +2382,12 @@ function restoreActiveRun(activeRun) {
             break;
     }
 
+    updateLiveActivity({
+        stage: activeRun.stage || 'thinking',
+        action: activeRun.error || 'Restored in-progress run.',
+        activeTool: activeRun.tool_name || null,
+        resetTimer: true,
+    });
     setAgentRunning(true, !!activeRun.agent_mode);
 }
 
@@ -2516,6 +2540,7 @@ function createBotMessageContainer(animate = true) {
                 <div class="thinking-indicator">
                     <span></span><span></span><span></span>
                 </div>
+                <div class="agent-status-label text-xs text-gray-400 mt-1">Thinking...</div>
             </div>
             <div class="response-mode-badge text-xs text-gray-400 mt-1 hidden"></div>
             <div class="tool-activity" style="display: none;">
@@ -2626,6 +2651,44 @@ function inferActivityStage(stage, fallback = 'thinking') {
     return fallback;
 }
 
+function formatElapsedDuration(ms) {
+    const totalSeconds = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}m ${seconds}s`;
+}
+
+function buildRunStatusMessage(stage, elapsedMs, activeTool = null) {
+    const elapsed = formatElapsedDuration(elapsedMs);
+    if (stage === 'waiting_approval') {
+        return `Waiting for approval${elapsedMs ? ` · ${elapsed}` : ''}`;
+    }
+    if (stage === 'error') {
+        return 'Run paused due to an error';
+    }
+    if (stage === 'ready') {
+        return 'Ready';
+    }
+    if (stage === 'acting') {
+        if (elapsedMs >= 45000) {
+            return activeTool
+                ? `Still working with ${activeTool} · ${elapsed}. Local runs can take a while.`
+                : `Still working · ${elapsed}. Local runs can take a while.`;
+        }
+        return activeTool
+            ? `Working with ${activeTool}${elapsedMs >= 1000 ? ` · ${elapsed}` : ''}`
+            : `Working${elapsedMs >= 1000 ? ` · ${elapsed}` : ''}`;
+    }
+    if (elapsedMs >= 45000) {
+        return `Still thinking after ${elapsed}. Local model responses can take a while.`;
+    }
+    if (elapsedMs >= 15000) {
+        return `Thinking for ${elapsed}...`;
+    }
+    return 'Thinking...';
+}
+
 function formatActivityStatus(stage, action, activeTool) {
     const labels = {
         ready: 'Ready',
@@ -2636,6 +2699,51 @@ function formatActivityStatus(stage, action, activeTool) {
     };
     if (stage === 'error' && action) return 'Error';
     return labels[stage] || 'Thinking';
+}
+
+function renderLiveActivityState() {
+    const elapsedMs = liveActivityState.startedAt ? Date.now() - liveActivityState.startedAt : 0;
+    const status = formatActivityStatus(
+        liveActivityState.currentStage,
+        liveActivityState.lastAction,
+        liveActivityState.activeTool
+    );
+    const detail = liveActivityState.currentStage === 'ready'
+        ? status
+        : `${status} · ${formatElapsedDuration(elapsedMs)}`;
+
+    if (liveActivityText) liveActivityText.textContent = detail;
+    if (activityStageText) activityStageText.textContent = status;
+    if (activityFocusText) activityFocusText.textContent = liveActivityState.currentFocus || '—';
+    if (activityActionText) activityActionText.textContent = liveActivityState.lastAction || '—';
+    if (liveActivityBar) {
+        liveActivityBar.classList.toggle('opacity-80', liveActivityState.currentStage === 'ready');
+    }
+}
+
+function refreshAgentStatusMessage() {
+    if (!isAgentRunning || !currentAgentBubble) return;
+    const answerContent = currentAgentBubble.querySelector('.answer-content');
+    if (answerContent && answerContent.style.display !== 'none' && answerContent.textContent.trim()) return;
+    const toolActivity = currentAgentBubble.querySelector('.tool-activity');
+    if (toolActivity && toolActivity.style.display !== 'none') return;
+
+    const agentStatus = currentAgentBubble.querySelector('.agent-status');
+    if (!agentStatus) return;
+    const elapsedMs = liveActivityState.startedAt ? Date.now() - liveActivityState.startedAt : 0;
+    const message = buildRunStatusMessage(
+        liveActivityState.currentStage,
+        elapsedMs,
+        liveActivityState.activeTool
+    );
+    agentStatus.innerHTML = `
+        <div class="thinking-indicator">
+            <span></span><span></span><span></span>
+        </div>
+        <div class="agent-status-label text-xs text-gray-400 mt-1">${message}</div>
+    `;
+    agentStatus.style.display = 'block';
+    agentStatus.classList.remove('text-red-400');
 }
 
 function updateLiveActivity({ stage, focus, action, activeTool, resetTimer = false }) {
@@ -2655,6 +2763,69 @@ function updateLiveActivity({ stage, focus, action, activeTool, resetTimer = fal
     if (activityActionText) activityActionText.textContent = '—';
     if (liveActivityBar) {
         liveActivityBar.classList.toggle('opacity-80', nextStage === 'ready');
+    }
+}
+
+function updateLiveActivity({ stage, focus, action, activeTool, resetTimer = false }) {
+    const nextStage = inferActivityStage(stage, liveActivityState.currentStage);
+    if (resetTimer || !liveActivityState.startedAt) {
+        liveActivityState.startedAt = Date.now();
+    }
+    if (focus) liveActivityState.currentFocus = focus;
+    if (action) liveActivityState.lastAction = action;
+    if (activeTool !== undefined) liveActivityState.activeTool = activeTool;
+    liveActivityState.currentStage = nextStage;
+    renderLiveActivityState();
+    refreshAgentStatusMessage();
+}
+
+function buildRunStatusMessage(stage, elapsedMs, activeTool = null) {
+    const elapsed = formatElapsedDuration(elapsedMs);
+    if (stage === 'waiting_approval') {
+        return `Waiting for approval${elapsedMs ? ` - ${elapsed}` : ''}`;
+    }
+    if (stage === 'error') {
+        return 'Run paused due to an error';
+    }
+    if (stage === 'ready') {
+        return 'Ready';
+    }
+    if (stage === 'acting') {
+        if (elapsedMs >= 45000) {
+            return activeTool
+                ? `Still working with ${activeTool} - ${elapsed}. Local runs can take a while.`
+                : `Still working - ${elapsed}. Local runs can take a while.`;
+        }
+        return activeTool
+            ? `Working with ${activeTool}${elapsedMs >= 1000 ? ` - ${elapsed}` : ''}`
+            : `Working${elapsedMs >= 1000 ? ` - ${elapsed}` : ''}`;
+    }
+    if (elapsedMs >= 45000) {
+        return `Still thinking after ${elapsed}. Local model responses can take a while.`;
+    }
+    if (elapsedMs >= 15000) {
+        return `Thinking for ${elapsed}...`;
+    }
+    return 'Thinking...';
+}
+
+function renderLiveActivityState() {
+    const elapsedMs = liveActivityState.startedAt ? Date.now() - liveActivityState.startedAt : 0;
+    const status = formatActivityStatus(
+        liveActivityState.currentStage,
+        liveActivityState.lastAction,
+        liveActivityState.activeTool
+    );
+    const detail = liveActivityState.currentStage === 'ready'
+        ? status
+        : `${status} - ${formatElapsedDuration(elapsedMs)}`;
+
+    if (liveActivityText) liveActivityText.textContent = detail;
+    if (activityStageText) activityStageText.textContent = status;
+    if (activityFocusText) activityFocusText.textContent = liveActivityState.currentFocus || '-';
+    if (activityActionText) activityActionText.textContent = liveActivityState.lastAction || '-';
+    if (liveActivityBar) {
+        liveActivityBar.classList.toggle('opacity-80', liveActivityState.currentStage === 'ready');
     }
 }
 

@@ -1,7 +1,7 @@
 import os
 import shutil
 import uuid
-from flask import Blueprint, request, jsonify, current_app, Response, send_file
+from flask import Blueprint, request, jsonify, current_app, Response, send_file, stream_with_context
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
 from extensions import socketio
@@ -316,7 +316,7 @@ def summarize_conversation(conversation_id):
             messages=[{"role": "user", "content": summary_prompt}],
             system_prompt="You are a helpful assistant that summarizes conversations."
         )
-        return Response(stream, mimetype='text/plain')
+        return Response(stream_with_context(stream), mimetype='text/plain')
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
