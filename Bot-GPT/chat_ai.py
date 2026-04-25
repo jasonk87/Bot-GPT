@@ -43,6 +43,22 @@ OS_INTENT_ACTIONS = {
 }
 
 
+def _merge_persistent_messages(conversation_messages, incoming_messages):
+    incoming_messages = list(incoming_messages or [])
+    existing_messages = list(conversation_messages or [])
+    persistent_system_messages = [
+        message
+        for message in existing_messages
+        if message.get("role") == "system"
+        and str(message.get("content") or "").strip().startswith("Session memory summary:")
+    ]
+    if not incoming_messages:
+        return existing_messages
+    if not persistent_system_messages:
+        return incoming_messages
+    return persistent_system_messages + incoming_messages
+
+
 def _is_repo_intent(message: str) -> bool:
     lowered = (message or "").strip().lower()
     if not lowered:
@@ -972,7 +988,7 @@ def handle_ai_response(
             f"{system_prompt}\n\n=== RESPONSE DEPTH MODE ===\n{depth_instruction}\n===========================\n"
             f"\n=== RESPONSE FORMAT REQUIREMENT ===\n{NEXT_STEP_PROMPT_RULE}\n===================================\n"
         )
-        conversation["messages"] = messages
+        conversation["messages"] = _merge_persistent_messages(conversation.get("messages"), messages)
         save_conversation(conversation_path, conversation)
     except (ValueError, json.JSONDecodeError) as exc:
         yield {"type": "agent_error", "error": str(exc)}

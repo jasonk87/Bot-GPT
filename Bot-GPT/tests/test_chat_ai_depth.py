@@ -49,6 +49,20 @@ def test_determine_depth_mode_uses_model_router_when_available():
     assert source == "model_router"
 
 
+def test_merge_persistent_messages_keeps_session_summary():
+    existing = [
+        {"role": "system", "content": "Session memory summary: user prefers concise updates"},
+        {"role": "assistant", "content": "Older answer"},
+    ]
+    incoming = [{"role": "user", "content": "What did I just ask you to do?"}]
+
+    merged = chat_ai._merge_persistent_messages(existing, incoming)
+
+    assert merged[0]["role"] == "system"
+    assert merged[0]["content"].startswith("Session memory summary:")
+    assert merged[-1] == incoming[0]
+
+
 def test_determine_depth_mode_low_confidence_falls_back_to_heuristics():
     messages = [{"role": "user", "content": "Could you do a deep dive into architecture options and tradeoffs?"}]
 
