@@ -22,7 +22,7 @@ def compact_session_history(messages: List[Dict[str, str]], keep_recent: int = 8
             continue
         if message.get("role") == "user":
             user_goals.append(content[:160])
-        if "todo" in content.lower() or "next step" in content.lower():
+        if "todo:" in content.lower():
             unresolved.append(content[:160])
 
     summary_parts = []

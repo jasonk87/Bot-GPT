@@ -161,7 +161,7 @@ DEPTH_PROMPT_RULES = {
 }
 
 NEXT_STEP_PROMPT_RULE = (
-    "Include a 'Next step:' line only when a concrete next action is genuinely useful."
+    "Do not append a literal 'Next step:' line to your conversational responses. Provide natural answers."
 )
 MODEL_ROUTER_CONFIDENCE_THRESHOLD = 0.65
 DEPTH_ROUTING_METRICS = Counter()

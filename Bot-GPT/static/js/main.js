@@ -340,9 +340,8 @@ continueLastUserBtn.addEventListener('click', () => {
 
 function handleMobileCanvasLayout() {
 
-    if (isCanvasMode) {
-
-        const canvasPanel = document.getElementById("canvas-panel");
+    const canvasPanel = document.getElementById("canvas-panel");
+    if (canvasPanel && !canvasPanel.classList.contains("hidden")) {
 
         const resizer = document.getElementById("resizer");
 
