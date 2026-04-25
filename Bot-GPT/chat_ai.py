@@ -1147,7 +1147,7 @@ def handle_ai_response(
 
             context_usage = estimate_context_usage(conversation["messages"])
             if context_usage >= 0.75:
-                compacted = compact_session_history(conversation["messages"], keep_recent=8)
+                compacted = compact_session_history(conversation["messages"], keep_recent=16)
                 if compacted.get("summary"):
                     conversation["messages"] = compacted["trimmed_messages"]
                     conversation["messages"].insert(0, {

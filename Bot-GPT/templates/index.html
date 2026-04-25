@@ -607,7 +607,8 @@
                 z-index: 2;
             }
             #canvas-panel.mobile-fullscreen #canvas-close-btn::after {
-                content: " / Back";
+                /* Removed append, we handle text via JS directly based on width */
+                content: "";
             }
             #canvas-panel.mobile-fullscreen .canvas-header-buttons {
                 display: flex;
@@ -628,7 +629,7 @@
             #canvas-panel.mobile-fullscreen .canvas-action-meta {
                 display: none;
             }
-            #canvas-panel.mobile-fullscreen .canvas-action-btn {
+            #canvas-panel.mobile-fullscreen .canvas-action-bar .canvas-action-btn {
                 flex: 1;
                 text-align: center;
             }

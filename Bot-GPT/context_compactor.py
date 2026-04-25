@@ -1,7 +1,8 @@
 from typing import Dict, List
 
 
-def estimate_context_usage(messages: List[Dict[str, str]], max_chars: int = 16000) -> float:
+def estimate_context_usage(messages: List[Dict[str, str]], max_chars: int = 48000) -> float:
+    # Increased max_chars to avoid excessive truncation of context leading to memory loss
     total = sum(len((message.get("content") or "")) for message in messages or [])
     return total / max_chars if max_chars else 0.0
 

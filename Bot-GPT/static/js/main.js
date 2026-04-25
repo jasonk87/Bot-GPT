@@ -338,6 +338,37 @@ continueLastUserBtn.addEventListener('click', () => {
     document.getElementById('login-password').focus();
 });
 
+function handleMobileCanvasLayout() {
+
+    if (isCanvasMode) {
+
+        const canvasPanel = document.getElementById("canvas-panel");
+
+        const resizer = document.getElementById("resizer");
+
+        if (canvasPanel) {
+
+            canvasPanel.classList.toggle("mobile-fullscreen", window.innerWidth < 640);
+
+            if (resizer) resizer.classList.toggle("hidden", window.innerWidth < 640);
+
+            document.body.classList.toggle("overflow-hidden", window.innerWidth < 640);
+
+        }
+
+    }
+
+}
+
+// Add resize listener for canvas mobile fullscreen toggle
+
+window.addEventListener("resize", () => {
+
+    handleMobileCanvasLayout();
+
+});
+
+
 loginForm.addEventListener('submit', handleAuthFormSubmit);
 registerForm.addEventListener('submit', handleAuthFormSubmit);
 
@@ -2259,10 +2290,9 @@ async function handleRename(oldPath) {
 
             canvasPanel.classList.remove('hidden');
             canvasPanel.classList.add('flex');
-            canvasPanel.classList.toggle('mobile-fullscreen', window.innerWidth < 640);
             resizer.classList.remove('hidden');
-            resizer.classList.toggle('hidden', window.innerWidth < 640);
-            document.body.classList.toggle('overflow-hidden', window.innerWidth < 640);
+
+            handleMobileCanvasLayout();
 
             // Attach Tab Listeners
             document.querySelectorAll('.canvas-tab').forEach(tabEl => {
