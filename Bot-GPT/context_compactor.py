@@ -1,7 +1,8 @@
 from typing import Dict, List
 
 
-def estimate_context_usage(messages: List[Dict[str, str]], max_chars: int = 16000) -> float:
+def estimate_context_usage(messages: List[Dict[str, str]], max_chars: int = 48000) -> float:
+    # Increased max_chars to avoid excessive truncation of context leading to memory loss
     total = sum(len((message.get("content") or "")) for message in messages or [])
     return total / max_chars if max_chars else 0.0
 
@@ -21,7 +22,7 @@ def compact_session_history(messages: List[Dict[str, str]], keep_recent: int = 8
             continue
         if message.get("role") == "user":
             user_goals.append(content[:160])
-        if "todo" in content.lower() or "next step" in content.lower():
+        if "todo:" in content.lower():
             unresolved.append(content[:160])
 
     summary_parts = []

@@ -470,6 +470,11 @@
             color: #dbeafe;
             background: #1e3a8a;
         }
+        .canvas-action-btn.watch-active {
+            border-color: #059669;
+            color: #d1fae5;
+            background: #064e3b;
+        }
         .canvas-action-meta {
             margin-left: auto;
             font-size: 0.7rem;
@@ -602,7 +607,8 @@
                 z-index: 2;
             }
             #canvas-panel.mobile-fullscreen #canvas-close-btn::after {
-                content: " / Back";
+                /* Removed append, we handle text via JS directly based on width */
+                content: "";
             }
             #canvas-panel.mobile-fullscreen .canvas-header-buttons {
                 display: flex;
@@ -623,7 +629,7 @@
             #canvas-panel.mobile-fullscreen .canvas-action-meta {
                 display: none;
             }
-            #canvas-panel.mobile-fullscreen .canvas-action-btn {
+            #canvas-panel.mobile-fullscreen .canvas-action-bar .canvas-action-btn {
                 flex: 1;
                 text-align: center;
             }

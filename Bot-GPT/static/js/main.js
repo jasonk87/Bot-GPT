@@ -70,6 +70,9 @@ let activeTabIndex = -1;
 let conversationRunStates = {};
 let pendingNewConversationRun = null;
 let dependencyBannerDismissedForSession = false;
+
+// Watch mode state
+let canvasWatchModeByPath = {};
 let lastDependencyReport = null;
 let liveActivityState = {
     currentStage: 'idle',
@@ -334,6 +337,36 @@ continueLastUserBtn.addEventListener('click', () => {
     switchAuthTab('login');
     document.getElementById('login-password').focus();
 });
+
+function handleMobileCanvasLayout() {
+
+    const canvasPanel = document.getElementById("canvas-panel");
+    if (canvasPanel && !canvasPanel.classList.contains("hidden")) {
+
+        const resizer = document.getElementById("resizer");
+
+        if (canvasPanel) {
+
+            canvasPanel.classList.toggle("mobile-fullscreen", window.innerWidth < 640);
+
+            if (resizer) resizer.classList.toggle("hidden", window.innerWidth < 640);
+
+            document.body.classList.toggle("overflow-hidden", window.innerWidth < 640);
+
+        }
+
+    }
+
+}
+
+// Add resize listener for canvas mobile fullscreen toggle
+
+window.addEventListener("resize", () => {
+
+    handleMobileCanvasLayout();
+
+});
+
 
 loginForm.addEventListener('submit', handleAuthFormSubmit);
 registerForm.addEventListener('submit', handleAuthFormSubmit);
@@ -2228,6 +2261,7 @@ async function handleRename(oldPath) {
                 <div class="canvas-action-bar">
                     <button id="canvas-run-btn" class="canvas-action-btn" ${executionPreset.canRun ? '' : 'disabled'}>Run</button>
                     <button id="canvas-test-btn" class="canvas-action-btn" ${executionPreset.canTest ? '' : 'disabled'}>Test</button>
+                    ${executionPreset.canTest ? `<button id="canvas-watch-btn" class="canvas-action-btn ${canvasWatchModeByPath[activeTab.path] ? 'watch-active' : ''}">Watch</button>` : ''}
                     <button id="canvas-stop-btn" class="canvas-action-btn danger">Stop</button>
                     <button id="canvas-autofix-btn" class="canvas-action-btn autofix ${autoFixState.visible ? '' : 'hidden'}">Auto-Fix</button>
                     <span class="canvas-action-meta">${executionPreset.canRun || executionPreset.canTest ? `Preset: ${activeTab.path.split('.').pop().toLowerCase()}` : 'No execution preset for this file type.'}</span>
@@ -2255,10 +2289,9 @@ async function handleRename(oldPath) {
 
             canvasPanel.classList.remove('hidden');
             canvasPanel.classList.add('flex');
-            canvasPanel.classList.toggle('mobile-fullscreen', window.innerWidth < 640);
             resizer.classList.remove('hidden');
-            resizer.classList.toggle('hidden', window.innerWidth < 640);
-            document.body.classList.toggle('overflow-hidden', window.innerWidth < 640);
+
+            handleMobileCanvasLayout();
 
             // Attach Tab Listeners
             document.querySelectorAll('.canvas-tab').forEach(tabEl => {
@@ -2307,6 +2340,13 @@ async function handleRename(oldPath) {
             });
             document.getElementById('canvas-run-btn').addEventListener('click', () => runCanvasAction('run'));
             document.getElementById('canvas-test-btn').addEventListener('click', () => runCanvasAction('test'));
+            if (document.getElementById('canvas-watch-btn')) {
+                document.getElementById('canvas-watch-btn').addEventListener('click', () => {
+                    const isWatching = canvasWatchModeByPath[activeTab.path];
+                    canvasWatchModeByPath[activeTab.path] = !isWatching;
+                    renderCanvasPanel(); // re-render to update UI and toggle class
+                });
+            }
             document.getElementById('canvas-autofix-btn').addEventListener('click', () => runCanvasAutoFix());
             document.getElementById('canvas-stop-btn').addEventListener('click', () => {
                 if (currentConversationId) {
@@ -2375,6 +2415,11 @@ async function handleRename(oldPath) {
                             last_updated_at: Date.now() / 1000,
                         });
                         setTimeout(() => { saveBtn.textContent = 'Save'; }, 2000);
+
+                        // Trigger Watch Mode test if active
+                        if (canvasWatchModeByPath[activeTab.path] && executionPreset && executionPreset.canTest) {
+                            runCanvasAction('test');
+                        }
                     } catch (error) {
                         alert(`Error saving file: ${error.message}`);
                         saveBtn.textContent = 'Save';

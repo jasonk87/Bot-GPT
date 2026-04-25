@@ -118,7 +118,7 @@ def test_handle_ai_response_emits_response_mode_and_injects_depth_prompt(mocker)
     assert "Response depth: Deep" in captured_system_prompt["value"]
     assert "INTENT CONTINUITY STATE" in captured_system_prompt["value"]
     assert "REPOSITORY CONTEXT" in captured_system_prompt["value"]
-    assert "Include a 'Next step:' line only when a concrete next action is genuinely useful." in captured_system_prompt["value"]
+    assert "Do not append a literal 'Next step:' line to your conversational responses" in captured_system_prompt["value"]
     assert mock_save.called
 
 

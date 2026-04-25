@@ -161,7 +161,7 @@ DEPTH_PROMPT_RULES = {
 }
 
 NEXT_STEP_PROMPT_RULE = (
-    "Include a 'Next step:' line only when a concrete next action is genuinely useful."
+    "Do not append a literal 'Next step:' line to your conversational responses. Provide natural answers."
 )
 MODEL_ROUTER_CONFIDENCE_THRESHOLD = 0.65
 DEPTH_ROUTING_METRICS = Counter()
@@ -1147,7 +1147,7 @@ def handle_ai_response(
 
             context_usage = estimate_context_usage(conversation["messages"])
             if context_usage >= 0.75:
-                compacted = compact_session_history(conversation["messages"], keep_recent=8)
+                compacted = compact_session_history(conversation["messages"], keep_recent=16)
                 if compacted.get("summary"):
                     conversation["messages"] = compacted["trimmed_messages"]
                     conversation["messages"].insert(0, {
