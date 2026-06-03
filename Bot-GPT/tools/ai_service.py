@@ -5,20 +5,33 @@ from flask import current_app
 
 def call_gemini_chat_stream(model, messages, system_prompt):
     """Calls Google's Gemini API via REST and yields response chunks."""
-    print(f"DEBUG: Executing REST API call for model {model}")
+    actual_model = model
+    is_max_thinking = False
+    if " (Max Thinking)" in model:
+        actual_model = model.replace(" (Max Thinking)", "")
+        is_max_thinking = True
+
+    print(f"DEBUG: Executing REST API call for model {actual_model} (max thinking: {is_max_thinking})")
     api_key = current_app.config.get("GOOGLE_API_KEY")
     if not api_key:
         yield "Error: GOOGLE_API_KEY not found in configuration."
         return
 
     # Use REST API URL
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{actual_model}:streamGenerateContent?key={api_key}"
     
     # Prepare contents
     payload = {
         "contents": [],
         "system_instruction": {"parts": [{"text": system_prompt}]}
     }
+
+    if is_max_thinking:
+        payload["generationConfig"] = {
+            "thinkingConfig": {
+                "thinkingBudget": -1
+            }
+        }
 
     import base64
 
@@ -60,6 +73,7 @@ def call_gemini_chat_stream(model, messages, system_prompt):
         if parts:
              payload["contents"].append({"role": role, "parts": parts})
 
+    is_thinking = False
     try:
         response = requests.post(
             url,
@@ -101,8 +115,18 @@ def call_gemini_chat_stream(model, messages, system_prompt):
                 if candidates:
                     content_parts = candidates[0].get("content", {}).get("parts", [])
                     for part in content_parts:
+                        is_part_thought = part.get("thought") is True
                         if "text" in part:
-                            yield part["text"]
+                            if is_part_thought:
+                                if not is_thinking:
+                                    yield "<think>"
+                                    is_thinking = True
+                                yield part["text"]
+                            else:
+                                if is_thinking:
+                                    yield "</think>"
+                                    is_thinking = False
+                                yield part["text"]
                 
                 prompt_feedback = chunk_data.get("promptFeedback", {})
                 if prompt_feedback.get("blockReason"):
@@ -110,6 +134,9 @@ def call_gemini_chat_stream(model, messages, system_prompt):
                     
             except json.JSONDecodeError:
                 continue
+
+        if is_thinking:
+            yield "</think>"
 
     except requests.exceptions.HTTPError as e:
          error_msg = f"Error calling Gemini API: {e}"

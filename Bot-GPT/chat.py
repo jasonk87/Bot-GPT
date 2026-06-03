@@ -127,12 +127,39 @@ def get_models():
                     "name": model_info.get("name"),
                     "modified_at": model_info.get("modified_at"),
                     "size": model_info.get("size"),
+                    "provider": "ollama"
                 })
     except Exception as e:
         current_app.logger.warning(f"Could not reach Ollama: {e}")
 
-    if not models and current_user.selected_model:
-        models.append({"name": current_user.selected_model, "modified_at": "unknown", "size": 0})
+    gemini_models = [
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite-preview-02-05",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash-lite (Max Thinking)"
+    ]
+    for gm in gemini_models:
+        models.append({
+            "name": gm,
+            "modified_at": "N/A",
+            "size": 0,
+            "provider": "google"
+        })
+
+    # Ensure user's selected model is always present in the returned list to preserve selection
+    if current_user.selected_model:
+        selected_in_list = any(m["name"] == current_user.selected_model for m in models)
+        if not selected_in_list:
+            models.append({
+                "name": current_user.selected_model,
+                "modified_at": "unknown",
+                "size": 0,
+                "provider": "unknown"
+            })
     return jsonify(models)
 
 

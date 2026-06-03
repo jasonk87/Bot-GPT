@@ -120,7 +120,11 @@ def run_shell_command(command, conversation_id, user_id, user, stream_callback=N
                 if not os.path.isfile(resolved_path):
                     return f"Error: File '{arg}' not found."
                 with open(resolved_path, "r", encoding="utf-8") as handle:
-                    output_chunks.append(handle.read())
+                    content = handle.read()
+                    output_chunks.append(content)
+                    if stream_callback:
+                        for line in content.splitlines():
+                            stream_callback("stdout", line)
             combined = "\n".join(output_chunks).strip()
             return f"--- STDOUT ---\n{combined}" if combined else "Command executed with no output."
 

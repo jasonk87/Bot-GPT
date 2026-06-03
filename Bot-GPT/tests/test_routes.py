@@ -52,7 +52,7 @@ def test_auth_routes(client, test_user, app):
     assert new_login_rv.status_code == 200
 
 def test_get_models_api(logged_in_client, mocker):
-    """Test the API endpoint for getting Ollama models."""
+    """Test the API endpoint for getting Ollama models and Gemini models."""
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -67,8 +67,15 @@ def test_get_models_api(logged_in_client, mocker):
     assert response.status_code == 200
     data = response.get_json()
     assert isinstance(data, list)
-    assert len(data) == 2
+    # 2 mocked ollama models + 8 gemini models = 10
+    assert len(data) == 10
     assert data[0]['name'] == 'model1:latest'
+    assert data[0]['provider'] == 'ollama'
+    
+    # Check that Gemini models are present
+    gemini_names = [d['name'] for d in data if d.get('provider') == 'google']
+    assert "gemini-2.5-flash-lite (Max Thinking)" in gemini_names
+    assert len(gemini_names) == 8
 
 
 def test_settings_include_and_persist_response_mode(logged_in_client, test_user):
