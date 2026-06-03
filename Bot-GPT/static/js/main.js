@@ -3582,6 +3582,7 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
             block.parentElement.appendChild(copyBtn);
         });
     }
+    smartScroll(chatContainer);
 }
 
 function updateAgentStatus(bubbleElement, statusText, isError = false) {
