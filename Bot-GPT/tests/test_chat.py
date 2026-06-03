@@ -1,8 +1,4 @@
-import pytest
 import json
-import threading
-from unittest.mock import MagicMock, call
-from app import socketio
 import chat
 import os
 from flask_login import login_user

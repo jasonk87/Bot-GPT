@@ -1,5 +1,4 @@
 
-import pytest
 from unittest.mock import MagicMock
 from tools.file_system import write_file
 from tools.web_search import web_search

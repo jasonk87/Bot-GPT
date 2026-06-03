@@ -16,7 +16,6 @@ from flask import current_app, has_app_context
 from extensions import socketio
 from os_safety import (
     OBSERVE_TOOLS,
-    CAUTION_TOOLS,
     DANGEROUS_TOOLS,
     get_tool_safety_category,
     evaluate_tool_policy,

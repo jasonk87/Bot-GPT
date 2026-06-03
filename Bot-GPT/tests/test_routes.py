@@ -1,6 +1,5 @@
 from unittest.mock import Mock
 import os
-from models import get_all_conversations_for_user
 from shared_paths import get_users_path
 from models import _load_users, _save_users, User
 
