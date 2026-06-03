@@ -2551,16 +2551,60 @@ async function handleRename(oldPath) {
             }
         }
 
+        async function fetchLintErrors(text, path) {
+            if (!path) return [];
+            try {
+                const response = await fetch('/api/workspace/lint', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path, content: text })
+                });
+                if (!response.ok) return [];
+                const data = await response.json();
+
+                // CodeMirror expects: { message, severity, from: CodeMirror.Pos(line, col), to: CodeMirror.Pos(line, col) }
+                return (data.errors || []).map(err => {
+                    const line = Math.max(0, err.line - 1);
+                    return {
+                        message: err.message,
+                        severity: "error", // Use error for all pylint/node syntax issues for now
+                        from: CodeMirror.Pos(line, err.column || 0),
+                        to: CodeMirror.Pos(line, err.column ? err.column + 1 : 100)
+                    };
+                });
+            } catch (err) {
+                console.error("Linter fetch error:", err);
+                return [];
+            }
+        }
+
         function initializeEditor(content, mode) {
             const editorContainer = document.getElementById('file-viewer');
             if (!editorContainer) return;
             editorContainer.innerHTML = '';
+
+            // Define an async linter function for CodeMirror
+            CodeMirror.registerHelper("lint", "javascript", function(text, updateLinting, options, editor) {
+                fetchLintErrors(text, currentOpenFile).then(errs => {
+                    updateLinting(editor, errs);
+                });
+            });
+            CodeMirror.registerHelper("lint", "python", function(text, updateLinting, options, editor) {
+                fetchLintErrors(text, currentOpenFile).then(errs => {
+                    updateLinting(editor, errs);
+                });
+            });
+
+            // Basic completion helper
             editor = CodeMirror(editorContainer, {
                 value: content,
                 mode: mode,
                 theme: 'dracula',
                 lineNumbers: true,
-                readOnly: currentConversationRole !== 'owner'
+                lint: { async: true, delay: 500 },
+                gutters: ["CodeMirror-lint-markers", "CodeMirror-linenumbers"],
+                readOnly: currentConversationRole !== 'owner',
+                extraKeys: {"Ctrl-Space": "autocomplete"}
             });
 
             // Add debounce for auto-saving

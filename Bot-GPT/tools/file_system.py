@@ -2,6 +2,7 @@ import os
 from flask import current_app
 from extensions import socketio
 from artifacts import upsert_artifact_metadata, snapshot_artifact_version
+from tools.linter import lint_code
 
 
 def get_workspace_path(conversation_id, owner_id):
@@ -160,11 +161,21 @@ def write_file(path, content, conversation_id=None, user_id=None):
             room=str(conversation_id),
         )
 
+        lint_errors = lint_code(path, content)
+        if lint_errors:
+            error_msgs = "\n".join([f"Line {e.get('line', '?')}: {e.get('message', '')}" for e in lint_errors])
+            message = (
+                f"File '{path}' written successfully, "
+                f"but the linter found the following errors:\n{error_msgs}"
+            )
+        else:
+            message = f"File '{path}' written successfully."
+
         return {
             "status": "file_written",
             "path": path,
             "content": content,
-            "message": f"File '{path}' written successfully.",
+            "message": message,
         }
     except Exception as e:
         return {"status": "error", "message": f"Error: {str(e)}"}

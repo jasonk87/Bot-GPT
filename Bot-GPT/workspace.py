@@ -28,6 +28,7 @@ from artifacts import (
     get_artifact_version,
 )
 from tools.file_system import get_workspace_path
+from tools.linter import lint_code
 from repo_index import (
     discover_local_repositories,
     load_repo_index,
@@ -98,6 +99,20 @@ def find_conversation_owner(conversation_id):
     """Finds the owner of a conversation using the index."""
     index_path = get_conversation_index_path()
     return find_owner_from_index(index_path, conversation_id)
+
+
+@workspace.route("/api/workspace/lint", methods=["POST"])
+@login_required
+def lint_workspace_file():
+    data = request.get_json()
+    path = data.get("path")
+    content = data.get("content")
+
+    if not path or content is None:
+        return jsonify({"error": "Missing path or content"}), 400
+
+    errors = lint_code(path, content)
+    return jsonify({"errors": errors})
 
 
 @workspace.route("/api/workspace/files/<conversation_id>", methods=["GET"])
