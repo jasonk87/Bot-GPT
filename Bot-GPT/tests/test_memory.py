@@ -80,3 +80,56 @@ def test_project_memory_falls_back_to_shared_owner_collection_without_repo(app, 
             "project_memory_user-default_1",
             "project_memory_user-default_1",
         ]
+
+
+def test_runtime_remember_tool_dispatches_correctly(app, test_user, mocker):
+    from unittest.mock import MagicMock
+    mock_memory = MagicMock()
+    mocker.patch("memory.MemoryManager", return_value=mock_memory)
+
+    from tools.runtime import remember, recall, forget
+
+    # Test remember user scope
+    remember(scope="user", key="k1", value="v1", user_id=test_user.id)
+    mock_memory.remember.assert_called_once_with("user", "k1", "v1")
+
+    # Test remember project scope
+    mock_memory.reset_mock()
+    remember(
+        scope="project",
+        key="k2",
+        value="v2",
+        conversation_id="convo-x",
+        user_id=test_user.id,
+        owner_id=test_user.id,
+        project_id="proj-y"
+    )
+    mock_memory.set_project_memory_file.assert_called_once_with(test_user.id, "convo-x", project_id="proj-y")
+    mock_memory.remember.assert_called_once_with("project", "k2", "v2")
+
+    # Test recall
+    mock_memory.reset_mock()
+    recall(
+        scope="project",
+        key="k2",
+        conversation_id="convo-x",
+        user_id=test_user.id,
+        owner_id=test_user.id,
+        project_id="proj-y"
+    )
+    mock_memory.set_project_memory_file.assert_called_once_with(test_user.id, "convo-x", project_id="proj-y")
+    mock_memory.recall.assert_called_once_with("project", "k2")
+
+    # Test forget
+    mock_memory.reset_mock()
+    forget(
+        scope="project",
+        key="k2",
+        conversation_id="convo-x",
+        user_id=test_user.id,
+        owner_id=test_user.id,
+        project_id="proj-y"
+    )
+    mock_memory.set_project_memory_file.assert_called_once_with(test_user.id, "convo-x", project_id="proj-y")
+    mock_memory.forget.assert_called_once_with("project", "k2")
+

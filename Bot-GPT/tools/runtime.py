@@ -259,7 +259,7 @@ def verify_visual_state(rule, current_state, previous_state=None, **kwargs):
 # Functions moved from the old tools.py
 
 # --- Memory Tools ---
-def remember(scope, key, value, conversation_id=None, user_id=None, **kwargs):
+def remember(scope, key, value, conversation_id=None, user_id=None, owner_id=None, project_id=None, **kwargs):
     """
     Saves a fact to memory.
     Args:
@@ -272,21 +272,18 @@ def remember(scope, key, value, conversation_id=None, user_id=None, **kwargs):
         memory = MemoryManager(user_id=user_id)
         
         if scope == "project" and conversation_id:
-             # We need to resolve the owner_id to find the project path
-             # tools/__init__.py imports file_system which imports chat... circular import risk?
-             # Let's rely on context to pass owner_id if possible, or assume user_id is owner
-             # The context_params in handle_tool_call usually pass 'owner_id'
-             owner_id = kwargs.get("owner_id")
-             if owner_id:
-                 memory.set_project_memory_file(owner_id, conversation_id, project_id=kwargs.get("project_id"))
-             else:
-                 return "Error: Could not determine project owner for memory."
+            # owner_id and project_id are now explicitly declared in the signature
+            # so that execute_normalized_tool_call matches and passes them.
+            if owner_id:
+                memory.set_project_memory_file(owner_id, conversation_id, project_id=project_id)
+            else:
+                return "Error: Could not determine project owner for memory."
 
         return memory.remember(scope, key, value)
     except Exception as e:
         return f"Error using remember tool: {e}"
 
-def recall(scope, key, conversation_id=None, user_id=None, **kwargs):
+def recall(scope, key, conversation_id=None, user_id=None, owner_id=None, project_id=None, **kwargs):
     """
     Retrieves a fact from memory.
     Args:
@@ -298,9 +295,8 @@ def recall(scope, key, conversation_id=None, user_id=None, **kwargs):
         memory = MemoryManager(user_id=user_id)
         
         if scope == "project" and conversation_id:
-             owner_id = kwargs.get("owner_id")
-             if owner_id:
-                 memory.set_project_memory_file(owner_id, conversation_id, project_id=kwargs.get("project_id"))
+            if owner_id:
+                memory.set_project_memory_file(owner_id, conversation_id, project_id=project_id)
         
         val = memory.recall(scope, key)
         if val:
@@ -310,7 +306,7 @@ def recall(scope, key, conversation_id=None, user_id=None, **kwargs):
     except Exception as e:
         return f"Error using recall tool: {e}"
 
-def forget(scope, key, conversation_id=None, user_id=None, **kwargs):
+def forget(scope, key, conversation_id=None, user_id=None, owner_id=None, project_id=None, **kwargs):
     """
     Deletes a fact from memory.
     Args:
@@ -322,9 +318,8 @@ def forget(scope, key, conversation_id=None, user_id=None, **kwargs):
         memory = MemoryManager(user_id=user_id)
         
         if scope == "project" and conversation_id:
-             owner_id = kwargs.get("owner_id")
-             if owner_id:
-                 memory.set_project_memory_file(owner_id, conversation_id, project_id=kwargs.get("project_id"))
+            if owner_id:
+                memory.set_project_memory_file(owner_id, conversation_id, project_id=project_id)
         
         return memory.forget(scope, key)
     except Exception as e:
