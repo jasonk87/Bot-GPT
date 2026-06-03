@@ -61,6 +61,9 @@ class DummyPage:
     def inner_text(self, _selector):
         return "Dashboard complete"
 
+    def evaluate(self, _script):
+        return "Dashboard complete"
+
 
 def test_capture_screen_and_input_actions(monkeypatch):
     monkeypatch.setattr(os_control, "ImageGrab", DummyGrabber)

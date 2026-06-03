@@ -65,6 +65,9 @@ from .browser_agent import (
     find_element_by_text,
     click_element,
     extract_visible_text,
+    fill_input,
+    press_key_browser,
+    take_browser_screenshot,
 )
 from workflow_learning import (
     list_workflows as wf_list_workflows,
@@ -125,7 +128,7 @@ def finalize_workflow_recording(session_id, successful=True, user_id=None, **kwa
 
 def run_workflow(workflow_id, user_id=None, execution_context=None, **kwargs):
     from .os_control import move_mouse, click, type_text, press_key, open_app, focus_window, close_window
-    from .browser_agent import open_url, find_element_by_text, click_element
+    from .browser_agent import open_url, find_element_by_text, click_element, fill_input, press_key_browser, take_browser_screenshot
     from .senses import visual_feedback_step
 
     executors = {
@@ -139,6 +142,9 @@ def run_workflow(workflow_id, user_id=None, execution_context=None, **kwargs):
         "open_url": lambda url, **p: open_url(url, user_id=user_id, **p),
         "find_element_by_text": lambda text, **p: find_element_by_text(text, user_id=user_id, **p),
         "click_element": lambda text, **p: click_element(text, user_id=user_id, **p),
+        "fill_input": lambda label, value, **p: fill_input(label, value, user_id=user_id, **p),
+        "press_key_browser": lambda key, **p: press_key_browser(key, user_id=user_id, **p),
+        "take_browser_screenshot": lambda **p: take_browser_screenshot(),
     }
 
     def _verifier():
@@ -763,6 +769,9 @@ def _build_tool_registry():
         "find_element_by_text": ToolDefinition("find_element_by_text", "Find browser element by text", {"text": "str"}, ["text"], [], False, find_element_by_text),
         "click_element": ToolDefinition("click_element", "Click browser element by text", {"text": "str"}, ["text"], [], False, click_element),
         "extract_visible_text": ToolDefinition("extract_visible_text", "Extract visible browser text", {"max_chars": "int"}, [], ["max_chars"], False, extract_visible_text),
+        "fill_input": ToolDefinition("fill_input", "Fill a form input in the browser", {"label": "str", "value": "str"}, ["label", "value"], [], False, fill_input),
+        "press_key_browser": ToolDefinition("press_key_browser", "Press a key in the browser", {"key": "str"}, ["key"], [], False, press_key_browser),
+        "take_browser_screenshot": ToolDefinition("take_browser_screenshot", "Take a screenshot of the browser", {}, [], [], False, take_browser_screenshot),
         "visual_feedback_step": ToolDefinition("visual_feedback_step", "Capture and verify visual result", {"expected_text": "str"}, [], ["expected_text"], False, visual_feedback_step),
         "list_workflows": ToolDefinition("list_workflows", "List learned workflows", {}, [], [], False, list_workflows),
         "start_workflow_recording": ToolDefinition("start_workflow_recording", "Start workflow recording session", {"name": "str", "description": "str"}, [], ["name", "description"], False, start_workflow_recording),
@@ -1176,6 +1185,9 @@ __all__ = [
     "find_element_by_text",
     "click_element",
     "extract_visible_text",
+    "fill_input",
+    "press_key_browser",
+    "take_browser_screenshot",
     "visual_feedback_step",
     "list_workflows",
     "start_workflow_recording",
