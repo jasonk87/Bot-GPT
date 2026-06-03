@@ -24,7 +24,7 @@ def google_search(api_key, cse_id, query):
         )
     try:
         service = build("customsearch", "v1", developerKey=api_key)
-        res = service.cse().list(q=query, cx=cse_id, num=3).execute()
+        res = service.cse().list(q=query, cx=cse_id, num=3).execute()  # pylint: disable=no-member
         return res.get("items", [])
     except HttpError as e:
         raise ConnectionError(

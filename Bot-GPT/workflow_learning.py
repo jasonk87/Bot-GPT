@@ -178,10 +178,10 @@ def select_best_workflow(instance_path: str, user_id: int, query: str) -> Option
         desc_tokens = set((workflow.get("description") or "").lower().split())
         overlap = len(query_tokens & (name_tokens | desc_tokens))
         score = overlap + float(workflow.get("success_rate") or 0.0) + min(1.0, float(workflow.get("run_count") or 0) / 10)
-        if best is None or score > best[0]:
+        if best is None or score > best[0]:  # pylint: disable=unsubscriptable-object
             best = (score, workflow)
 
-    if not best or best[0] <= 0:
+    if not best or best[0] <= 0:  # pylint: disable=unsubscriptable-object
         return None
     return best[1]
 

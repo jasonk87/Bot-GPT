@@ -1,5 +1,5 @@
 import hashlib
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 try:
     from PIL import Image
@@ -129,7 +129,7 @@ def find_visual_target(
     anchor_type = str((anchor or {}).get("element_type") or "").strip()
     region = (anchor or {}).get("region") or {}
 
-    best = None
+    best: Optional[Tuple[float, Dict[str, Any]]] = None
     for element in ui_elements.get("elements", []):
         score = 0.0
         if anchor_text and anchor_text in str(element.get("text") or "").lower():
@@ -144,10 +144,10 @@ def find_visual_target(
                 score += 0.1
         score += float(element.get("confidence") or 0.0) * 0.2
 
-        if best is None or score > best[0]:
+        if best is None or score > best[0]:  # pylint: disable=unsubscriptable-object
             best = (score, element)
 
-    if best is None or best[0] < min_confidence:
+    if best is None or best[0] < min_confidence:  # pylint: disable=unsubscriptable-object
         return {
             "status": "low_confidence",
             "confidence": 0.0 if best is None else best[0],
