@@ -19,12 +19,10 @@ let chatContainer, chatInput, sendButton, modelSelect, fileExplorer,
     shareModal, cancelShareBtn, shareUserList,
     copyFileBtn, saveFileBtn, canvasToggleBtn,
     participantList,
-    summarizeBtn, summaryModal, summaryContent, closeSummaryBtn,
     agentModeToggle, toolsDropdownBtn, toolsDropdownMenu,
     attachImageBtn, imageInput, imagePreviewContainer,
     planToggleBtn, planPanel, planContent, planActions, approvePlanBtn, rejectPlanBtn,
     responseModeSelect, thoughtPanelDefaultToggle,
-    newChatSuggestionButtons,
     liveActivityBar, liveActivityText, liveActivityPanel, activityPanelToggle, activityStageText, activityFocusText, activityActionText,
     toolTimelineToggle, toolTimelineList,
     proactiveRefreshBtn, heartbeatLabel, taskDashboardSummary, taskDashboardList, notificationInboxSummary,
@@ -70,6 +68,7 @@ let activeTabIndex = -1;
 let conversationRunStates = {};
 let pendingNewConversationRun = null;
 let dependencyBannerDismissedForSession = false;
+let agentRunWatchdog = null;
 
 // Watch mode state
 let canvasWatchModeByPath = {};
@@ -140,6 +139,45 @@ function refreshWelcomeEmptyState() {
     if (!welcomeMessage) return;
     const hasMessages = Array.isArray(conversationHistory) && conversationHistory.length > 0;
     welcomeMessage.style.display = hasMessages ? 'none' : 'flex';
+}
+
+function renderWelcomeMessage() {
+    if (!chatContainer) return;
+    let existing = document.getElementById('welcome-message');
+    if (existing) {
+        welcomeMessage = existing;
+        attachWelcomeSuggestionHandlers(welcomeMessage);
+        return;
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.id = 'welcome-message';
+    wrapper.className = 'min-h-full flex flex-col justify-center items-center text-center px-4 py-10';
+    wrapper.innerHTML = `
+        <h1 class="text-3xl sm:text-4xl font-bold text-white">New Chat</h1>
+        <p class="mt-3 max-w-xl text-sm sm:text-base text-gray-400">Ask, debug, build, or just say hi.</p>
+        <div class="mt-4 w-full max-w-xl grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <button type="button" class="new-chat-suggestion-btn text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-800/70 transition" data-suggestion="Help me debug this code issue step by step.">Debug</button>
+            <button type="button" class="new-chat-suggestion-btn text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-800/70 transition" data-suggestion="Analyze this repository and summarize architecture, risks, and quick wins.">Analyze repo</button>
+            <button type="button" class="new-chat-suggestion-btn text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-800/70 transition" data-suggestion="Run an agent task to implement and verify a focused change.">Build</button>
+            <button type="button" class="new-chat-suggestion-btn text-sm px-4 py-2 rounded-lg border border-gray-700 text-gray-200 hover:border-gray-500 hover:bg-gray-800/70 transition" data-suggestion="Hey, let's talk through something.">Say hi</button>
+        </div>
+    `;
+    chatContainer.appendChild(wrapper);
+    welcomeMessage = wrapper;
+    attachWelcomeSuggestionHandlers(wrapper);
+}
+
+function attachWelcomeSuggestionHandlers(root = document) {
+    root.querySelectorAll('.new-chat-suggestion-btn').forEach((button) => {
+        if (button.dataset.bound === '1') return;
+        button.dataset.bound = '1';
+        button.addEventListener('click', () => {
+            chatInput.value = button.dataset.suggestion || button.textContent || '';
+            chatInput.dispatchEvent(new Event('input'));
+            chatInput.focus();
+        });
+    });
 }
 
 function attachmentViewUrl(path, download = false) {
@@ -456,10 +494,6 @@ async function initializeApp(username) {
     saveFileBtn = document.getElementById('save-file-btn');
     canvasToggleBtn = document.getElementById('canvas-toggle-btn');
     participantList = document.getElementById('participant-list');
-    summarizeBtn = document.getElementById('summarize-btn');
-    summaryModal = document.getElementById('summary-modal');
-    summaryContent = document.getElementById('summary-content');
-    closeSummaryBtn = document.getElementById('close-summary-btn');
     agentModeToggle = document.getElementById('agent-mode-toggle');
     planToggleBtn = document.getElementById('plan-toggle-btn');
     planPanel = document.getElementById('plan-panel');
@@ -511,7 +545,7 @@ async function initializeApp(username) {
     safetyApproveCaution = document.getElementById('safety-approve-caution');
     safetyApproveDangerous = document.getElementById('safety-approve-dangerous');
     safetyPendingList = document.getElementById('safety-pending-list');
-    newChatSuggestionButtons = document.querySelectorAll('.new-chat-suggestion-btn');
+    renderWelcomeMessage();
     githubUsernameInput = document.getElementById('github-username-input');
     adminUpdatesTabBtn = document.getElementById('admin-updates-tab-btn');
     adminUpdatesPane = document.getElementById('admin-updates-pane');
@@ -609,15 +643,6 @@ async function initializeApp(username) {
             attachmentModalTitle.textContent = `Error: ${error.message}`;
         }
     });
-    newChatSuggestionButtons?.forEach((btn) => {
-        btn.addEventListener('click', () => {
-            const suggestion = btn.dataset.suggestion || '';
-            chatInput.value = suggestion;
-            chatInput.dispatchEvent(new Event('input'));
-            chatInput.focus();
-        });
-    });
-
     // --- Image Upload Logic ---
     attachImageBtn.addEventListener('click', () => imageInput.click());
     imageInput.addEventListener('change', handleImageSelection);
@@ -760,6 +785,11 @@ async function initializeApp(username) {
     });
     socket.on('disconnect', () => {
         console.log('Socket.IO disconnected');
+        releaseStuckRun('Socket disconnected before the run completed.');
+    });
+    socket.on('connect_error', (error) => {
+        console.error('Socket.IO connection error', error);
+        releaseStuckRun('Socket connection failed before the run completed.');
     });
     socket.on('proactive_notification', (notification) => {
         const title = notification?.title || 'Background task update';
@@ -836,13 +866,8 @@ async function initializeApp(username) {
                     break;
                 case 'assistant_end':
                     // This signals the end of a single thought-act-observe loop from the AI
-                    // We add the full response to history here to ensure it's available for the next loop
-                    if (currentResponseContent) {
-                        const lastMessage = conversationHistory[conversationHistory.length - 1];
-                        if (!(lastMessage && lastMessage.role === 'assistant' && lastMessage.content === currentResponseContent)) {
-                            conversationHistory.push({ role: 'assistant', content: currentResponseContent });
-                        }
-                    }
+                    // Do not persist intermediate tool-call/thought loops as chat history.
+                    // The server sends the definitive user-visible message as final_answer.
                     markConversationRunState(currentConversationId, { isRunning: true, partialResponse: currentResponseContent, stage: 'thinking' });
                     // Final render of this loop's output, with code highlighting
                     updateBotBubble(currentAgentBubble, currentResponseContent, true);
@@ -926,9 +951,12 @@ async function initializeApp(username) {
                     // This is now the definitive final answer from the agent.
                     // The content here is the complete, final conversational response.
                     currentResponseContent = data.content;
-                    if (currentResponseContent) {
+                    if (hasVisibleAssistantAnswer(currentResponseContent)) {
                         const lastMessage = conversationHistory[conversationHistory.length - 1];
                         if (!(lastMessage && lastMessage.role === 'assistant' && lastMessage.content === currentResponseContent)) {
+                            if (lastMessage && lastMessage.role === 'assistant') {
+                                conversationHistory.pop();
+                            }
                             conversationHistory.push({ role: 'assistant', content: currentResponseContent });
                         }
                     }
@@ -1115,48 +1143,6 @@ async function initializeApp(username) {
     overlay.addEventListener('click', () => {
          sidePanel.classList.add('-translate-x-full');
          overlay.classList.add('hidden');
-    });
-
-    // --- Summary Modal Logic ---
-    summarizeBtn.addEventListener('click', async () => {
-        if (!currentConversationId) {
-            alert("Please start or select a conversation first.");
-            return;
-        }
-
-        summaryModal.classList.remove('hidden');
-        summaryContent.innerHTML = '<p>Generating summary...</p>';
-
-        try {
-            const response = await fetch(`${window.location.origin}${API_BASE}/conversation/${currentConversationId}/summarize`);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let fullSummary = '';
-
-            reader.read().then(function processText({ done, value }) {
-                if (done) {
-                    summaryContent.innerHTML = marked.parse(fullSummary);
-                    return;
-                }
-
-                fullSummary += decoder.decode(value, { stream: true });
-                summaryContent.innerHTML = marked.parse(fullSummary);
-
-                // Keep reading
-                reader.read().then(processText);
-            });
-
-        } catch (error) {
-            summaryContent.innerHTML = `<p class="text-red-400">Error generating summary: ${error.message}</p>`;
-        }
-    });
-
-    closeSummaryBtn.addEventListener('click', () => {
-        summaryModal.classList.add('hidden');
     });
 
     // --- Upload Modal Logic ---
@@ -2764,12 +2750,20 @@ function setAgentRunning(isRunning, agentMode = false) {
     isAgentRunning = isRunning;
     chatInput.disabled = isRunning;
 
+    if (agentRunWatchdog) {
+        clearTimeout(agentRunWatchdog);
+        agentRunWatchdog = null;
+    }
+
     if (activityTicker) {
         clearInterval(activityTicker);
         activityTicker = null;
     }
 
     if (isRunning) {
+        agentRunWatchdog = setTimeout(() => {
+            releaseStuckRun('Run timed out without a completion event. You can try again.');
+        }, 180000);
         activityTicker = setInterval(() => {
             renderLiveActivityState();
             refreshAgentStatusMessage();
@@ -2796,6 +2790,22 @@ function setAgentRunning(isRunning, agentMode = false) {
         sendButton.classList.remove('bg-gray-500', 'cursor-not-allowed', 'bg-red-600', 'hover:bg-red-700');
         sendButton.classList.add('bg-blue-600', 'hover:bg-blue-700');
         sendButton.innerHTML = `<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"></path></svg>`;
+    }
+}
+
+function releaseStuckRun(message) {
+    if (!isAgentRunning) return;
+    clearConversationRunState(currentConversationId);
+    pendingNewConversationRun = null;
+    currentResponseContent = '';
+    setAgentRunning(false);
+    updateLiveActivity({ stage: 'idle', action: 'Ready for your next request.', activeTool: null, resetTimer: true });
+    if (currentAgentBubble) {
+        const answerContent = currentAgentBubble.querySelector('.answer-content');
+        const hasAnswer = answerContent && answerContent.style.display !== 'none' && answerContent.textContent.trim();
+        if (!hasAnswer) {
+            updateAgentStatus(currentAgentBubble, message, true);
+        }
     }
 }
 
@@ -3731,6 +3741,19 @@ async function openShareModal(conversationId) {
     }
 }
 
+function getVisibleAssistantAnswer(responseContent) {
+    return String(responseContent || '')
+        .replace(/<think>[\s\S]*?<\/think>/g, '')
+        .replace(/<think>[\s\S]*$/g, '')
+        .replace(/```json\s*([\s\S]*?)\s*```/g, '')
+        .trim();
+}
+
+function hasVisibleAssistantAnswer(responseContent) {
+    const visible = getVisibleAssistantAnswer(responseContent);
+    return Boolean(visible) && !/^[\W_]+$/.test(visible);
+}
+
 function loadConversation(data) {
     if (currentConversationId && currentConversationId !== data.id) {
         socket.emit('leave', { room: currentConversationId });
@@ -3759,10 +3782,13 @@ function loadConversation(data) {
 
     currentConversationRole = data.role;
     chatContainer.innerHTML = '';
+    welcomeMessage = null;
     currentAgentBubble = null;
     currentResponseContent = '';
 
-    conversationHistory = data.messages || [];
+    conversationHistory = (data.messages || []).filter((msg) => (
+        msg.role !== 'assistant' || hasVisibleAssistantAnswer(msg.content)
+    ));
     artifactList = sortArtifacts(data.artifacts || []);
     artifactById = new Map(artifactList.map((artifact) => [artifact.artifact_id, artifact]));
     if (data.last_active_artifact_id) {
@@ -3781,10 +3807,14 @@ function loadConversation(data) {
         if (msg.role === 'user') {
             appendMessage(msg.content, 'user', false, msg.images || []);
         } else if (msg.role === 'assistant') {
+            if (!hasVisibleAssistantAnswer(msg.content)) return;
             const botBubble = createBotMessageContainer(false);
             updateBotBubble(botBubble, msg.content, true);
         }
     });
+    if (conversationHistory.length === 0) {
+        renderWelcomeMessage();
+    }
     refreshWelcomeEmptyState();
 
     if (data.active_run && data.active_run.is_running) {
@@ -3846,8 +3876,12 @@ function startNewChat() {
     pendingImages = [];
     imagePreviewContainer.innerHTML = '';
     imagePreviewContainer.classList.add('hidden');
+    chatInput.value = '';
+    chatInput.style.height = 'auto';
     clearCurrentConversationId();
     chatContainer.innerHTML = '';
+    welcomeMessage = null;
+    renderWelcomeMessage();
     refreshWelcomeEmptyState();
     planContent.innerHTML = '';
     planPanel.classList.add('hidden');

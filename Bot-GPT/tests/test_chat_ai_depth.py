@@ -211,6 +211,44 @@ def test_ensure_next_step_line_removes_empty_next_step():
     assert chat_ai.ensure_next_step_line(content) == "Summary complete."
 
 
+def test_messages_for_persistence_keeps_only_final_visible_assistant_answer():
+    messages = [
+        {"role": "user", "content": "What's on the news today?"},
+        {"role": "assistant", "content": "```json\n{\"tool\":\"web_search\",\"parameters\":{\"query\":\"news\"}}\n```"},
+        {"role": "tool", "content": "TOOL BATCH RESULT"},
+        {"role": "assistant", "content": "Here's a complete news summary."},
+    ]
+
+    persisted = chat_ai._messages_for_persistence(messages)
+
+    assert persisted == [
+        {"role": "user", "content": "What's on the news today?"},
+        {"role": "assistant", "content": "Here's a complete news summary."},
+    ]
+
+
+def test_messages_for_persistence_drops_thinking_only_assistant_message():
+    messages = [
+        {"role": "user", "content": "Think about this."},
+        {"role": "assistant", "content": "<think>internal reasoning only</think>"},
+    ]
+
+    assert chat_ai._messages_for_persistence(messages) == [
+        {"role": "user", "content": "Think about this."},
+    ]
+
+
+def test_messages_for_persistence_drops_punctuation_only_assistant_message():
+    messages = [
+        {"role": "user", "content": "Try again"},
+        {"role": "assistant", "content": "."},
+    ]
+
+    assert chat_ai._messages_for_persistence(messages) == [
+        {"role": "user", "content": "Try again"},
+    ]
+
+
 def test_handle_ai_response_emits_structured_batch_tool_feedback(mocker):
     class DummyCall:
         def __init__(self, name, params):

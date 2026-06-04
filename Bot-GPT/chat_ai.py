@@ -326,6 +326,38 @@ def ensure_next_step_line(response_content):
     return content
 
 
+def _assistant_has_visible_answer(content):
+    visible = re.sub(r"<think>[\s\S]*?</think>", "", str(content or ""))
+    visible = re.sub(r"<think>[\s\S]*$", "", visible)
+    visible = re.sub(r"```json\s*[\s\S]*?```", "", visible)
+    visible = visible.strip()
+    return bool(visible) and not re.fullmatch(r"[\W_]+", visible)
+
+
+def _messages_for_persistence(messages):
+    persisted = []
+    pending_user = None
+    pending_assistant = None
+    for message in messages or []:
+        role = message.get("role")
+        if role == "user":
+            if pending_user is not None:
+                persisted.append(pending_user)
+                if pending_assistant is not None:
+                    persisted.append(pending_assistant)
+            pending_user = message
+            pending_assistant = None
+        elif role == "assistant" and _assistant_has_visible_answer(message.get("content")):
+            pending_assistant = message
+
+    if pending_user is not None:
+        persisted.append(pending_user)
+        if pending_assistant is not None:
+            persisted.append(pending_assistant)
+
+    return persisted
+
+
 def process_final_answer(conversation, canvas_mode, write_file):
     if not conversation.get("messages"):
         return
@@ -333,6 +365,8 @@ def process_final_answer(conversation, canvas_mode, write_file):
     if not final_assistant_message:
         return
     final_answer_content = final_assistant_message["content"]
+    if not _assistant_has_visible_answer(final_answer_content):
+        return
     if not canvas_mode:
         yield {"type": "final_answer", "content": final_answer_content}
         return
@@ -1059,7 +1093,7 @@ def handle_ai_response(
         yield {"type": "progress_update", "stage": "finalizing", "label": "Finalizing answer", "ts": time.time()}
         yield from process_final_answer(conversation, data.get("canvas_mode", False), write_file)
         update_conversation_title(conversation, conversation_path, utility_model or model)
-        conversation["messages"] = [m for m in conversation["messages"] if m.get("role") in ["user", "assistant"]]
+        conversation["messages"] = _messages_for_persistence(conversation["messages"])
         save_conversation(conversation_path, conversation)
         yield {"type": "done", "title": conversation.get("title", "New Chat")}
         return
@@ -1130,7 +1164,7 @@ def handle_ai_response(
             yield {"type": "progress_update", "stage": "finalizing", "label": "Finalizing answer", "ts": time.time()}
             yield from process_final_answer(conversation, data.get("canvas_mode", False), write_file)
             update_conversation_title(conversation, conversation_path, utility_model or model)
-            conversation["messages"] = [m for m in conversation["messages"] if m.get("role") in ["user", "assistant"]]
+            conversation["messages"] = _messages_for_persistence(conversation["messages"])
             save_conversation(conversation_path, conversation)
             yield {"type": "done", "title": conversation.get("title", "New Chat")}
             return
@@ -1438,7 +1472,7 @@ def handle_ai_response(
         yield from process_final_answer(conversation, data.get("canvas_mode", False), write_file)
 
     update_conversation_title(conversation, conversation_path, utility_model or model)
-    conversation["messages"] = [m for m in conversation["messages"] if m.get("role") in ["user", "assistant"]]
+    conversation["messages"] = _messages_for_persistence(conversation["messages"])
     save_conversation(conversation_path, conversation)
     try:
         from memory import MemoryManager
