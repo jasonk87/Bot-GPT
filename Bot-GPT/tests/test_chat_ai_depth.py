@@ -211,6 +211,44 @@ def test_ensure_next_step_line_removes_empty_next_step():
     assert chat_ai.ensure_next_step_line(content) == "Summary complete."
 
 
+def test_messages_for_persistence_keeps_only_final_visible_assistant_answer():
+    messages = [
+        {"role": "user", "content": "What's on the news today?"},
+        {"role": "assistant", "content": "```json\n{\"tool\":\"web_search\",\"parameters\":{\"query\":\"news\"}}\n```"},
+        {"role": "tool", "content": "TOOL BATCH RESULT"},
+        {"role": "assistant", "content": "Here's a complete news summary."},
+    ]
+
+    persisted = chat_ai._messages_for_persistence(messages)
+
+    assert persisted == [
+        {"role": "user", "content": "What's on the news today?"},
+        {"role": "assistant", "content": "Here's a complete news summary."},
+    ]
+
+
+def test_messages_for_persistence_drops_thinking_only_assistant_message():
+    messages = [
+        {"role": "user", "content": "Think about this."},
+        {"role": "assistant", "content": "<think>internal reasoning only</think>"},
+    ]
+
+    assert chat_ai._messages_for_persistence(messages) == [
+        {"role": "user", "content": "Think about this."},
+    ]
+
+
+def test_messages_for_persistence_drops_punctuation_only_assistant_message():
+    messages = [
+        {"role": "user", "content": "Try again"},
+        {"role": "assistant", "content": "."},
+    ]
+
+    assert chat_ai._messages_for_persistence(messages) == [
+        {"role": "user", "content": "Try again"},
+    ]
+
+
 def test_handle_ai_response_emits_structured_batch_tool_feedback(mocker):
     class DummyCall:
         def __init__(self, name, params):
@@ -468,7 +506,7 @@ def test_mode_profile_sets_budget_and_branch_limits():
     deep = chat_ai._mode_profile("deep", False)
     agent = chat_ai._mode_profile("standard", True)
     assert standard["tool_batch_budget"] == 2
-    assert standard["branch_limit"] == 1
+    assert standard["branch_limit"] == 2
     assert deep["branch_limit"] == 3
     assert agent["tool_batch_budget"] is None
 
@@ -538,7 +576,7 @@ def test_agent_decide_phase_breaks_when_validation_allows():
     assert decision["action"] == "break"
 
 
-def test_standard_mode_limits_branches_per_batch(mocker):
+def test_standard_mode_allows_two_branches_per_batch(mocker):
     class DummyCall:
         def __init__(self, name, params):
             self.tool_name = name
@@ -550,7 +588,10 @@ def test_standard_mode_limits_branches_per_batch(mocker):
         return iter(['```json\n{"tool":"list_files","parameters":{"path":"."}}\n```'])
 
     calls = [DummyCall("list_files", {"path": "."}), DummyCall("read_file", {"path": "a.py"})]
-    execute_batch = MagicMock(return_value={"status": "success", "policy": "continue_on_error_in_order", "success_count": 1, "error_count": 0, "results": [{"tool_name": "list_files", "status": "success", "result": [], "retryable": False, "validation_status": "valid", "error_type": None, "error_message": None}]})
+    execute_batch = MagicMock(return_value={"status": "success", "policy": "continue_on_error_in_order", "success_count": 2, "error_count": 0, "results": [
+        {"tool_name": "list_files", "status": "success", "result": [], "retryable": False, "validation_status": "valid", "error_type": None, "error_message": None},
+        {"tool_name": "read_file", "status": "success", "result": "content", "retryable": False, "validation_status": "valid", "error_type": None, "error_message": None},
+    ]})
     conversation = {"id": "c-branch", "owner_id": 1, "messages": []}
     mock_init = MagicMock(return_value=("test-model", "BASE", conversation, "/tmp/convo.json"))
     mocker.patch("chat_ai.save_conversation")
@@ -574,7 +615,7 @@ def test_standard_mode_limits_branches_per_batch(mocker):
             write_file=MagicMock(),
         )
     )
-    assert len(execute_batch.call_args[0][0]) == 1
+    assert len(execute_batch.call_args[0][0]) == 2
 
 
 def test_standard_mode_tool_batch_budget_fast_exit(mocker):
@@ -726,3 +767,103 @@ def test_tool_batch_feedback_preserves_web_search_content():
     assert "result_content" in feedback
     assert "Headline 79: detail" in feedback
     assert "Tool output truncated" not in feedback
+
+
+def test_search_needed_text_forces_web_search_tool(mocker):
+    class DummyCall:
+        def __init__(self, name, params):
+            self.tool_name = name
+            self.normalized_params = params
+            self.validation_status = "valid"
+            self.source_metadata = {"index": 0}
+
+    stream_responses = [
+        "To find the answer, I need to search for information specifically about Ark Survival Ascended.",
+        "The update is for Ark: Survival Ascended and is expected on a specific announced date.",
+    ]
+
+    def fake_call_stream(_model, _messages, _system_prompt):
+        return iter([stream_responses.pop(0)])
+
+    normalized_seen = []
+
+    def normalize(calls):
+        normalized_seen.append(calls)
+        return [DummyCall(call["tool"], call.get("parameters", {})) for call in calls]
+
+    execute_batch = MagicMock(return_value={
+        "status": "success",
+        "policy": "continue_on_error_in_order",
+        "success_count": 1,
+        "error_count": 0,
+        "results": [{
+            "tool_name": "web_search",
+            "status": "success",
+            "result": "Search result: Ark Survival Ascended update release date details.",
+            "retryable": False,
+            "validation_status": "valid",
+            "error_type": None,
+            "error_message": None,
+        }],
+    })
+    conversation = {"id": "c-search-needed", "owner_id": 1, "messages": []}
+    mock_init = MagicMock(return_value=("test-model", "BASE", conversation, "/tmp/convo.json"))
+    mocker.patch("chat_ai.save_conversation")
+    mocker.patch("chat_ai.estimate_context_usage", return_value=0)
+    mock_current_user = mocker.patch("chat_ai.current_user")
+    mock_current_user.id = 1
+    mocker.patch("chat_ai.current_app", MagicMock())
+
+    events = list(
+        chat_ai.handle_ai_response(
+            {"messages": json.dumps([{"role": "user", "content": "Actually it'll be for ark survival ascended"}]), "model": "test-model", "conversation_id": "", "response_mode_preference": "standard"},
+            initialize_chat=mock_init,
+            call_stream=fake_call_stream,
+            handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=normalize,
+            execute_normalized_tool_call=MagicMock(),
+            execute_tool_call_batch=execute_batch,
+            sanitize_json=lambda s: s,
+            agent_sessions={},
+            update_conversation_title=MagicMock(),
+            write_file=MagicMock(),
+        )
+    )
+
+    assert normalized_seen[0][0]["tool"] == "web_search"
+    assert "ark survival ascended" in normalized_seen[0][0]["parameters"]["query"].lower()
+    assert any(event.get("type") == "tool_call" and event.get("name") == "web_search" for event in events)
+    assert any(event.get("type") == "final_answer" and "Ark: Survival Ascended" in event.get("content", "") for event in events)
+
+
+def test_hidden_only_response_gets_visible_fallback(mocker):
+    def fake_call_stream(_model, _messages, _system_prompt):
+        return iter(["<think>still thinking</think>"])
+
+    conversation = {"id": "c-hidden-only", "owner_id": 1, "messages": []}
+    mock_init = MagicMock(return_value=("test-model", "BASE", conversation, "/tmp/convo.json"))
+    mocker.patch("chat_ai.save_conversation")
+    mocker.patch("chat_ai.estimate_context_usage", return_value=0)
+    mock_current_user = mocker.patch("chat_ai.current_user")
+    mock_current_user.id = 1
+    mocker.patch("chat_ai.current_app", MagicMock())
+
+    events = list(
+        chat_ai.handle_ai_response(
+            {"messages": json.dumps([{"role": "user", "content": "When is it coming out?"}]), "model": "test-model", "conversation_id": "", "response_mode_preference": "standard"},
+            initialize_chat=mock_init,
+            call_stream=fake_call_stream,
+            handle_tool_call=MagicMock(),
+            normalize_and_prepare_tool_calls=lambda calls: [],
+            execute_normalized_tool_call=MagicMock(),
+            execute_tool_call_batch=MagicMock(),
+            sanitize_json=lambda s: s,
+            agent_sessions={},
+            update_conversation_title=MagicMock(),
+            write_file=MagicMock(),
+        )
+    )
+
+    final_answers = [event.get("content", "") for event in events if event.get("type") == "final_answer"]
+    assert final_answers
+    assert "couldn't produce a usable final answer" in final_answers[-1]

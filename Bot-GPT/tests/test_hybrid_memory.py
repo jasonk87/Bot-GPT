@@ -26,6 +26,66 @@ def test_memory_ingestion_stores_relevant_facts(app, test_user):
         assert len(stored) >= 1
 
 
+def test_profile_memory_ingestion_extracts_structured_profile_facts():
+    facts = extract_facts_from_message(
+        """You're Jason Kinslow, a husband and father of two sons.
+
+Your Job
+
+You work in utility line-clearance tree trimming and are a General Foreman for Townsend Tree Service.
+
+Your Family
+
+Your wife is Monica.
+Your sons are:
+Gabriel
+Thomas
+
+Programming Interests
+
+Your favorite area is AI development.
+
+Gaming Preferences
+
+You strongly prefer sandbox games, emergent gameplay, simulations, persistent worlds, and systems-driven experiences.
+"""
+    )
+    keys = {fact["key"] for fact in facts}
+
+    assert "identity:name" in keys
+    assert "family:wife" in keys
+    assert "work:role" in keys
+    assert "profile:programming_interests" in keys
+    assert "profile:gaming_preferences" in keys
+
+
+def test_broad_user_memory_query_injects_profile_facts(app, test_user):
+    with app.app_context():
+        upsert_fact(
+            test_user.id,
+            scope="user",
+            key="profile:gaming_preferences",
+            value="User strongly prefers sandbox games and emergent systems.",
+            source_conversation_id="c-profile",
+            source_message_index=0,
+            confidence=0.9,
+        )
+        upsert_fact(
+            test_user.id,
+            scope="user",
+            key="work:role",
+            value="General Foreman for Townsend Tree Service.",
+            source_conversation_id="c-profile",
+            source_message_index=0,
+            confidence=0.9,
+        )
+
+        block = build_memory_injection_block(test_user.id, "c-profile", "What all do you know about me?")
+
+    assert "profile:gaming_preferences" in block
+    assert "work:role" in block
+
+
 def test_irrelevant_data_is_not_memory_worthy():
     assert is_memory_worthy("hi") is False
     assert extract_facts_from_message("ok") == []

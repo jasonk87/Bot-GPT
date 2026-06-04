@@ -126,6 +126,6 @@ if __name__ == "__main__":
         port=5000,
         debug=True,
         allow_unsafe_werkzeug=True,
-        use_reloader=True,
+        use_reloader=os.getenv("FLASK_USE_RELOADER", "True").lower() == "true",
         reloader_type='stat', # More stable than watchdog in this environment
     )

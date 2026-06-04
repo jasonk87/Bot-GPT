@@ -89,6 +89,19 @@ def _is_identity_query(query: str) -> bool:
     return any(prompt in lowered for prompt in prompts)
 
 
+def _is_broad_user_memory_query(query: str) -> bool:
+    lowered = (query or "").strip().lower()
+    prompts = (
+        "what all do you know about me",
+        "what do you know about me",
+        "tell me what you remember about me",
+        "what do you remember about me",
+        "what have you remembered about me",
+        "summarize what you know about me",
+    )
+    return any(prompt in lowered for prompt in prompts)
+
+
 def retrieve_relevant_memory(
     user_id: int,
     query: str,
@@ -101,8 +114,24 @@ def retrieve_relevant_memory(
     project_facts = [fact for fact in project_facts if _is_relevant_fact(fact)]
     user_facts = [fact for fact in user_facts if _is_relevant_fact(fact)]
 
-    ranked_project = sorted(project_facts, key=lambda f: _score_fact(query, f), reverse=True)[: max(0, top_k // 2)]
-    ranked_user = sorted(user_facts, key=lambda f: _score_fact(query, f), reverse=True)[: top_k - len(ranked_project)]
+    if _is_broad_user_memory_query(query):
+        broad_prefixes = ("identity:", "profile:", "family:", "work:", "background:", "preference:")
+        broad_user_facts = [
+            fact for fact in user_facts
+            if str(fact.get("key") or "").startswith(broad_prefixes)
+        ]
+        ranked_project = []
+        ranked_user = sorted(
+            broad_user_facts,
+            key=lambda fact: (
+                float(fact.get("confidence") or 0),
+                float(fact.get("timestamp") or 0),
+            ),
+            reverse=True,
+        )[: max(top_k, 30)]
+    else:
+        ranked_project = sorted(project_facts, key=lambda f: _score_fact(query, f), reverse=True)[: max(0, top_k // 2)]
+        ranked_user = sorted(user_facts, key=lambda f: _score_fact(query, f), reverse=True)[: top_k - len(ranked_project)]
     if _is_identity_query(query):
         ranked_user = sorted(
             ranked_user,
@@ -129,7 +158,13 @@ def build_memory_injection_block(
     project_key: Optional[str] = None,
     max_chars: int = 1800,
 ) -> str:
-    retrieved = retrieve_relevant_memory(user_id, query, project_key=project_key, top_k=7)
+    broad_memory_query = _is_broad_user_memory_query(query)
+    retrieved = retrieve_relevant_memory(
+        user_id,
+        query,
+        project_key=project_key,
+        top_k=30 if broad_memory_query else 7,
+    )
     session = get_session_memory(user_id, conversation_id)
 
     lines = ["=== RELEVANT CONTEXT ONLY ==="]
@@ -162,4 +197,6 @@ def build_memory_injection_block(
 
     lines.append("=== END RELEVANT CONTEXT ONLY ===")
     block = "\n".join(lines)
+    if broad_memory_query:
+        max_chars = max(max_chars, 9000)
     return block[:max_chars]
