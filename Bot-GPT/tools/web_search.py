@@ -55,6 +55,15 @@ def scrape_text_from_url(url):
         return f"--- Could not get {url}: {e} ---\n\n"
 
 
+def _web_context_limit_for_model(model):
+    normalized = (model or "").lower()
+    if "gemini-2.5" in normalized:
+        return 700_000
+    if "gemini" in normalized:
+        return 300_000
+    return 80_000
+
+
 def summarize_text(text, query, model):
     """Summarizes text using an AI model."""
     summarization_prompt = f"Based on the following web content, please provide a comprehensive answer to the user's query: '{query}'. Synthesize the information from the sources into a single, coherent response. Do not just list the content from each source. Your answer should be well-structured, easy to understand, and directly address the user's question. Format the response using Markdown for readability.\n\n--- WEB CONTENT ---\n{text}"
@@ -108,11 +117,13 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
         if not consolidated_content.strip():
             return "Could not retrieve any content from the search results."
 
-        max_length = 8000
-        if len(consolidated_content) > max_length:
-            consolidated_content = consolidated_content[:max_length] + "..."
-
         current_model = user.selected_model if user else "default_model_name"
+        max_length = _web_context_limit_for_model(current_model)
+        if len(consolidated_content) > max_length:
+            consolidated_content = (
+                consolidated_content[:max_length].rstrip()
+                + f"\n\n[Web content truncated after {max_length} characters to fit the selected model context.]"
+            )
 
         summary = summarize_text(
             consolidated_content, query, current_model

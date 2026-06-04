@@ -429,20 +429,34 @@ def _tool_call_fingerprint(tool_call):
 
 
 def _format_tool_batch_feedback(batch_outcome, results):
+    def _bounded_text(value, *, limit):
+        text = str(value)
+        if len(text) <= limit:
+            return text
+        return (
+            text[:limit].rstrip()
+            + f"\n\n[Tool output truncated after {limit} characters; use only the visible content.]"
+        )
+
     compact_results = []
     for outcome in results:
         result_payload = outcome.get("result")
+        tool_name = outcome.get("tool_name")
+        full_text_result = None
         if isinstance(result_payload, dict):
             result_preview = {k: result_payload.get(k) for k in ["status", "path", "filename", "message"] if k in result_payload}
         else:
             result_preview = str(result_payload)[:240] if result_payload is not None else None
+            if outcome.get("status") == "success" and result_payload not in (None, "", [], {}):
+                limit = 1_000_000 if tool_name == "web_search" else 3000
+                full_text_result = _bounded_text(result_payload, limit=limit)
         usefulness_hint = "useful"
         if result_payload in (None, "", [], {}):
             usefulness_hint = "low_signal_empty_result"
         if outcome.get("status") != "success":
             usefulness_hint = "failed_call"
-        compact_results.append({
-            "tool_name": outcome.get("tool_name"),
+        compact_result = {
+            "tool_name": tool_name,
             "status": outcome.get("status"),
             "retryable": outcome.get("retryable"),
             "validation_status": outcome.get("validation_status"),
@@ -451,7 +465,10 @@ def _format_tool_batch_feedback(batch_outcome, results):
             "result_preview": result_preview,
             "usefulness_hint": usefulness_hint,
             "source_metadata": outcome.get("source_metadata"),
-        })
+        }
+        if full_text_result is not None:
+            compact_result["result_content"] = full_text_result
+        compact_results.append(compact_result)
     return "TOOL BATCH RESULT:\n" + json.dumps({
         "batch_status": batch_outcome.get("status"),
         "policy": batch_outcome.get("policy"),
