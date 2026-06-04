@@ -224,7 +224,13 @@ def test_existing_non_id_1_admin_username_sees_admin_updates_flag(client, app):
 
 
 def test_admin_updates_frontend_wires_check_and_apply_apis():
-    with open('Bot-GPT/static/js/main.js', 'r', encoding='utf-8') as handle:
+    test_dir = os.path.dirname(os.path.abspath(__file__))
+    project_dir = os.path.dirname(test_dir)
+    js_path = os.path.join(project_dir, 'static', 'js', 'main.js')
+    if not os.path.exists(js_path):
+        js_path = os.path.join(os.path.dirname(project_dir), 'Bot-GPT', 'static', 'js', 'main.js')
+
+    with open(js_path, 'r', encoding='utf-8') as handle:
         script = handle.read()
     assert '/admin/updates/check' in script
     assert '/admin/updates/update' in script
@@ -235,9 +241,19 @@ def test_admin_updates_frontend_wires_check_and_apply_apis():
 
 
 def test_frontend_has_mobile_canvas_fullscreen_guards():
-    with open('Bot-GPT/static/js/main.js', 'r', encoding='utf-8') as handle:
+    test_dir = os.path.dirname(os.path.abspath(__file__))
+    project_dir = os.path.dirname(test_dir)
+    js_path = os.path.join(project_dir, 'static', 'js', 'main.js')
+    if not os.path.exists(js_path):
+        js_path = os.path.join(os.path.dirname(project_dir), 'Bot-GPT', 'static', 'js', 'main.js')
+
+    html_path = os.path.join(project_dir, 'templates', 'index.html')
+    if not os.path.exists(html_path):
+        html_path = os.path.join(os.path.dirname(project_dir), 'Bot-GPT', 'templates', 'index.html')
+
+    with open(js_path, 'r', encoding='utf-8') as handle:
         script = handle.read()
-    with open('Bot-GPT/templates/index.html', 'r', encoding='utf-8') as handle:
+    with open(html_path, 'r', encoding='utf-8') as handle:
         html = handle.read()
     assert "canvasPanel.classList.toggle" in script
     assert "document.body.classList.toggle" in script

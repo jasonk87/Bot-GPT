@@ -15,8 +15,10 @@ def get_db_schema(conversation_id=None, user_id=None):
         return f"Error: Database file not found at {db_path}"
 
     try:
-        # The URL needs to be properly escaped
-        db_uri = f"sqlite:///{quote_plus(db_path)}"
+        # Convert path to a clean SQLite URI
+        # Replacing backslashes with forward slashes is standard for file URIs in SQLAlchemy
+        clean_path = db_path.replace(os.sep, '/')
+        db_uri = f"sqlite:///{clean_path}"
         engine = create_engine(db_uri)
         inspector = inspect(engine)
 
