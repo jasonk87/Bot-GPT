@@ -389,6 +389,14 @@ def process_final_answer(conversation, canvas_mode, write_file):
     yield {"type": "final_answer", "content": final_answer_content}
 
 
+def _visible_assistant_message_count(messages):
+    return sum(
+        1
+        for message in messages or []
+        if message.get("role") == "assistant" and _assistant_has_visible_answer(message.get("content"))
+    )
+
+
 def _extract_code_fences(content):
     fences = []
     cursor = 0
@@ -631,8 +639,43 @@ def _mode_profile(depth_mode, agent_mode):
         "mode": "standard",
         "max_iterations": 12,
         "tool_batch_budget": 2,
-        "branch_limit": 1,
+        "branch_limit": 2,
     }
+
+
+_SEARCH_NEEDED_PATTERNS = (
+    re.compile(r"\b(?:i|we)\s+need\s+to\s+(?:search|look\s+up|find)\b", re.IGNORECASE),
+    re.compile(r"\bto\s+(?:answer|find)\s+(?:this|that|the answer)[^.\n]{0,120}\b(?:search|look\s+up)\b", re.IGNORECASE),
+    re.compile(r"\b(?:need|needs)\s+(?:a|another|one)?\s*(?:web\s+)?search\b", re.IGNORECASE),
+)
+
+
+def _looks_like_search_needed_without_answer(content):
+    text = re.sub(r"<think>[\s\S]*?</think>", "", str(content or "")).strip()
+    if not text:
+        return False
+    if not any(pattern.search(text) for pattern in _SEARCH_NEEDED_PATTERNS):
+        return False
+    answer_markers = (
+        "according to",
+        "the answer is",
+        "it is coming",
+        "release date",
+        "coming out",
+        "launches",
+        "launched",
+        "source:",
+        "sources:",
+    )
+    lowered = text.lower()
+    return not any(marker in lowered for marker in answer_markers)
+
+
+def _forced_search_call_from_latest_user(messages):
+    query = _latest_user_message(messages)
+    if not query:
+        return None
+    return {"tool": "web_search", "parameters": {"query": query}}
 
 
 def _collect_changed_artifacts(tool_results):
@@ -852,7 +895,7 @@ def agent_act_phase(
         for call, outcome in zip(executable_calls, batch_outcome.get("results", []))
     }
     aggregated_tool_results = []
-    for tool_call in tool_calls:
+    for tool_index, tool_call in enumerate(tool_calls):
         fingerprint = _tool_call_fingerprint(tool_call)
         execution_result = guard_outcomes_by_fp.get(fingerprint) or execution_results_by_fp.get(fingerprint)
         if not execution_result:
@@ -867,7 +910,7 @@ def agent_act_phase(
                 "source_metadata": tool_call.source_metadata,
                 "file_creation_tool_used": False,
             }
-        tool_call_id = f"tool_{int(time.time() * 1000)}"
+        tool_call_id = f"tool_{int(time.time() * 1000)}_{tool_index}"
         try:
             logger.info("chat_tool_call conversation_id=%s tool=%s", conversation["id"], tool_call.tool_name)
             yield {
@@ -1040,6 +1083,7 @@ def handle_ai_response(
             f"\n=== RESPONSE FORMAT REQUIREMENT ===\n{NEXT_STEP_PROMPT_RULE}\n===================================\n"
         )
         conversation["messages"] = _merge_persistent_messages(conversation.get("messages"), messages)
+        visible_assistant_count_at_start = _visible_assistant_message_count(conversation["messages"])
         save_conversation(conversation_path, conversation)
     except (ValueError, json.JSONDecodeError) as exc:
         yield {"type": "agent_error", "error": str(exc)}
@@ -1231,82 +1275,95 @@ def handle_ai_response(
                     scratchpad["notes"].append(f"Compacted context at {int(context_usage * 100)}% usage")
 
             if not tool_call_candidates:
-                if os_intent_gate.get("detected") and os_intent_gate.get("status") == "allowed":
-                    forced_tool = os_intent_gate.get("tool_name")
-                    forced_params = {}
-                    if forced_tool == "open_url":
-                        url_match = re.search(r"https?://\\S+", latest_user_query or "")
-                        if url_match:
-                            forced_params["url"] = url_match.group(0)
-                        else:
-                            conversation["messages"].append({"role": "assistant", "content": "I can do browser actions, but I need a URL to proceed."})
-                            break
-                    normalized_forced = normalize_and_prepare_tool_calls([{"tool": forced_tool, "parameters": forced_params}])
-                    forced_batch = execute_tool_call_batch(
-                        normalized_forced,
-                        conversation,
-                        current_user,
-                        execution_context={
-                            "mode": profile["mode"],
-                            "os_control_enabled": os_control_enabled,
-                            "explicit_user_intent": True,
-                            "source": "chat_os_intent_fallback",
-                        },
-                    )
-                    forced_result = forced_batch.get("results", [{}])[0]
-                    yield {
-                        "type": "activity_update",
-                        "stage": "completed" if forced_result.get("status") == "success" else "error",
-                        "focus": "os_capability_routing",
-                        "last_action": forced_result.get("error_message") or f"Executed {forced_tool}",
-                        "active_tool": forced_tool,
-                    }
-                    if forced_result.get("status") == "success":
-                        conversation["messages"].append({"role": "assistant", "content": f"Completed `{forced_tool}` successfully."})
-                    else:
-                        conversation["messages"].append({
-                            "role": "assistant",
-                            "content": (
-                                forced_result.get("error_message")
-                                or "I can do that, but the action is currently blocked by policy."
-                            ),
-                        })
-                    break
-                if _is_repo_intent(_latest_user_message(messages)):
-                    fallback = _repo_fallback_result(conversation["owner_id"])
-                    fallback_status = "completed" if fallback.get("status") == "success" else "error"
-                    yield {
-                        "type": "activity_update",
-                        "stage": fallback_status,
-                        "focus": "repo_intelligence",
-                        "last_action": fallback.get("message"),
-                        "active_tool": "github_skill",
-                    }
-                    conversation["messages"].append({"role": "assistant", "content": fallback.get("message")})
-                    break
-                if should_continue_repair(
-                    verification_state.get("pending_failure"),
-                    verification_state.get("attempts", 0),
-                    verification_state.get("max_attempts", 0),
-                ):
+                last_assistant_content = conversation["messages"][-1].get("content", "") if conversation.get("messages") else ""
+                forced_search_call = _forced_search_call_from_latest_user(messages) if _looks_like_search_needed_without_answer(last_assistant_content) else None
+                if forced_search_call:
                     conversation["messages"].append({
                         "role": "tool",
                         "content": (
-                            "VERIFICATION LOOP NOTICE:\n"
-                            "A verification failure is still unresolved. Apply the smallest patch and rerun verification."
+                            "TOOL ROUTING NOTICE:\n"
+                            "The assistant said more current information was needed but did not emit a tool_call. "
+                            "Run a targeted web_search for the latest user request, then answer from the result."
                         ),
                     })
-                    continue
-                if verification_state.get("pending_failure"):
-                    pending = verification_state["pending_failure"]
-                    yield {
-                        "type": "agent_error",
-                        "error": (
-                            "Verification blocked completion after maximum safe repair attempts. "
-                            f"Last failure classification: {pending.get('classification')}."
-                        ),
-                    }
-                break
+                    tool_call_candidates = [forced_search_call]
+                else:
+                    if os_intent_gate.get("detected") and os_intent_gate.get("status") == "allowed":
+                        forced_tool = os_intent_gate.get("tool_name")
+                        forced_params = {}
+                        if forced_tool == "open_url":
+                            url_match = re.search(r"https?://\\S+", latest_user_query or "")
+                            if url_match:
+                                forced_params["url"] = url_match.group(0)
+                            else:
+                                conversation["messages"].append({"role": "assistant", "content": "I can do browser actions, but I need a URL to proceed."})
+                                break
+                        normalized_forced = normalize_and_prepare_tool_calls([{"tool": forced_tool, "parameters": forced_params}])
+                        forced_batch = execute_tool_call_batch(
+                            normalized_forced,
+                            conversation,
+                            current_user,
+                            execution_context={
+                                "mode": profile["mode"],
+                                "os_control_enabled": os_control_enabled,
+                                "explicit_user_intent": True,
+                                "source": "chat_os_intent_fallback",
+                            },
+                        )
+                        forced_result = forced_batch.get("results", [{}])[0]
+                        yield {
+                            "type": "activity_update",
+                            "stage": "completed" if forced_result.get("status") == "success" else "error",
+                            "focus": "os_capability_routing",
+                            "last_action": forced_result.get("error_message") or f"Executed {forced_tool}",
+                            "active_tool": forced_tool,
+                        }
+                        if forced_result.get("status") == "success":
+                            conversation["messages"].append({"role": "assistant", "content": f"Completed `{forced_tool}` successfully."})
+                        else:
+                            conversation["messages"].append({
+                                "role": "assistant",
+                                "content": (
+                                    forced_result.get("error_message")
+                                    or "I can do that, but the action is currently blocked by policy."
+                                ),
+                            })
+                        break
+                    if _is_repo_intent(_latest_user_message(messages)):
+                        fallback = _repo_fallback_result(conversation["owner_id"])
+                        fallback_status = "completed" if fallback.get("status") == "success" else "error"
+                        yield {
+                            "type": "activity_update",
+                            "stage": fallback_status,
+                            "focus": "repo_intelligence",
+                            "last_action": fallback.get("message"),
+                            "active_tool": "github_skill",
+                        }
+                        conversation["messages"].append({"role": "assistant", "content": fallback.get("message")})
+                        break
+                    if should_continue_repair(
+                        verification_state.get("pending_failure"),
+                        verification_state.get("attempts", 0),
+                        verification_state.get("max_attempts", 0),
+                    ):
+                        conversation["messages"].append({
+                            "role": "tool",
+                            "content": (
+                                "VERIFICATION LOOP NOTICE:\n"
+                                "A verification failure is still unresolved. Apply the smallest patch and rerun verification."
+                            ),
+                        })
+                        continue
+                    if verification_state.get("pending_failure"):
+                        pending = verification_state["pending_failure"]
+                        yield {
+                            "type": "agent_error",
+                            "error": (
+                                "Verification blocked completion after maximum safe repair attempts. "
+                                f"Last failure classification: {pending.get('classification')}."
+                            ),
+                        }
+                    break
 
             if profile["tool_batch_budget"] is not None and executed_tool_batches >= profile["tool_batch_budget"]:
                 conversation["messages"].append({
@@ -1466,7 +1523,18 @@ def handle_ai_response(
         
         agent_sessions.pop(conversation["id"], None)
 
-    has_assistant_msg = any(m.get("role") == "assistant" for m in conversation.get("messages", []))
+    visible_assistant_count_now = _visible_assistant_message_count(conversation.get("messages", []))
+    if not run_failed and visible_assistant_count_now <= visible_assistant_count_at_start:
+        conversation["messages"].append({
+            "role": "assistant",
+            "content": (
+                "I couldn't produce a usable final answer from the model output this turn. "
+                "Please retry the request; if it needs current information, I will run a targeted search before answering."
+            ),
+        })
+        visible_assistant_count_now += 1
+
+    has_assistant_msg = visible_assistant_count_now > 0
     if has_assistant_msg:
         yield {"type": "progress_update", "stage": "finalizing", "label": "Finalizing answer", "ts": time.time()}
         yield from process_final_answer(conversation, data.get("canvas_mode", False), write_file)
