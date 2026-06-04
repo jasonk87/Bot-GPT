@@ -1118,6 +1118,7 @@ def handle_ai_response(
             yield {"type": "done", "title": conversation.get("title", "New Chat")}
             return
     logger.info("chat_run_start conversation_id=%s agent_mode=%s max_iterations=%s", conversation["id"], agent_mode, max_iterations)
+    run_failed = False
     try:
         for _ in range(max_iterations):
             if agent_sessions.get(conversation["id"], {}).get("stop_requested"):
@@ -1364,6 +1365,7 @@ def handle_ai_response(
             if agent_mode:
                 yield {"type": "agent_error", "error": "Agent reached maximum iterations."}
     except Exception as exc:
+        run_failed = True
         yield {"type": "agent_error", "error": f"Chat run failed: {exc}"}
         yield {
             "type": "activity_update",
@@ -1375,7 +1377,46 @@ def handle_ai_response(
     finally:
         agent_sessions.pop(conversation["id"], None)
 
-    if not tool_calls:
+    # Ensure the assistant has a chance to generate a final answer if the conversation ends on a tool result or notice
+    if not run_failed and conversation["messages"] and conversation["messages"][-1].get("role") == "tool":
+        yield {"type": "progress_update", "stage": "executing", "label": "Generating final answer", "ts": time.time()}
+        
+        final_system_prompt = system_prompt + "\n\nIMPORTANT: You have reached the step limit or tool budget. Summarize the available tool results and provide your final response to the user now. Do not generate any more tool calls."
+        
+        final_profile = profile.copy()
+        final_profile["tool_batch_budget"] = 0
+        final_profile["branch_limit"] = 0
+        
+        agent_sessions[conversation["id"]] = {
+            "stop_requested": False,
+            "running": True,
+            "agent_mode": agent_mode,
+            "partial_response": "",
+            "stage": "thinking",
+            "tool_name": None,
+            "tool_params": None,
+            "error": None,
+            "os_control_enabled": os_control_enabled,
+        }
+        
+        yield from agent_plan_phase(
+            model=model,
+            conversation=conversation,
+            call_stream=call_stream,
+            system_prompt=final_system_prompt,
+            profile=final_profile,
+            intent_state=intent_state,
+            verification_state=verification_state,
+            scratchpad=scratchpad,
+            agent_sessions=agent_sessions,
+            conversation_id=conversation["id"],
+            sanitize_json=sanitize_json,
+        )
+        
+        agent_sessions.pop(conversation["id"], None)
+
+    has_assistant_msg = any(m.get("role") == "assistant" for m in conversation.get("messages", []))
+    if has_assistant_msg:
         yield {"type": "progress_update", "stage": "finalizing", "label": "Finalizing answer", "ts": time.time()}
         yield from process_final_answer(conversation, data.get("canvas_mode", False), write_file)
 
