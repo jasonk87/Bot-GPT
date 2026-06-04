@@ -1,8 +1,7 @@
 
-import pytest
 from unittest.mock import MagicMock
 from tools.file_system import write_file
-from tools.web_search import web_search
+from tools.web_search import _web_context_limit_for_model, web_search
 
 def test_write_file_emits_refresh_and_open(app, test_user, mocker):
     """Test that write_file emits refresh_files and returns correct status."""
@@ -33,3 +32,9 @@ def test_web_search_handles_missing_google_client_dependency(app, mocker):
         result = web_search("latest ai news")
     assert "Missing required libraries" in result
     assert "Recovery:" in result
+
+
+def test_web_search_uses_large_context_for_gemini_25():
+    assert _web_context_limit_for_model("gemini-2.5-flash-lite (Max Thinking)") == 700_000
+    assert _web_context_limit_for_model("gemini-1.5-flash") == 300_000
+    assert _web_context_limit_for_model("llama3") == 80_000

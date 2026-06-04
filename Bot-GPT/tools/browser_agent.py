@@ -131,12 +131,102 @@ def click_element(text: str, user_id: Optional[int] = None, expected_text: str =
         return {"status": "error", "message": f"Click failed: {exc}"}
 
 
+def fill_input(label: str, value: str, user_id: Optional[int] = None, expected_text: str = "", recording_session_id: Optional[str] = None) -> Dict[str, object]:
+    error = _ensure_page()
+    if error:
+        return {"status": "error", "message": error}
+    try:
+        locator = _PAGE.get_by_label(str(label), exact=False).first
+        if locator.count() == 0:
+            locator = _PAGE.get_by_placeholder(str(label), exact=False).first
+        locator.fill(str(value), timeout=5000)
+        payload = {"status": "success", "filled_label": str(label), "value": str(value)}
+        _maybe_record_step(
+            user_id=user_id,
+            action_type="fill_input",
+            parameters={"label": str(label), "value": str(value)},
+            expected_text=expected_text,
+            recording_session_id=recording_session_id,
+        )
+        return payload
+    except Exception as exc:
+        return {"status": "error", "message": f"Fill failed: {exc}"}
+
+
+def press_key_browser(key: str, user_id: Optional[int] = None, expected_text: str = "", recording_session_id: Optional[str] = None) -> Dict[str, object]:
+    error = _ensure_page()
+    if error:
+        return {"status": "error", "message": error}
+    try:
+        _PAGE.keyboard.press(str(key))
+        payload = {"status": "success", "pressed_key": str(key)}
+        _maybe_record_step(
+            user_id=user_id,
+            action_type="press_key_browser",
+            parameters={"key": str(key)},
+            expected_text=expected_text,
+            recording_session_id=recording_session_id,
+        )
+        return payload
+    except Exception as exc:
+        return {"status": "error", "message": f"Key press failed: {exc}"}
+
+
+def take_browser_screenshot() -> Dict[str, object]:
+    error = _ensure_page()
+    if error:
+        return {"status": "error", "message": error}
+    try:
+        import base64
+        screenshot_bytes = _PAGE.screenshot()
+        b64_img = base64.b64encode(screenshot_bytes).decode("utf-8")
+        return {"status": "success", "image_base64": b64_img}
+    except Exception as exc:
+        return {"status": "error", "message": f"Screenshot failed: {exc}"}
+
+
 def extract_visible_text(max_chars: int = 2000) -> Dict[str, object]:
     error = _ensure_page()
     if error:
         return {"status": "error", "message": error}
     try:
-        text = _PAGE.inner_text("body")
-        return {"status": "success", "text": text[: int(max_chars)]}
+        # Instead of just inner_text, grab a simplified structural view
+        # We'll evaluate a script to return elements with their roles and text
+        js_extractor = """
+            () => {
+                const elements = [];
+                const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, {
+                    acceptNode: function(node) {
+                        const tag = node.tagName.toLowerCase();
+                        if (['script', 'style', 'noscript', 'meta'].includes(tag)) return NodeFilter.FILTER_REJECT;
+                        if (node.offsetParent === null) return NodeFilter.FILTER_REJECT; // hidden
+                        if (['a', 'button', 'input', 'select', 'textarea', 'h1', 'h2', 'h3', 'p'].includes(tag)) {
+                            return NodeFilter.FILTER_ACCEPT;
+                        }
+                        return NodeFilter.FILTER_SKIP;
+                    }
+                });
+
+                let node;
+                while ((node = walker.nextNode())) {
+                    const tag = node.tagName.toLowerCase();
+                    let text = node.innerText || node.value || node.placeholder || '';
+                    text = text.trim();
+                    if (text) {
+                        let role = tag;
+                        if (tag === 'input') {
+                            role = `input[${node.type}]`;
+                        }
+                        elements.push(`[${role}] ${text}`);
+                    }
+                }
+                return elements.join('\\n');
+            }
+        """
+        structural_text = _PAGE.evaluate(js_extractor)
+        if not structural_text:
+            structural_text = _PAGE.inner_text("body")
+
+        return {"status": "success", "text": structural_text[: int(max_chars)]}
     except Exception as exc:
         return {"status": "error", "message": f"Text extraction failed: {exc}"}

@@ -3,22 +3,79 @@ import json
 import requests
 from flask import current_app
 
+def get_gemini_tools():
+    """Retrieves visible tool definitions and constructs Gemini API tools JSON structure."""
+    from tools.runtime import get_model_visible_tool_definitions
+    definitions = get_model_visible_tool_definitions(
+        mode="standard",
+        user=None,
+        os_control_enabled=False,
+        explicit_user_intent=False,
+    )
+    
+    function_declarations = []
+    for definition in definitions:
+        properties = {}
+        for name, type_str in definition.parameter_schema.items():
+            gemini_type = {
+                "str": "STRING",
+                "list": "ARRAY",
+                "dict": "OBJECT",
+                "int": "INTEGER",
+                "float": "NUMBER",
+                "bool": "BOOLEAN"
+            }.get(type_str, "STRING")
+            
+            prop = {"type": gemini_type}
+            if gemini_type == "ARRAY":
+                prop["items"] = {"type": "STRING"}
+            properties[name] = prop
+
+        decl = {
+            "name": definition.name,
+            "description": definition.description,
+        }
+        if properties:
+            decl["parameters"] = {
+                "type": "OBJECT",
+                "properties": properties,
+                "required": definition.required_fields
+            }
+        function_declarations.append(decl)
+        
+    return [{"function_declarations": function_declarations}]
+
+
 def call_gemini_chat_stream(model, messages, system_prompt):
     """Calls Google's Gemini API via REST and yields response chunks."""
-    print(f"DEBUG: Executing REST API call for model {model}")
+    actual_model = model
+    is_max_thinking = False
+    if " (Max Thinking)" in model:
+        actual_model = model.replace(" (Max Thinking)", "")
+        is_max_thinking = True
+
+    print(f"DEBUG: Executing REST API call for model {actual_model} (max thinking: {is_max_thinking})")
     api_key = current_app.config.get("GOOGLE_API_KEY")
     if not api_key:
         yield "Error: GOOGLE_API_KEY not found in configuration."
         return
 
     # Use REST API URL
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{actual_model}:streamGenerateContent?key={api_key}"
     
     # Prepare contents
     payload = {
         "contents": [],
-        "system_instruction": {"parts": [{"text": system_prompt}]}
+        "system_instruction": {"parts": [{"text": system_prompt}]},
+        "tools": get_gemini_tools()
     }
+
+    if is_max_thinking:
+        payload["generationConfig"] = {
+            "thinkingConfig": {
+                "thinkingBudget": -1
+            }
+        }
 
     import base64
 
@@ -60,6 +117,7 @@ def call_gemini_chat_stream(model, messages, system_prompt):
         if parts:
              payload["contents"].append({"role": role, "parts": parts})
 
+    is_thinking = False
     try:
         response = requests.post(
             url,
@@ -71,45 +129,62 @@ def call_gemini_chat_stream(model, messages, system_prompt):
         response.raise_for_status()
 
         buffer = ""
+        decoder = json.JSONDecoder()
+
         for line in response.iter_lines():
             if not line:
                 continue
             
-            decoded_line = line.decode('utf-8').strip()
-            if not decoded_line:
-                continue
+            decoded_line = line.decode('utf-8')
+            buffer += decoded_line + "\n"
 
-            if not buffer:
-                if decoded_line == '[':
-                    continue
-                if decoded_line == ']':
-                    continue
-                if decoded_line == ',':
-                    continue
-                if decoded_line.startswith('['):
-                    decoded_line = decoded_line[1:].strip()
-                elif decoded_line.startswith(','):
-                    decoded_line = decoded_line[1:].strip()
+            cursor = 0
+            while True:
+                start = buffer.find("{", cursor)
+                if start == -1:
+                    break
+                try:
+                    chunk_data, parsed_len = decoder.raw_decode(buffer[start:])
+                    cursor = start + parsed_len
 
-            buffer += decoded_line
-
-            try:
-                chunk_data = json.loads(buffer)
-                buffer = "" 
-
-                candidates = chunk_data.get("candidates", [])
-                if candidates:
-                    content_parts = candidates[0].get("content", {}).get("parts", [])
-                    for part in content_parts:
-                        if "text" in part:
-                            yield part["text"]
-                
-                prompt_feedback = chunk_data.get("promptFeedback", {})
-                if prompt_feedback.get("blockReason"):
-                    yield f"\n[Blocked: {prompt_feedback['blockReason']}]"
+                    candidates = chunk_data.get("candidates", [])
+                    if candidates:
+                        content_parts = candidates[0].get("content", {}).get("parts", [])
+                        for part in content_parts:
+                            is_part_thought = part.get("thought") is True
+                            if "text" in part:
+                                if is_part_thought:
+                                    if not is_thinking:
+                                        yield "<think>"
+                                        is_thinking = True
+                                    yield part["text"]
+                                else:
+                                    if is_thinking:
+                                        yield "</think>"
+                                        is_thinking = False
+                                    yield part["text"]
+                            elif "functionCall" in part:
+                                if is_thinking:
+                                    yield "</think>"
+                                    is_thinking = False
+                                fn_call = part["functionCall"]
+                                tool_name = fn_call.get("name")
+                                args = fn_call.get("args", {})
+                                formatted_call = f"\n\n```json\n{{\n  \"tool\": \"{tool_name}\",\n  \"parameters\": {json.dumps(args, indent=2)}\n}}\n```\n\n"
+                                yield formatted_call
                     
-            except json.JSONDecodeError:
-                continue
+                    prompt_feedback = chunk_data.get("promptFeedback", {})
+                    if prompt_feedback.get("blockReason"):
+                        yield f"\n[Blocked: {prompt_feedback['blockReason']}]"
+                        
+                except json.JSONDecodeError:
+                    break
+            
+            if cursor > 0:
+                buffer = buffer[cursor:]
+
+        if is_thinking:
+            yield "</think>"
 
     except requests.exceptions.HTTPError as e:
          error_msg = f"Error calling Gemini API: {e}"

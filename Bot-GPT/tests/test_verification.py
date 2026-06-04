@@ -1,5 +1,5 @@
 from verification import (
-    VerificationStep,
+
     choose_verification_steps,
     classify_verification_failure,
     should_continue_repair,

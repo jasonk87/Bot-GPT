@@ -1,8 +1,4 @@
-import pytest
 import json
-import threading
-from unittest.mock import MagicMock, call
-from app import socketio
 import chat
 import os
 from flask_login import login_user
@@ -71,7 +67,7 @@ def test_tool_call_in_chat(socketio_test_client, test_user, mocker, app):
     assert len(tool_call_events) == 1
     assert tool_call_events[0]['name'] == 'list_files'
 
-def test_write_file_emits_open_canvas(socketio_test_client, test_user, mocker, app):
+def test_write_file_emits_open_canvas(socketio_test_client, test_user, mocker, app, tmp_path):
     """Test that a write_file tool call emits an open_canvas event."""
     mock_stream = mocker.patch("chat.call_ollama_chat_stream")
     mock_handle_tool = mocker.patch("chat.handle_tool_call")
@@ -79,7 +75,7 @@ def test_write_file_emits_open_canvas(socketio_test_client, test_user, mocker, a
 
     # Mock initialize_chat to bypass conversation lookups
     mock_init = mocker.patch("chat.initialize_chat")
-    mock_init.return_value = ("test-model", "sys-prompt", {"id": "test_convo_123", "owner_id": 1, "messages": []}, "path/to/convo.json")
+    mock_init.return_value = ("test-model", "sys-prompt", {"id": "test_convo_123", "owner_id": 1, "messages": []}, str(tmp_path / "convo.json"))
 
     tool_call_response = '```json\n{"tool": "write_file", "parameters": {"path": "test.txt", "content": "hello"}}\n```'
     final_answer = "I have written the file."

@@ -429,20 +429,34 @@ def _tool_call_fingerprint(tool_call):
 
 
 def _format_tool_batch_feedback(batch_outcome, results):
+    def _bounded_text(value, *, limit):
+        text = str(value)
+        if len(text) <= limit:
+            return text
+        return (
+            text[:limit].rstrip()
+            + f"\n\n[Tool output truncated after {limit} characters; use only the visible content.]"
+        )
+
     compact_results = []
     for outcome in results:
         result_payload = outcome.get("result")
+        tool_name = outcome.get("tool_name")
+        full_text_result = None
         if isinstance(result_payload, dict):
             result_preview = {k: result_payload.get(k) for k in ["status", "path", "filename", "message"] if k in result_payload}
         else:
             result_preview = str(result_payload)[:240] if result_payload is not None else None
+            if outcome.get("status") == "success" and result_payload not in (None, "", [], {}):
+                limit = 1_000_000 if tool_name == "web_search" else 3000
+                full_text_result = _bounded_text(result_payload, limit=limit)
         usefulness_hint = "useful"
         if result_payload in (None, "", [], {}):
             usefulness_hint = "low_signal_empty_result"
         if outcome.get("status") != "success":
             usefulness_hint = "failed_call"
-        compact_results.append({
-            "tool_name": outcome.get("tool_name"),
+        compact_result = {
+            "tool_name": tool_name,
             "status": outcome.get("status"),
             "retryable": outcome.get("retryable"),
             "validation_status": outcome.get("validation_status"),
@@ -451,7 +465,10 @@ def _format_tool_batch_feedback(batch_outcome, results):
             "result_preview": result_preview,
             "usefulness_hint": usefulness_hint,
             "source_metadata": outcome.get("source_metadata"),
-        })
+        }
+        if full_text_result is not None:
+            compact_result["result_content"] = full_text_result
+        compact_results.append(compact_result)
     return "TOOL BATCH RESULT:\n" + json.dumps({
         "batch_status": batch_outcome.get("status"),
         "policy": batch_outcome.get("policy"),
@@ -1118,6 +1135,7 @@ def handle_ai_response(
             yield {"type": "done", "title": conversation.get("title", "New Chat")}
             return
     logger.info("chat_run_start conversation_id=%s agent_mode=%s max_iterations=%s", conversation["id"], agent_mode, max_iterations)
+    run_failed = False
     try:
         for _ in range(max_iterations):
             if agent_sessions.get(conversation["id"], {}).get("stop_requested"):
@@ -1364,6 +1382,7 @@ def handle_ai_response(
             if agent_mode:
                 yield {"type": "agent_error", "error": "Agent reached maximum iterations."}
     except Exception as exc:
+        run_failed = True
         yield {"type": "agent_error", "error": f"Chat run failed: {exc}"}
         yield {
             "type": "activity_update",
@@ -1375,7 +1394,46 @@ def handle_ai_response(
     finally:
         agent_sessions.pop(conversation["id"], None)
 
-    if not tool_calls:
+    # Ensure the assistant has a chance to generate a final answer if the conversation ends on a tool result or notice
+    if not run_failed and conversation["messages"] and conversation["messages"][-1].get("role") == "tool":
+        yield {"type": "progress_update", "stage": "executing", "label": "Generating final answer", "ts": time.time()}
+        
+        final_system_prompt = system_prompt + "\n\nIMPORTANT: You have reached the step limit or tool budget. Summarize the available tool results and provide your final response to the user now. Do not generate any more tool calls."
+        
+        final_profile = profile.copy()
+        final_profile["tool_batch_budget"] = 0
+        final_profile["branch_limit"] = 0
+        
+        agent_sessions[conversation["id"]] = {
+            "stop_requested": False,
+            "running": True,
+            "agent_mode": agent_mode,
+            "partial_response": "",
+            "stage": "thinking",
+            "tool_name": None,
+            "tool_params": None,
+            "error": None,
+            "os_control_enabled": os_control_enabled,
+        }
+        
+        yield from agent_plan_phase(
+            model=model,
+            conversation=conversation,
+            call_stream=call_stream,
+            system_prompt=final_system_prompt,
+            profile=final_profile,
+            intent_state=intent_state,
+            verification_state=verification_state,
+            scratchpad=scratchpad,
+            agent_sessions=agent_sessions,
+            conversation_id=conversation["id"],
+            sanitize_json=sanitize_json,
+        )
+        
+        agent_sessions.pop(conversation["id"], None)
+
+    has_assistant_msg = any(m.get("role") == "assistant" for m in conversation.get("messages", []))
+    if has_assistant_msg:
         yield {"type": "progress_update", "stage": "finalizing", "label": "Finalizing answer", "ts": time.time()}
         yield from process_final_answer(conversation, data.get("canvas_mode", False), write_file)
 

@@ -291,8 +291,10 @@ class UpdateManager:
 
             current_step = "running_smoke_check"
             self._set_state(instance_path, "running_smoke_check", current_step=current_step, last_log_line="Running smoke checks.")
+            cmd_str = smoke_command or "python -m py_compile app.py"
+            run_cmd = ["cmd.exe", "/c", cmd_str] if os.name == "nt" else ["bash", "-lc", cmd_str]
             smoke = self._run(
-                ["bash", "-lc", smoke_command or "python -m py_compile app.py"],
+                run_cmd,
                 timeout=60,
             )
             smoke_output = (smoke.get("stderr") or smoke.get("stdout") or "").strip()
@@ -303,7 +305,8 @@ class UpdateManager:
             if restart_command:
                 current_step = "restarting"
                 self._set_state(instance_path, "restarting", current_step=current_step, last_log_line="Running restart command.")
-                restart = self._run(["bash", "-lc", restart_command], timeout=40)
+                restart_cmd = ["cmd.exe", "/c", restart_command] if os.name == "nt" else ["bash", "-lc", restart_command]
+                restart = self._run(restart_cmd, timeout=40)
                 if not restart.get("ok"):
                     raise RuntimeError(restart.get("stderr") or restart.get("stdout") or "Restart command failed.")
                 self._set_state(instance_path, "restarting", current_step=current_step, last_log_line=self._line(restart, "Restart command completed."))

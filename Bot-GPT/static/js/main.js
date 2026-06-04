@@ -1737,20 +1737,50 @@ async function populateModels() {
         const response = await fetch(`${window.location.origin}${API_BASE}/models`);
         if (!response.ok) throw new Error("Failed to fetch models");
         const models = await response.json();
+        
+        // Group models by provider
+        const groups = {};
+        models.forEach(model => {
+            const provider = model.provider || 'ollama';
+            if (!groups[provider]) {
+                groups[provider] = [];
+            }
+            groups[provider].push(model);
+        });
+
         const selects = [
             modelSelect,
             document.getElementById('default-chat-model-select'),
             document.getElementById('deep-chat-model-select'),
             document.getElementById('utility-model-select'),
         ].filter(Boolean);
-        selects.forEach((select) => { select.innerHTML = ''; });
-        models.forEach(model => {
-            selects.forEach((select) => {
-                const option = document.createElement('option');
-                option.value = model.name;
-                option.textContent = model.name;
-                select.appendChild(option);
+
+        selects.forEach((select) => {
+            const currentValue = select.value;
+            select.innerHTML = '';
+
+            Object.keys(groups).forEach(provider => {
+                const optgroup = document.createElement('optgroup');
+                let label = provider;
+                if (provider === 'google') label = 'Google Gemini (Cloud)';
+                else if (provider === 'ollama') label = 'Ollama (Local)';
+                else if (provider === 'unknown') label = 'Other / Preserved';
+                optgroup.label = label;
+                optgroup.className = "bg-gray-700 text-gray-300 font-semibold";
+
+                groups[provider].forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model.name;
+                    option.textContent = model.name;
+                    option.className = "bg-gray-800 text-white font-normal";
+                    optgroup.appendChild(option);
+                });
+                select.appendChild(optgroup);
             });
+
+            if (currentValue) {
+                select.value = currentValue;
+            }
         });
     } catch (error) { console.error("Failed to fetch models:", error); }
 }
@@ -2551,16 +2581,60 @@ async function handleRename(oldPath) {
             }
         }
 
+        async function fetchLintErrors(text, path) {
+            if (!path) return [];
+            try {
+                const response = await fetch('/api/workspace/lint', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path, content: text })
+                });
+                if (!response.ok) return [];
+                const data = await response.json();
+
+                // CodeMirror expects: { message, severity, from: CodeMirror.Pos(line, col), to: CodeMirror.Pos(line, col) }
+                return (data.errors || []).map(err => {
+                    const line = Math.max(0, err.line - 1);
+                    return {
+                        message: err.message,
+                        severity: "error", // Use error for all pylint/node syntax issues for now
+                        from: CodeMirror.Pos(line, err.column || 0),
+                        to: CodeMirror.Pos(line, err.column ? err.column + 1 : 100)
+                    };
+                });
+            } catch (err) {
+                console.error("Linter fetch error:", err);
+                return [];
+            }
+        }
+
         function initializeEditor(content, mode) {
             const editorContainer = document.getElementById('file-viewer');
             if (!editorContainer) return;
             editorContainer.innerHTML = '';
+
+            // Define an async linter function for CodeMirror
+            CodeMirror.registerHelper("lint", "javascript", function(text, updateLinting, options, editor) {
+                fetchLintErrors(text, currentOpenFile).then(errs => {
+                    updateLinting(editor, errs);
+                });
+            });
+            CodeMirror.registerHelper("lint", "python", function(text, updateLinting, options, editor) {
+                fetchLintErrors(text, currentOpenFile).then(errs => {
+                    updateLinting(editor, errs);
+                });
+            });
+
+            // Basic completion helper
             editor = CodeMirror(editorContainer, {
                 value: content,
                 mode: mode,
                 theme: 'dracula',
                 lineNumbers: true,
-                readOnly: currentConversationRole !== 'owner'
+                lint: { async: true, delay: 500 },
+                gutters: ["CodeMirror-lint-markers", "CodeMirror-linenumbers"],
+                readOnly: currentConversationRole !== 'owner',
+                extraKeys: {"Ctrl-Space": "autocomplete"}
             });
 
             // Add debounce for auto-saving
@@ -3508,6 +3582,7 @@ function updateBotBubble(bubbleElement, responseContent, isFinal = false) {
             block.parentElement.appendChild(copyBtn);
         });
     }
+    smartScroll(chatContainer);
 }
 
 function updateAgentStatus(bubbleElement, statusText, isError = false) {

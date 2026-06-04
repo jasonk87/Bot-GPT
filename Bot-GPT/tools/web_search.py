@@ -24,7 +24,7 @@ def google_search(api_key, cse_id, query):
         )
     try:
         service = build("customsearch", "v1", developerKey=api_key)
-        res = service.cse().list(q=query, cx=cse_id, num=3).execute()
+        res = service.cse().list(q=query, cx=cse_id, num=3).execute()  # pylint: disable=no-member
         return res.get("items", [])
     except HttpError as e:
         raise ConnectionError(
@@ -53,6 +53,15 @@ def scrape_text_from_url(url):
         return "\n".join(chunk for chunk in chunks if chunk)
     except requests.exceptions.RequestException as e:
         return f"--- Could not get {url}: {e} ---\n\n"
+
+
+def _web_context_limit_for_model(model):
+    normalized = (model or "").lower()
+    if "gemini-2.5" in normalized:
+        return 700_000
+    if "gemini" in normalized:
+        return 300_000
+    return 80_000
 
 
 def summarize_text(text, query, model):
@@ -108,11 +117,13 @@ def web_search(query, conversation_id=None, user_id=None, user=None):
         if not consolidated_content.strip():
             return "Could not retrieve any content from the search results."
 
-        max_length = 8000
-        if len(consolidated_content) > max_length:
-            consolidated_content = consolidated_content[:max_length] + "..."
-
         current_model = user.selected_model if user else "default_model_name"
+        max_length = _web_context_limit_for_model(current_model)
+        if len(consolidated_content) > max_length:
+            consolidated_content = (
+                consolidated_content[:max_length].rstrip()
+                + f"\n\n[Web content truncated after {max_length} characters to fit the selected model context.]"
+            )
 
         summary = summarize_text(
             consolidated_content, query, current_model

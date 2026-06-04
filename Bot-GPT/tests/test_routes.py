@@ -1,6 +1,5 @@
 from unittest.mock import Mock
 import os
-from models import get_all_conversations_for_user
 from shared_paths import get_users_path
 from models import _load_users, _save_users, User
 
@@ -53,7 +52,7 @@ def test_auth_routes(client, test_user, app):
     assert new_login_rv.status_code == 200
 
 def test_get_models_api(logged_in_client, mocker):
-    """Test the API endpoint for getting Ollama models."""
+    """Test the API endpoint for getting Ollama models and Gemini models."""
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -68,8 +67,15 @@ def test_get_models_api(logged_in_client, mocker):
     assert response.status_code == 200
     data = response.get_json()
     assert isinstance(data, list)
-    assert len(data) == 2
+    # 2 mocked ollama models + 8 gemini models = 10
+    assert len(data) == 10
     assert data[0]['name'] == 'model1:latest'
+    assert data[0]['provider'] == 'ollama'
+    
+    # Check that Gemini models are present
+    gemini_names = [d['name'] for d in data if d.get('provider') == 'google']
+    assert "gemini-2.5-flash-lite (Max Thinking)" in gemini_names
+    assert len(gemini_names) == 8
 
 
 def test_settings_include_and_persist_response_mode(logged_in_client, test_user):
@@ -218,7 +224,13 @@ def test_existing_non_id_1_admin_username_sees_admin_updates_flag(client, app):
 
 
 def test_admin_updates_frontend_wires_check_and_apply_apis():
-    with open('Bot-GPT/static/js/main.js', 'r', encoding='utf-8') as handle:
+    test_dir = os.path.dirname(os.path.abspath(__file__))
+    project_dir = os.path.dirname(test_dir)
+    js_path = os.path.join(project_dir, 'static', 'js', 'main.js')
+    if not os.path.exists(js_path):
+        js_path = os.path.join(os.path.dirname(project_dir), 'Bot-GPT', 'static', 'js', 'main.js')
+
+    with open(js_path, 'r', encoding='utf-8') as handle:
         script = handle.read()
     assert '/admin/updates/check' in script
     assert '/admin/updates/update' in script
@@ -229,9 +241,19 @@ def test_admin_updates_frontend_wires_check_and_apply_apis():
 
 
 def test_frontend_has_mobile_canvas_fullscreen_guards():
-    with open('Bot-GPT/static/js/main.js', 'r', encoding='utf-8') as handle:
+    test_dir = os.path.dirname(os.path.abspath(__file__))
+    project_dir = os.path.dirname(test_dir)
+    js_path = os.path.join(project_dir, 'static', 'js', 'main.js')
+    if not os.path.exists(js_path):
+        js_path = os.path.join(os.path.dirname(project_dir), 'Bot-GPT', 'static', 'js', 'main.js')
+
+    html_path = os.path.join(project_dir, 'templates', 'index.html')
+    if not os.path.exists(html_path):
+        html_path = os.path.join(os.path.dirname(project_dir), 'Bot-GPT', 'templates', 'index.html')
+
+    with open(js_path, 'r', encoding='utf-8') as handle:
         script = handle.read()
-    with open('Bot-GPT/templates/index.html', 'r', encoding='utf-8') as handle:
+    with open(html_path, 'r', encoding='utf-8') as handle:
         html = handle.read()
     assert "canvasPanel.classList.toggle" in script
     assert "document.body.classList.toggle" in script

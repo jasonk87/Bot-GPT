@@ -704,3 +704,25 @@ def test_verification_loop_continues_until_pass_or_blocked(mocker):
     assert any("Verification failed" in action for action in actions)
     assert any("Verification passed" in action for action in actions)
     assert any(e.get("type") == "done" for e in events)
+
+
+def test_tool_batch_feedback_preserves_web_search_content():
+    long_search_answer = "Today's News Headlines\n\n" + "\n".join(
+        f"- Headline {idx}: detail" for idx in range(80)
+    )
+    feedback = chat_ai._format_tool_batch_feedback(
+        {"status": "success", "policy": "continue_on_error_in_order", "success_count": 1, "error_count": 0},
+        [{
+            "tool_name": "web_search",
+            "status": "success",
+            "retryable": False,
+            "validation_status": "valid",
+            "error_type": None,
+            "error_message": None,
+            "result": long_search_answer,
+        }],
+    )
+
+    assert "result_content" in feedback
+    assert "Headline 79: detail" in feedback
+    assert "Tool output truncated" not in feedback
